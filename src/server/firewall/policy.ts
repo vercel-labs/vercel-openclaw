@@ -1,0 +1,25 @@
+import type { NetworkPolicy, Sandbox } from "@vercel/sandbox";
+
+import type { SingleMeta } from "@/shared/types";
+
+export function toNetworkPolicy(
+  mode: SingleMeta["firewall"]["mode"],
+  allowlist: string[],
+): NetworkPolicy {
+  switch (mode) {
+    case "enforcing":
+      return { allow: [...allowlist].sort((left, right) => left.localeCompare(right)) };
+    case "disabled":
+    case "learning":
+      return "allow-all";
+  }
+}
+
+export async function applyFirewallPolicyToSandbox(
+  sandbox: Sandbox,
+  meta: SingleMeta,
+): Promise<NetworkPolicy> {
+  const policy = toNetworkPolicy(meta.firewall.mode, meta.firewall.allowlist);
+  await sandbox.updateNetworkPolicy(policy);
+  return policy;
+}

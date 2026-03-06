@@ -1,36 +1,102 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# vercel-openclaw
 
-## Getting Started
+Single-instance OpenClaw for Vercel Sandboxes.
 
-First, run the development server:
+This app takes the multi-sandbox dashboard approach from `moltbot-on-vercel` and strips it down to one persistent sandbox with:
+
+- a single OpenClaw instance
+- `/gateway` reverse proxying through the app domain
+- auto-create / auto-restore on demand
+- a learning -> enforcing egress firewall backed by `sandbox.updateNetworkPolicy()`
+- Vercel-protected access, either through Deployment Protection or Sign in with Vercel
+
+## What is implemented
+
+- Next.js 16 App Router app
+- single-record control plane with Upstash REST storage or in-memory fallback
+- OpenClaw bootstrap that writes config, token, startup script, and restore script
+- `/gateway/[[...path]]` proxy with HTML injection for WebSocket rewriting and token handoff
+- minimal admin UI at `/` and `/admin`
+- firewall APIs and UI for mode changes, allowlist updates, and learned-domain promotion
+
+## Current behavior
+
+- First request to `/gateway` or `POST /api/admin/ensure` starts sandbox creation in the background and returns a waiting page until the gateway is ready.
+- `POST /api/admin/stop` snapshots the running sandbox and leaves it in `stopped` state.
+- `POST /api/admin/snapshot` currently uses the same snapshot-and-stop behavior.
+- Restore works from the latest stored snapshot.
+- The initial bootstrap does not auto-snapshot yet. That means the first restorable snapshot is created when you manually snapshot or stop the sandbox.
+
+## Auth modes
+
+`VERCEL_AUTH_MODE` supports:
+
+- `deployment-protection`
+  Use Vercel Deployment Protection / Vercel Authentication. This is the default mode if `VERCEL_AUTH_MODE` is unset.
+- `sign-in-with-vercel`
+  Use app-level OAuth with Vercel and encrypted session cookies.
+
+## Environment
+
+Recommended for production:
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+VERCEL_AUTH_MODE=deployment-protection
+UPSTASH_REDIS_REST_URL=
+UPSTASH_REDIS_REST_TOKEN=
+AI_GATEWAY_API_KEY=
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Required only for `VERCEL_AUTH_MODE=sign-in-with-vercel`:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```bash
+NEXT_PUBLIC_VERCEL_APP_CLIENT_ID=
+VERCEL_APP_CLIENT_SECRET=
+SESSION_SECRET=
+NEXT_PUBLIC_APP_URL=https://your-app.example.com
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Accepted store env aliases:
 
-## Learn More
+- `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN`
+- `KV_REST_API_URL` / `KV_REST_API_TOKEN`
 
-To learn more about Next.js, take a look at the following resources:
+If no store env vars are present, the app falls back to an in-memory store. That is useful for local development but not safe for production persistence.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Local development
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+```bash
+pnpm install
+pnpm dev
+```
 
-## Deploy on Vercel
+Useful commands:
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+```bash
+pnpm typecheck
+pnpm test
+pnpm build
+```
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Routes
+
+- `/`
+  Admin shell
+- `/admin`
+  Same admin shell on a stable path
+- `/gateway`
+  Proxied OpenClaw UI
+- `/api/status`
+  Current sandbox + firewall status, plus heartbeat `POST`
+- `/api/admin/ensure`
+  Trigger create or restore
+- `/api/admin/stop`
+  Snapshot and stop
+- `/api/firewall`
+  Read or change firewall mode
+
+## Notes
+
+- With the current implementation, firewall learning comes from shell command logging inside the sandbox and is ingested during status polling.
+- `AI_GATEWAY_API_KEY` is optional if your Vercel project can mint OIDC tokens for Vercel AI Gateway. Locally, setting `AI_GATEWAY_API_KEY` is the practical path.
+- The app uses Upstash REST storage semantics but keeps a small abstraction so the fallback in-memory store works for local testing.
