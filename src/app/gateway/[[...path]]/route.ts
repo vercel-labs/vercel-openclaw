@@ -14,7 +14,6 @@ import {
   sanitizeProxyQueryParams,
   stripProxyResponseHeaders,
 } from "@/server/proxy/proxy-route-utils";
-import { issueGatewayTicket } from "@/server/proxy/tickets";
 import { getWaitingPageHtml } from "@/server/proxy/waitingPage";
 import {
   ensureSandboxRunning,
@@ -194,10 +193,9 @@ async function handleProxy(request: Request, path: string): Promise<Response> {
     logInfo("gateway.html_injection", { ...reqCtx, upstreamStatus: upstream.status });
     const html = await upstream.text();
     const sandboxOrigin = new URL(routeUrl).origin;
-    const ticketId = await issueGatewayTicket(meta.gatewayToken);
     const modifiedHtml = injectWrapperScript(html, {
       sandboxOrigin,
-      ticketId,
+      gatewayToken: meta.gatewayToken,
     });
 
     return withSetCookie(

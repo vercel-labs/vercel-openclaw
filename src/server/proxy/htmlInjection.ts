@@ -2,7 +2,7 @@ import { logDebug } from "@/server/log";
 
 type WrapperContext = {
   sandboxOrigin: string;
-  ticketId: string;
+  gatewayToken: string;
 };
 
 function escapeForInlineScriptJson(value: unknown): string {
@@ -23,22 +23,19 @@ function escapeForInlineScriptJson(value: unknown): string {
 function buildInterceptorScript(context: WrapperContext): string {
   const encodedContext = escapeForInlineScriptJson({
     sandboxOrigin: context.sandboxOrigin,
-    ticketId: context.ticketId,
+    gatewayToken: context.gatewayToken,
   });
 
   return `<script>
 (function() {
   var CONTEXT = ${encodedContext};
   var SANDBOX_ORIGIN = CONTEXT.sandboxOrigin;
-  var TICKET_ID = CONTEXT.ticketId;
+  var GATEWAY_TOKEN = CONTEXT.gatewayToken;
   var TOUCH_URL = '/api/status';
-  var TICKET_URL = '/api/gateway-ticket';
   var HEARTBEAT_INTERVAL_MS = 4 * 60 * 1000;
   var openSocketCount = 0;
   var heartbeatIntervalId = null;
   var heartbeatInFlight = false;
-  var GATEWAY_TOKEN = null;
-  var pendingConnections = [];
 
   var shouldHeartbeat = function() {
     return openSocketCount > 0 && document.visibilityState === 'visible';
@@ -90,8 +87,9 @@ function buildInterceptorScript(context: WrapperContext): string {
   window.addEventListener('pagehide', stopHeartbeat);
 
   var OriginalWebSocket = window.WebSocket;
-  var appendGatewayAuthProtocol = function(protocols, token) {
-    var authProtocol = 'openclaw.gateway-token.' + encodeURIComponent(token);
+  var appendGatewayAuthProtocol = function(protocols) {
+    if (!GATEWAY_TOKEN) return protocols;
+    var authProtocol = 'openclaw.gateway-token.' + encodeURIComponent(GATEWAY_TOKEN);
     var protocolList =
       protocols == null ? [] : Array.isArray(protocols) ? protocols.slice() : [protocols];
     if (!protocolList.includes(authProtocol)) {
@@ -124,7 +122,7 @@ function buildInterceptorScript(context: WrapperContext): string {
     });
   };
 
-  var createProxiedSocket = function(url, protocols) {
+  window.WebSocket = function(url, protocols) {
     var wsUrl = url;
     var nextProtocols = protocols;
     var shouldTrackLifecycle = false;
@@ -142,12 +140,12 @@ function buildInterceptorScript(context: WrapperContext): string {
         }
         parsed.searchParams.delete('token');
         wsUrl = parsed.toString();
-        nextProtocols = appendGatewayAuthProtocol(protocols, GATEWAY_TOKEN);
+        nextProtocols = appendGatewayAuthProtocol(protocols);
         shouldTrackLifecycle = true;
       } else if (parsed.host === sandboxUrl.host) {
         parsed.searchParams.delete('token');
         wsUrl = parsed.toString();
-        nextProtocols = appendGatewayAuthProtocol(protocols, GATEWAY_TOKEN);
+        nextProtocols = appendGatewayAuthProtocol(protocols);
         shouldTrackLifecycle = true;
       }
     } catch (error) {}
@@ -164,131 +162,30 @@ function buildInterceptorScript(context: WrapperContext): string {
     return socket;
   };
 
-  window.WebSocket = function(url, protocols) {
-    if (GATEWAY_TOKEN !== null) {
-      return createProxiedSocket(url, protocols);
-    }
-
-    // Token not yet available — queue and connect once redeemed.
-    var deferred = { url: url, protocols: protocols, resolve: null, socket: null };
-    var promise = new Promise(function(resolve) { deferred.resolve = resolve; });
-    pendingConnections.push(deferred);
-
-    // Return a placeholder that will be swapped once the real socket is ready.
-    // We create a dummy that connects to nothing; the caller will get 'open' from
-    // the real socket once the ticket is redeemed.
-    promise.then(function(realSocket) { deferred.socket = realSocket; });
-
-    // We cannot return a promise from the WebSocket constructor, so we eagerly
-    // wait for the ticket and return a real socket.  In practice the ticket
-    // redeems in <50 ms, well before any app code tries to send data.
-    // Fall through: queue will be flushed by redeemTicket().
-    // For safety, return a deferred-connect socket:
-    return createDeferredSocket(deferred);
-  };
-
-  // Minimal wrapper that delays the real WebSocket until the token arrives.
-  function createDeferredSocket(deferred) {
-    var handler = {
-      _listeners: {},
-      _socket: null,
-      addEventListener: function(type, fn) {
-        if (!this._listeners[type]) this._listeners[type] = [];
-        this._listeners[type].push(fn);
-        if (this._socket) this._socket.addEventListener(type, fn);
-      },
-      removeEventListener: function(type, fn) {
-        if (this._listeners[type]) {
-          this._listeners[type] = this._listeners[type].filter(function(f) { return f !== fn; });
-        }
-        if (this._socket) this._socket.removeEventListener(type, fn);
-      },
-    };
-
-    // Once the real socket is available, replay listeners.
-    deferred.resolve = function(realSocket) {
-      handler._socket = realSocket;
-      var types = Object.keys(handler._listeners);
-      for (var i = 0; i < types.length; i++) {
-        var fns = handler._listeners[types[i]];
-        for (var j = 0; j < fns.length; j++) {
-          realSocket.addEventListener(types[i], fns[j]);
-        }
-      }
-    };
-
-    // Return a thin proxy — supports addEventListener and common props.
-    var proxy = Object.create(OriginalWebSocket.prototype);
-    proxy.addEventListener = function(t, f) { handler.addEventListener(t, f); };
-    proxy.removeEventListener = function(t, f) { handler.removeEventListener(t, f); };
-    Object.defineProperty(proxy, 'readyState', {
-      get: function() { return handler._socket ? handler._socket.readyState : OriginalWebSocket.CONNECTING; },
-    });
-    Object.defineProperty(proxy, 'bufferedAmount', {
-      get: function() { return handler._socket ? handler._socket.bufferedAmount : 0; },
-    });
-    proxy.send = function(data) {
-      if (handler._socket) return handler._socket.send(data);
-      throw new DOMException('WebSocket is not yet connected', 'InvalidStateError');
-    };
-    proxy.close = function(code, reason) {
-      if (handler._socket) return handler._socket.close(code, reason);
-    };
-    return proxy;
-  }
-
   window.WebSocket.prototype = OriginalWebSocket.prototype;
   window.WebSocket.CONNECTING = OriginalWebSocket.CONNECTING;
   window.WebSocket.OPEN = OriginalWebSocket.OPEN;
   window.WebSocket.CLOSING = OriginalWebSocket.CLOSING;
   window.WebSocket.CLOSED = OriginalWebSocket.CLOSED;
 
-  // Redeem the ticket to obtain the gateway token.
-  (async function redeemTicket() {
-    try {
-      var resp = await fetch(TICKET_URL, {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: { 'content-type': 'application/json', accept: 'application/json' },
-        body: JSON.stringify({ ticket: TICKET_ID }),
-      });
-      if (!resp.ok) {
-        // Ticket expired or already used — reload the page to get a fresh one.
-        location.reload();
-        return;
-      }
-      var data = await resp.json();
-      GATEWAY_TOKEN = data.token;
+  // Inject token into URL for OpenClaw's own auth, then strip it.
+  if (GATEWAY_TOKEN) {
+    var u = new URL(location.href);
+    u.searchParams.set('token', GATEWAY_TOKEN);
+    history.replaceState(null, '', u.pathname + u.search + u.hash);
 
-      // Inject token into URL for OpenClaw's own auth, then strip it.
-      var currentUrl = new URL(location.href);
-      currentUrl.searchParams.set('token', GATEWAY_TOKEN);
-      history.replaceState(null, '', currentUrl.pathname + currentUrl.search + currentUrl.hash);
+    var stripToken = function() {
+      var cleaned = new URL(location.href);
+      cleaned.searchParams.delete('token');
+      history.replaceState(null, '', cleaned.pathname + cleaned.search + cleaned.hash);
+    };
 
-      var stripToken = function() {
-        var cleaned = new URL(location.href);
-        cleaned.searchParams.delete('token');
-        history.replaceState(null, '', cleaned.pathname + cleaned.search + cleaned.hash);
-      };
-
-      if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', stripToken, { once: true });
-      } else {
-        stripToken();
-      }
-
-      // Flush any queued WebSocket connections.
-      for (var i = 0; i < pendingConnections.length; i++) {
-        var pending = pendingConnections[i];
-        var realSocket = createProxiedSocket(pending.url, pending.protocols);
-        if (pending.resolve) pending.resolve(realSocket);
-      }
-      pendingConnections = [];
-    } catch (error) {
-      // Network error — retry once after a short delay.
-      setTimeout(redeemTicket, 1000);
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', stripToken, { once: true });
+    } else {
+      stripToken();
     }
-  })();
+  }
 })();
 </script>`;
 }
