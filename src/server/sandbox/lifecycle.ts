@@ -1,5 +1,7 @@
 import { Sandbox } from "@vercel/sandbox";
 
+import { randomUUID } from "node:crypto";
+
 import { ApiError } from "@/shared/http";
 import type { SingleMeta } from "@/shared/types";
 import { getAiGatewayBearerTokenOptional } from "@/server/env";
@@ -8,7 +10,12 @@ import { applyFirewallPolicyToSandbox } from "@/server/firewall/policy";
 import { logError, logInfo, logWarn } from "@/server/log";
 import { setupOpenClaw } from "@/server/openclaw/bootstrap";
 import { OPENCLAW_STARTUP_SCRIPT_PATH } from "@/server/openclaw/config";
-import { getStore, getInitializedMeta, mutateMeta } from "@/server/store/store";
+import {
+  getStore,
+  getInitializedMeta,
+  mutateMeta,
+  wait,
+} from "@/server/store/store";
 
 const OPENCLAW_PORT = 3000;
 const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
@@ -20,6 +27,8 @@ const START_LOCK_KEY = "openclaw-single:lock:start";
 const LIFECYCLE_LOCK_TTL_SECONDS = 20 * 60;
 const START_LOCK_TTL_SECONDS = 60;
 const STALE_OPERATION_MS = 5 * 60 * 1000;
+const READY_WAIT_TIMEOUT_MS = 5 * 60 * 1000;
+const READY_WAIT_POLL_MS = 1_000;
 
 type BackgroundScheduler = (callback: () => Promise<void> | void) => void;
 
@@ -29,6 +38,7 @@ export async function ensureSandboxRunning(options: {
   schedule?: BackgroundScheduler;
 }): Promise<{ state: "running" | "waiting"; meta: SingleMeta }> {
   const meta = await getInitializedMeta();
+  logInfo("sandbox.ensure_running", { reason: options.reason, status: meta.status });
 
   if (meta.status === "running" && meta.sandboxId) {
     return { state: "running", meta };
@@ -36,6 +46,7 @@ export async function ensureSandboxRunning(options: {
 
   if (isBusyStatus(meta.status)) {
     if (isOperationStale(meta)) {
+      logWarn("sandbox.stale_operation", { status: meta.status, updatedAt: meta.updatedAt });
       await scheduleLifecycleWork({ ...options, meta });
     }
     return { state: "waiting", meta };
@@ -45,10 +56,44 @@ export async function ensureSandboxRunning(options: {
   return { state: "waiting", meta: await getInitializedMeta() };
 }
 
+export async function ensureSandboxReady(options: {
+  origin: string;
+  reason: string;
+  timeoutMs?: number;
+  pollIntervalMs?: number;
+}): Promise<SingleMeta> {
+  const deadline = Date.now() + (options.timeoutMs ?? READY_WAIT_TIMEOUT_MS);
+  const pollIntervalMs = options.pollIntervalMs ?? READY_WAIT_POLL_MS;
+  let lastMeta = await getInitializedMeta();
+
+  while (Date.now() < deadline) {
+    const result = await ensureSandboxRunning({
+      origin: options.origin,
+      reason: options.reason,
+    });
+    lastMeta = result.meta;
+
+    if (await probeGatewayReady()) {
+      return getInitializedMeta();
+    }
+
+    await wait(pollIntervalMs);
+    lastMeta = await getInitializedMeta();
+  }
+
+  throw new ApiError(
+    504,
+    "SANDBOX_READY_TIMEOUT",
+    `Sandbox did not become ready within ${Math.ceil((options.timeoutMs ?? READY_WAIT_TIMEOUT_MS) / 1000)} seconds (last status: ${lastMeta.status}).`,
+  );
+}
+
 export async function stopSandbox(): Promise<SingleMeta> {
+  logInfo("sandbox.stop_requested");
   return withLifecycleLock(async () => {
     const meta = await getInitializedMeta();
     if (meta.status === "stopped" && meta.snapshotId) {
+      logInfo("sandbox.already_stopped", { snapshotId: meta.snapshotId });
       return meta;
     }
     if (!meta.sandboxId) {
@@ -59,8 +104,10 @@ export async function stopSandbox(): Promise<SingleMeta> {
       );
     }
 
+    logInfo("sandbox.snapshotting", { sandboxId: meta.sandboxId });
     const sandbox = await Sandbox.get({ sandboxId: meta.sandboxId });
     const snapshot = await sandbox.snapshot();
+    logInfo("sandbox.status_transition", { from: meta.status, to: "stopped", snapshotId: snapshot.snapshotId });
     return mutateMeta((next) => {
       next.snapshotId = snapshot.snapshotId;
       next.sandboxId = null;
@@ -68,11 +115,21 @@ export async function stopSandbox(): Promise<SingleMeta> {
       next.status = "stopped";
       next.lastAccessedAt = Date.now();
       next.lastError = null;
+      next.snapshotHistory = [
+        {
+          id: randomUUID(),
+          snapshotId: snapshot.snapshotId,
+          timestamp: Date.now(),
+          reason: "stop",
+        },
+        ...next.snapshotHistory,
+      ].slice(0, 50);
     });
   });
 }
 
 export async function snapshotSandbox(): Promise<SingleMeta> {
+  logInfo("sandbox.snapshot_requested");
   return stopSandbox();
 }
 
@@ -164,7 +221,10 @@ export async function probeGatewayReady(): Promise<boolean> {
     }
 
     return ready;
-  } catch {
+  } catch (error) {
+    logWarn("sandbox.probe_failed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
     return false;
   }
 }
@@ -226,6 +286,7 @@ async function createAndBootstrapSandbox(origin: string): Promise<SingleMeta> {
       return current;
     }
 
+    logInfo("sandbox.status_transition", { from: current.status, to: "creating" });
     await mutateMeta((meta) => {
       meta.status = "creating";
       meta.lastError = null;
@@ -239,6 +300,7 @@ async function createAndBootstrapSandbox(origin: string): Promise<SingleMeta> {
       ...(await buildRuntimeEnv()),
     });
 
+    logInfo("sandbox.status_transition", { from: "creating", to: "setup", sandboxId: sandbox.sandboxId });
     await mutateMeta((meta) => {
       meta.status = "setup";
       meta.sandboxId = sandbox.sandboxId;
@@ -278,6 +340,7 @@ async function restoreSandboxFromSnapshot(origin: string): Promise<SingleMeta> {
       return createAndBootstrapSandbox(origin);
     }
 
+    logInfo("sandbox.status_transition", { from: current.status, to: "restoring", snapshotId: current.snapshotId });
     await mutateMeta((meta) => {
       meta.status = "restoring";
       meta.lastError = null;

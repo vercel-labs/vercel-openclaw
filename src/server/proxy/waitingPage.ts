@@ -17,6 +17,7 @@ const STATUS_LABELS: Record<string, string> = {
 export function getWaitingPageHtml(
   returnPath: string,
   status: WaitingStatus,
+  nonce?: string,
 ): string {
   const label = STATUS_LABELS[status] ?? "Starting";
   const escapedReturnPath = escapeHtml(returnPath);
@@ -108,7 +109,7 @@ export function getWaitingPageHtml(
     <div class="pulse" aria-hidden="true"></div>
     <div class="hint">Polling /api/status every 2 seconds</div>
   </div>
-  <script>
+  <script${nonce ? ` nonce="${escapeHtml(nonce)}"` : ""}>
     (() => {
       const returnPath = document.querySelector('[data-return-path]')?.getAttribute('data-return-path') || '/gateway';
       const poll = async () => {

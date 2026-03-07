@@ -1,17 +1,22 @@
+import { randomBytes } from "node:crypto";
+
 import { after } from "next/server";
 
 import { requireRouteAuth } from "@/server/auth/vercel-auth";
 import { getBaseOrigin } from "@/server/env";
+import { extractRequestId, logError, logInfo, logWarn } from "@/server/log";
 import { injectWrapperScript } from "@/server/proxy/htmlInjection";
 import {
   buildSafeProxyHeaders,
   buildSandboxTargetUrl,
   buildTokenHtmlHeaders,
+  buildWaitingPageCsp,
   isInvalidProxyTargetPath,
   normalizeProxyTargetPath,
   sanitizeProxyQueryParams,
   stripProxyResponseHeaders,
 } from "@/server/proxy/proxy-route-utils";
+import { issueGatewayTicket } from "@/server/proxy/tickets";
 import { getWaitingPageHtml } from "@/server/proxy/waitingPage";
 import {
   ensureSandboxRunning,
@@ -19,6 +24,10 @@ import {
   markSandboxUnavailable,
   touchRunningSandbox,
 } from "@/server/sandbox/lifecycle";
+
+function generateNonce(): string {
+  return randomBytes(16).toString("base64");
+}
 export const maxDuration = 300;
 
 const NO_BODY_RESPONSE_STATUSES = new Set([204, 304]);
@@ -41,11 +50,13 @@ function buildWaitingResponse(
   status: string,
   setCookieHeader: string | null,
 ): Response {
+  const nonce = generateNonce();
   return withSetCookie(
-    new Response(getWaitingPageHtml(returnPath, status), {
+    new Response(getWaitingPageHtml(returnPath, status, nonce), {
       status: 202,
       headers: {
         "Content-Type": "text/html; charset=utf-8",
+        "Content-Security-Policy": buildWaitingPageCsp(nonce),
         "Cache-Control": "no-store, private",
       },
     }),
@@ -54,12 +65,18 @@ function buildWaitingResponse(
 }
 
 async function handleProxy(request: Request, path: string): Promise<Response> {
+  const requestId = extractRequestId(request);
+  const reqCtx: Record<string, unknown> = { path, method: request.method };
+  if (requestId) reqCtx.requestId = requestId;
+
   if (isInvalidProxyTargetPath(path)) {
+    logWarn("gateway.invalid_path", reqCtx);
     return new Response("Invalid path", { status: 400 });
   }
 
   const auth = await requireRouteAuth(request, { mode: "redirect" });
   if (auth instanceof Response) {
+    logWarn("gateway.auth_failure", { ...reqCtx, status: auth.status });
     return auth;
   }
 
@@ -69,6 +86,7 @@ async function handleProxy(request: Request, path: string): Promise<Response> {
     schedule: after,
   });
   if (ensure.state !== "running") {
+    logInfo("gateway.waiting_page", { ...reqCtx, sandboxStatus: ensure.meta.status });
     const returnPath = `/gateway${path === "/" ? "" : path}`;
     return buildWaitingResponse(returnPath, ensure.meta.status, auth.setCookieHeader);
   }
@@ -96,8 +114,21 @@ async function handleProxy(request: Request, path: string): Promise<Response> {
     init.duplex = "half";
   }
 
-  const upstream = await fetch(targetUrl, init);
+  let upstream: Response;
+  try {
+    upstream = await fetch(targetUrl, init);
+  } catch (err) {
+    logError("gateway.upstream_fetch_failed", {
+      ...reqCtx,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return withSetCookie(
+      new Response("Bad Gateway", { status: 502 }),
+      auth.setCookieHeader,
+    );
+  }
   if (upstream.status === 410) {
+    logWarn("gateway.upstream_410", reqCtx);
     await markSandboxUnavailable("Sandbox VM was reclaimed.");
     await ensureSandboxRunning({
       origin: getBaseOrigin(request),
@@ -166,11 +197,15 @@ async function handleProxy(request: Request, path: string): Promise<Response> {
 
   const contentType = upstream.headers.get("content-type") ?? "";
   if (contentType.includes("text/html")) {
+    logInfo("gateway.html_injection", { ...reqCtx, upstreamStatus: upstream.status });
     const html = await upstream.text();
     const sandboxOrigin = new URL(routeUrl).origin;
+    const nonce = generateNonce();
+    const ticketId = await issueGatewayTicket(meta.gatewayToken);
     const modifiedHtml = injectWrapperScript(html, {
       sandboxOrigin,
-      gatewayToken: meta.gatewayToken,
+      ticketId,
+      nonce,
     });
 
     return withSetCookie(
@@ -180,6 +215,7 @@ async function handleProxy(request: Request, path: string): Promise<Response> {
           sandboxOrigin,
           proxyOrigin: new URL(request.url).origin,
           upstreamHeaders: upstream.headers,
+          nonce,
         }),
       }),
       auth.setCookieHeader,

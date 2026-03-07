@@ -1,9 +1,9 @@
 import { jsonError } from "@/shared/http";
-import { requireRouteAuth } from "@/server/auth/vercel-auth";
+import { requireMutationAuth } from "@/server/auth/route-auth";
 import { stopSandbox } from "@/server/sandbox/lifecycle";
 
 export async function POST(request: Request): Promise<Response> {
-  const auth = await requireRouteAuth(request, { mode: "json" });
+  const auth = await requireMutationAuth(request);
   if (auth instanceof Response) {
     return auth;
   }

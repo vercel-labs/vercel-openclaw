@@ -1,4 +1,5 @@
 import { jsonError } from "@/shared/http";
+import { verifyCsrf } from "@/server/auth/csrf";
 import { requireRouteAuth } from "@/server/auth/vercel-auth";
 import {
   approveDomains,
@@ -11,6 +12,9 @@ type DomainBody = {
 };
 
 export async function POST(request: Request): Promise<Response> {
+  const csrfBlock = verifyCsrf(request);
+  if (csrfBlock) return csrfBlock;
+
   const auth = await requireRouteAuth(request, { mode: "json" });
   if (auth instanceof Response) {
     return auth;
@@ -31,6 +35,9 @@ export async function POST(request: Request): Promise<Response> {
 }
 
 export async function DELETE(request: Request): Promise<Response> {
+  const csrfBlock = verifyCsrf(request);
+  if (csrfBlock) return csrfBlock;
+
   const auth = await requireRouteAuth(request, { mode: "json" });
   if (auth instanceof Response) {
     return auth;

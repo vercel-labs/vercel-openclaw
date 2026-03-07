@@ -5,7 +5,7 @@ import type { FirewallEvent, FirewallState, LearnedDomain } from "@/shared/types
 import { getInitializedMeta, getStore, mutateMeta } from "@/server/store/store";
 import { applyFirewallPolicyToSandbox } from "@/server/firewall/policy";
 import { extractDomains, normalizeDomainList } from "@/server/firewall/domains";
-import { logWarn } from "@/server/log";
+import { logInfo, logWarn } from "@/server/log";
 
 const EVENT_RETENTION = 200;
 const LEARNED_RETENTION = 500;
@@ -20,6 +20,7 @@ export async function getFirewallState(): Promise<FirewallState> {
 export async function setFirewallMode(
   mode: FirewallState["mode"],
 ): Promise<FirewallState> {
+  logInfo("firewall.mode_change", { to: mode });
   return (
     await mutateMeta((meta) => {
       if (mode === "enforcing" && meta.firewall.allowlist.length === 0) {
@@ -37,6 +38,7 @@ export async function setFirewallMode(
 }
 
 export async function approveDomains(domains: string[]): Promise<FirewallState> {
+  logInfo("firewall.domains_approved", { count: domains.length });
   const normalized = normalizeDomainList(domains);
   if (normalized.invalid.length > 0) {
     throw new ApiError(400, "INVALID_DOMAINS", "One or more domains are invalid.");
@@ -176,6 +178,9 @@ export async function ingestLearningFromSandbox(
     ]);
     const output = await result.output("both");
     const domains = extractDomains(output);
+    if (domains.length > 0) {
+      logInfo("firewall.domains_learned", { count: domains.length, domains });
+    }
 
     await mutateMeta((next) => {
       next.firewall.lastIngestedAt = Date.now();

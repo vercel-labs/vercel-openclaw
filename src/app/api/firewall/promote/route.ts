@@ -1,4 +1,5 @@
 import { jsonError } from "@/shared/http";
+import { verifyCsrf } from "@/server/auth/csrf";
 import { requireRouteAuth } from "@/server/auth/vercel-auth";
 import {
   promoteLearnedDomainsToEnforcing,
@@ -6,6 +7,9 @@ import {
 } from "@/server/firewall/state";
 
 export async function POST(request: Request): Promise<Response> {
+  const csrfBlock = verifyCsrf(request);
+  if (csrfBlock) return csrfBlock;
+
   const auth = await requireRouteAuth(request, { mode: "json" });
   if (auth instanceof Response) {
     return auth;

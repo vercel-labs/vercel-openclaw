@@ -1,0 +1,30 @@
+{
+  "env": [
+    {
+      "key": "UPSTASH_REDIS_REST_URL",
+      "description": "Upstash Redis REST URL for persistent state (from Vercel Marketplace or Upstash console)",
+      "required": true
+    },
+    {
+      "key": "UPSTASH_REDIS_REST_TOKEN",
+      "description": "Upstash Redis REST token (from Vercel Marketplace or Upstash console)",
+      "required": true
+    },
+    {
+      "key": "SESSION_SECRET",
+      "description": "Random 32+ character secret used to encrypt session cookies (generate with: openssl rand -hex 32)",
+      "required": true
+    },
+    {
+      "key": "VERCEL_AUTH_MODE",
+      "description": "Authentication mode: 'sign-in-with-vercel' (recommended) or 'deployment-protection'",
+      "value": "sign-in-with-vercel",
+      "required": true
+    },
+    {
+      "key": "AI_GATEWAY_API_KEY",
+      "description": "Vercel AI Gateway API key for LLM access (enable AI Gateway in your Vercel project settings)",
+      "required": false
+    }
+  ]
+}

@@ -32,9 +32,13 @@ export class UpstashStore {
   }
 
   async getMeta(): Promise<SingleMeta | null> {
-    const raw = await this.redis.get<string>(META_KEY);
+    const raw = await this.redis.get<SingleMeta | string>(META_KEY);
     if (!raw) {
       return null;
+    }
+
+    if (typeof raw === "object") {
+      return raw as SingleMeta;
     }
 
     try {
@@ -46,6 +50,49 @@ export class UpstashStore {
 
   async setMeta(meta: SingleMeta): Promise<void> {
     await this.redis.set(META_KEY, JSON.stringify(meta));
+  }
+
+  async getValue<T>(key: string): Promise<T | null> {
+    const raw = await this.redis.get(key);
+    if (!raw) {
+      return null;
+    }
+
+    if (typeof raw === "object") {
+      return raw as T;
+    }
+
+    try {
+      return JSON.parse(raw as string) as T;
+    } catch {
+      return null;
+    }
+  }
+
+  async setValue<T>(key: string, value: T, ttlSeconds?: number): Promise<void> {
+    const payload = JSON.stringify(value);
+    if (typeof ttlSeconds === "number") {
+      await this.redis.set(key, payload, { ex: ttlSeconds });
+      return;
+    }
+
+    await this.redis.set(key, payload);
+  }
+
+  async deleteValue(key: string): Promise<void> {
+    await this.redis.del(key);
+  }
+
+  async enqueue(key: string, value: string): Promise<number> {
+    return this.redis.rpush(key, value);
+  }
+
+  async dequeue(key: string): Promise<string | null> {
+    return this.redis.lpop<string>(key);
+  }
+
+  async getQueueLength(key: string): Promise<number> {
+    return this.redis.llen(key);
   }
 
   async acquireLock(key: string, ttlSeconds: number): Promise<string | null> {

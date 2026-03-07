@@ -1,3 +1,9 @@
+import {
+  createDefaultChannelConfigs,
+  ensureChannelConfigs,
+  type ChannelConfigs,
+} from "@/shared/channels";
+
 export type FirewallMode = "disabled" | "learning" | "enforcing";
 
 export type SingleStatus =
@@ -15,6 +21,32 @@ export type LearnedDomain = {
   firstSeenAt: number;
   lastSeenAt: number;
   hitCount: number;
+};
+
+export type LogLevel = "error" | "warn" | "info" | "debug";
+
+export type LogSource =
+  | "lifecycle"
+  | "proxy"
+  | "firewall"
+  | "channels"
+  | "auth"
+  | "system";
+
+export type LogEntry = {
+  id: string;
+  timestamp: number;
+  level: LogLevel;
+  source: LogSource;
+  message: string;
+  data?: Record<string, unknown>;
+};
+
+export type SnapshotRecord = {
+  id: string;
+  snapshotId: string;
+  timestamp: number;
+  reason: string;
 };
 
 export type FirewallEvent = {
@@ -50,6 +82,8 @@ export type SingleMeta = {
   startupScript: string | null;
   lastError: string | null;
   firewall: FirewallState;
+  channels: ChannelConfigs;
+  snapshotHistory: SnapshotRecord[];
 };
 
 export const CURRENT_SCHEMA_VERSION = 1;
@@ -76,6 +110,8 @@ export function createDefaultMeta(now: number, gatewayToken: string): SingleMeta
       updatedAt: now,
       lastIngestedAt: null,
     },
+    channels: createDefaultChannelConfigs(),
+    snapshotHistory: [],
   };
 }
 
@@ -128,6 +164,10 @@ export function ensureMetaShape(input: unknown): SingleMeta | null {
           ? raw.firewall.lastIngestedAt
           : null,
     },
+    channels: ensureChannelConfigs(raw.channels),
+    snapshotHistory: Array.isArray((raw as Record<string, unknown>).snapshotHistory)
+      ? ((raw as Record<string, unknown>).snapshotHistory as unknown[]).filter(isSnapshotRecord)
+      : [],
   };
 }
 
@@ -159,6 +199,20 @@ function isLearnedDomain(value: unknown): value is LearnedDomain {
     typeof raw.firstSeenAt === "number" &&
     typeof raw.lastSeenAt === "number" &&
     typeof raw.hitCount === "number"
+  );
+}
+
+function isSnapshotRecord(value: unknown): value is SnapshotRecord {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+
+  const raw = value as Partial<SnapshotRecord>;
+  return (
+    typeof raw.id === "string" &&
+    typeof raw.snapshotId === "string" &&
+    typeof raw.timestamp === "number" &&
+    typeof raw.reason === "string"
   );
 }
 

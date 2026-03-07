@@ -5,7 +5,7 @@ import {
   ensureMetaShape,
   type SingleMeta,
 } from "@/shared/types";
-import { logInfo } from "@/server/log";
+import { logInfo, logWarn } from "@/server/log";
 import { MemoryStore } from "@/server/store/memory-store";
 import { UpstashStore } from "@/server/store/upstash-store";
 
@@ -15,9 +15,19 @@ export type Store = {
   readonly name: string;
   getMeta(): Promise<SingleMeta | null>;
   setMeta(meta: SingleMeta): Promise<void>;
+  getValue<T>(key: string): Promise<T | null>;
+  setValue<T>(key: string, value: T, ttlSeconds?: number): Promise<void>;
+  deleteValue(key: string): Promise<void>;
+  enqueue(key: string, value: string): Promise<number>;
+  dequeue(key: string): Promise<string | null>;
+  getQueueLength(key: string): Promise<number>;
   acquireLock(key: string, ttlSeconds: number): Promise<string | null>;
   releaseLock(key: string, token: string): Promise<void>;
 };
+
+function isProductionRuntime(): boolean {
+  return process.env.NODE_ENV === "production" || process.env.VERCEL === "1";
+}
 
 let singletonStore: Store | null = null;
 
@@ -26,7 +36,25 @@ export function getStore(): Store {
     return singletonStore;
   }
 
-  singletonStore = UpstashStore.fromEnv() ?? new MemoryStore();
+  const upstash = UpstashStore.fromEnv();
+  if (upstash) {
+    singletonStore = upstash;
+    logInfo("store.initialized", { backend: singletonStore.name });
+    return singletonStore;
+  }
+
+  if (isProductionRuntime()) {
+    throw new Error(
+      "Upstash Redis is required in production. " +
+        "Set UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN, " +
+        "or install the Upstash integration from the Vercel Marketplace.",
+    );
+  }
+
+  logWarn("store.memory_fallback", {
+    message: "Using in-memory store — data will not persist across restarts.",
+  });
+  singletonStore = new MemoryStore();
   logInfo("store.initialized", { backend: singletonStore.name });
   return singletonStore;
 }
@@ -98,4 +126,9 @@ export async function mutateMeta(
 
 export function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Reset singleton for testing only. */
+export function _resetStoreForTesting(): void {
+  singletonStore = null;
 }

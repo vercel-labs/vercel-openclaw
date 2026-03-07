@@ -1,5 +1,6 @@
 import { jsonError } from "@/shared/http";
 import { isFirewallMode } from "@/shared/types";
+import { verifyCsrf } from "@/server/auth/csrf";
 import { requireRouteAuth } from "@/server/auth/vercel-auth";
 import {
   getFirewallState,
@@ -24,6 +25,9 @@ export async function GET(request: Request): Promise<Response> {
 }
 
 export async function PUT(request: Request): Promise<Response> {
+  const csrfBlock = verifyCsrf(request);
+  if (csrfBlock) return csrfBlock;
+
   const auth = await requireRouteAuth(request, { mode: "json" });
   if (auth instanceof Response) {
     return auth;
