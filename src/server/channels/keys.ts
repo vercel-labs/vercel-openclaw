@@ -6,6 +6,10 @@ export function channelQueueKey(channel: ChannelName): string {
   return `${PREFIX}:channels:${channel}:queue`;
 }
 
+export function channelProcessingKey(channel: ChannelName): string {
+  return `${PREFIX}:channels:${channel}:processing`;
+}
+
 export function channelDeadLetterKey(channel: ChannelName): string {
   return `${PREFIX}:channels:${channel}:deadletter`;
 }

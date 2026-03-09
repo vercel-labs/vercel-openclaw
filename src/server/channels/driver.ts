@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import type { ChannelName } from "@/shared/channels";
 import type { SingleMeta } from "@/shared/types";
 import { extractReply, toPlainText } from "@/server/channels/core/reply";
@@ -9,7 +11,9 @@ import type {
 import { appendSessionHistory, readSessionHistory } from "@/server/channels/history";
 import {
   channelDeadLetterKey,
+  channelDedupKey,
   channelDrainLockKey,
+  channelProcessingKey,
   channelQueueKey,
 } from "@/server/channels/keys";
 import { logError, logInfo, logWarn } from "@/server/log";
@@ -21,6 +25,8 @@ import {
 import { getInitializedMeta, getStore } from "@/server/store/store";
 
 const DRAIN_LOCK_TTL_SECONDS = 10 * 60;
+const CHANNEL_DEDUP_TTL_SECONDS = 5 * 60;
+const CHANNEL_VISIBILITY_TIMEOUT_SECONDS = 20 * 60;
 const MAX_RETRY_COUNT = 8;
 const RETRY_BACKOFF_BASE_MS = 1_000;
 const RETRY_BACKOFF_MAX_MS = 5 * 60 * 1000;
@@ -34,13 +40,20 @@ export type QueuedChannelJob<TPayload = unknown> = {
   nextAttemptAt?: number;
   lastError?: string;
   lastRetryAt?: number;
+  dedupId?: string;
 };
 
 type DeadLetterEntry = {
   failedAt: number;
   error: string;
   channel: ChannelName;
-  job: QueuedChannelJob;
+  job: QueuedChannelJob<unknown>;
+};
+
+type LeasedChannelQueueEntry = {
+  job: string;
+  leasedAt: number;
+  visibilityTimeoutAt: number;
 };
 
 type DrainChannelQueueOptions<
@@ -58,16 +71,54 @@ export async function enqueueChannelJob<TPayload>(
   job: QueuedChannelJob<TPayload>,
 ): Promise<void> {
   const store = getStore();
-  await store.enqueue(channelQueueKey(channel), JSON.stringify(job));
+  const queueKey = channelQueueKey(channel);
+  const rawJob = JSON.stringify(job);
+  const isRetry = (job.retryCount ?? 0) > 0 || typeof job.nextAttemptAt === "number";
+
+  if (isRetry) {
+    await store.enqueueFront(queueKey, rawJob);
+    logInfo("channels.job_enqueued", {
+      channel,
+      receivedAt: job.receivedAt,
+      retryCount: job.retryCount ?? 0,
+      deduped: false,
+    });
+    return;
+  }
+
+  const dedupId = resolveJobDedupId(channel, job);
+  const dedupResult = await store.enqueueUnique(
+    queueKey,
+    channelDedupKey(channel, dedupId),
+    CHANNEL_DEDUP_TTL_SECONDS,
+    rawJob,
+  );
+
+  if (!dedupResult.enqueued) {
+    logInfo("channels.job_deduped", {
+      channel,
+      dedupId,
+      receivedAt: job.receivedAt,
+    });
+    return;
+  }
+
   logInfo("channels.job_enqueued", {
     channel,
     receivedAt: job.receivedAt,
     retryCount: job.retryCount ?? 0,
+    deduped: false,
   });
 }
 
 export async function getChannelQueueDepth(channel: ChannelName): Promise<number> {
-  return getStore().getQueueLength(channelQueueKey(channel));
+  const store = getStore();
+  const [queued, processing] = await Promise.all([
+    store.getQueueLength(channelQueueKey(channel)),
+    store.getQueueLength(channelProcessingKey(channel)),
+  ]);
+
+  return queued + processing;
 }
 
 export async function drainChannelQueue<
@@ -78,31 +129,50 @@ export async function drainChannelQueue<
   options: DrainChannelQueueOptions<TConfig, TPayload, TMessage>,
 ): Promise<void> {
   const store = getStore();
+  const queueKey = channelQueueKey(options.channel);
+  const processingKey = channelProcessingKey(options.channel);
   const lockKey = channelDrainLockKey(options.channel);
   const lockToken = await store.acquireLock(lockKey, DRAIN_LOCK_TTL_SECONDS);
   if (!lockToken) {
     return;
   }
 
-  const deferredJobs: QueuedChannelJob<TPayload>[] = [];
-
   try {
+    const recovered = await store.requeueExpiredLeases(
+      queueKey,
+      processingKey,
+      Date.now(),
+    );
+    if (recovered > 0) {
+      logWarn("channels.processing_recovered", {
+        channel: options.channel,
+        recovered,
+      });
+    }
+
     for (;;) {
-      const rawJob = await store.dequeue(channelQueueKey(options.channel));
-      if (!rawJob) {
+      const leasedValue = await store.leaseQueueItem(
+        queueKey,
+        processingKey,
+        Date.now(),
+        CHANNEL_VISIBILITY_TIMEOUT_SECONDS,
+      );
+      if (!leasedValue) {
         break;
       }
 
+      const leasedEntry = parseLeasedChannelQueueEntry(leasedValue);
       let job: QueuedChannelJob<TPayload>;
       try {
-        job = JSON.parse(rawJob) as QueuedChannelJob<TPayload>;
+        job = JSON.parse(leasedEntry.job) as QueuedChannelJob<TPayload>;
       } catch (error) {
+        await store.ackQueueItem(processingKey, leasedValue);
         await writeDeadLetter(options.channel, {
           failedAt: Date.now(),
           error: formatError(error),
           channel: options.channel,
           job: {
-            payload: rawJob,
+            payload: leasedEntry.job,
             origin: process.env.NEXT_PUBLIC_APP_URL?.trim() ?? "unknown",
             receivedAt: Date.now(),
           },
@@ -110,27 +180,69 @@ export async function drainChannelQueue<
         continue;
       }
 
+      const now = Date.now();
       if (
         typeof job.nextAttemptAt === "number" &&
         Number.isFinite(job.nextAttemptAt) &&
-        job.nextAttemptAt > Date.now()
+        job.nextAttemptAt > now
       ) {
-        deferredJobs.push(job);
+        const parkedLease = serializeLeasedChannelQueueEntry(
+          leasedEntry.job,
+          job.nextAttemptAt,
+        );
+        const parked = await store.updateQueueLease(
+          processingKey,
+          leasedValue,
+          parkedLease,
+        );
+
+        if (!parked) {
+          logWarn("channels.job_park_failed", {
+            channel: options.channel,
+            retryCount: job.retryCount ?? 0,
+          });
+        }
+
         continue;
       }
 
       try {
         await processChannelJob(options, job);
+        const acknowledged = await store.ackQueueItem(processingKey, leasedValue);
+        if (!acknowledged) {
+          logWarn("channels.job_ack_missing", {
+            channel: options.channel,
+          });
+        }
       } catch (error) {
         if (isRetryable(error)) {
           const retryJob = withRetry(job, error);
           if (retryJob) {
-            deferredJobs.push(retryJob);
-            logWarn("channels.job_requeued", {
-              channel: options.channel,
-              error: formatError(error),
-              retryCount: retryJob.retryCount ?? 0,
-            });
+            const retryLease = serializeLeasedChannelQueueEntry(
+              JSON.stringify(retryJob),
+              retryJob.nextAttemptAt ??
+                Date.now() + CHANNEL_VISIBILITY_TIMEOUT_SECONDS * 1000,
+            );
+            const updated = await store.updateQueueLease(
+              processingKey,
+              leasedValue,
+              retryLease,
+            );
+
+            if (!updated) {
+              logWarn("channels.job_retry_park_failed", {
+                channel: options.channel,
+                error: formatError(error),
+                retryCount: retryJob.retryCount ?? 0,
+              });
+            } else {
+              logWarn("channels.job_requeued", {
+                channel: options.channel,
+                error: formatError(error),
+                retryCount: retryJob.retryCount ?? 0,
+              });
+            }
+
             continue;
           }
 
@@ -144,6 +256,7 @@ export async function drainChannelQueue<
             channel: options.channel,
             job,
           });
+          await store.ackQueueItem(processingKey, leasedValue);
           continue;
         }
 
@@ -157,13 +270,10 @@ export async function drainChannelQueue<
           channel: options.channel,
           job,
         });
+        await store.ackQueueItem(processingKey, leasedValue);
       }
     }
   } finally {
-    for (const job of deferredJobs) {
-      await enqueueChannelJob(options.channel, job);
-    }
-
     await store.releaseLock(lockKey, lockToken);
   }
 }
@@ -329,6 +439,69 @@ class RetryableChannelError extends Error {
   }
 }
 
+function resolveJobDedupId<TPayload>(
+  channel: ChannelName,
+  job: QueuedChannelJob<TPayload>,
+): string {
+  const explicitDedupId = job.dedupId?.trim();
+  if (explicitDedupId) {
+    return explicitDedupId;
+  }
+
+  try {
+    return createHash("sha256")
+      .update(channel)
+      .update(":")
+      .update(JSON.stringify(job.payload))
+      .digest("hex");
+  } catch {
+    return createHash("sha256")
+      .update(channel)
+      .update(":")
+      .update(String(job.receivedAt))
+      .update(":")
+      .update(job.origin)
+      .digest("hex");
+  }
+}
+
+function parseLeasedChannelQueueEntry(raw: string): LeasedChannelQueueEntry {
+  try {
+    const parsed = JSON.parse(raw) as Partial<LeasedChannelQueueEntry>;
+    if (typeof parsed.job === "string") {
+      return {
+        job: parsed.job,
+        leasedAt: typeof parsed.leasedAt === "number" ? parsed.leasedAt : 0,
+        visibilityTimeoutAt:
+          typeof parsed.visibilityTimeoutAt === "number"
+            ? parsed.visibilityTimeoutAt
+            : 0,
+      };
+    }
+  } catch {
+    // Fall through to legacy/raw-entry handling.
+  }
+
+  return {
+    job: raw,
+    leasedAt: 0,
+    visibilityTimeoutAt: 0,
+  };
+}
+
+function serializeLeasedChannelQueueEntry(
+  rawJob: string,
+  visibilityTimeoutAt: number,
+): string {
+  const envelope: LeasedChannelQueueEntry = {
+    job: rawJob,
+    leasedAt: Date.now(),
+    visibilityTimeoutAt,
+  };
+
+  return JSON.stringify(envelope);
+}
+
 function isRetryable(error: unknown): boolean {
   if (!error) {
     return false;
@@ -394,7 +567,11 @@ function getRetryAfterSeconds(error: unknown): number | undefined {
   }
 
   const maybeRetryAfter = (error as { retryAfterSeconds?: unknown }).retryAfterSeconds;
-  if (typeof maybeRetryAfter === "number" && Number.isFinite(maybeRetryAfter) && maybeRetryAfter > 0) {
+  if (
+    typeof maybeRetryAfter === "number" &&
+    Number.isFinite(maybeRetryAfter) &&
+    maybeRetryAfter > 0
+  ) {
     return maybeRetryAfter;
   }
 
