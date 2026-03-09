@@ -4,12 +4,16 @@ import { logInfo } from "@/server/log";
 import {
   buildForcePairScript,
   buildGatewayConfig,
+  buildImageGenScript,
+  buildImageGenSkill,
   buildStartupScript,
   OPENCLAW_AI_GATEWAY_API_KEY_PATH,
   OPENCLAW_BIN,
   OPENCLAW_CONFIG_PATH,
   OPENCLAW_FORCE_PAIR_SCRIPT_PATH,
   OPENCLAW_GATEWAY_TOKEN_PATH,
+  OPENCLAW_IMAGE_GEN_SCRIPT_PATH,
+  OPENCLAW_IMAGE_GEN_SKILL_PATH,
   OPENCLAW_STARTUP_SCRIPT_PATH,
   OPENCLAW_STATE_DIR,
 } from "@/server/openclaw/config";
@@ -54,6 +58,14 @@ export async function setupOpenClaw(
     {
       path: OPENCLAW_STARTUP_SCRIPT_PATH,
       content: Buffer.from(startupScript),
+    },
+    {
+      path: OPENCLAW_IMAGE_GEN_SKILL_PATH,
+      content: Buffer.from(buildImageGenSkill()),
+    },
+    {
+      path: OPENCLAW_IMAGE_GEN_SCRIPT_PATH,
+      content: Buffer.from(buildImageGenScript()),
     },
   ]);
 
