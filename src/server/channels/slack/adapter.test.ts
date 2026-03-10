@@ -8,6 +8,10 @@ import {
   getSlackUrlVerificationChallenge,
   isValidSlackSignature,
 } from "@/server/channels/slack/adapter";
+import {
+  _resetLogBuffer,
+  getFilteredServerLogs,
+} from "@/server/log";
 
 test("isValidSlackSignature validates a correctly signed request", () => {
   const signingSecret = "secret";
@@ -108,4 +112,55 @@ test("createSlackAdapter sendReply throws RetryableSendError when Slack rate lim
       return true;
     },
   );
+});
+
+test("createSlackAdapter extractMessage returns empty history and logs when thread fetch fails", async () => {
+  _resetLogBuffer();
+
+  const adapter = createSlackAdapter(
+    {
+      signingSecret: "secret",
+      botToken: "xoxb-token",
+    },
+    {
+      fetchFn: async () => {
+        throw new Error("network down");
+      },
+    },
+  );
+
+  try {
+    const result = await adapter.extractMessage({
+      type: "event_callback",
+      event: {
+        type: "message",
+        text: "thread reply",
+        channel: "C123",
+        ts: "124.56",
+        thread_ts: "123.45",
+        user: "U123",
+      },
+    });
+
+    assert.equal(result.kind, "message");
+    if (result.kind !== "message") {
+      return;
+    }
+
+    assert.deepEqual(result.message.history, []);
+
+    const [entry] = getFilteredServerLogs({
+      search: "channels.slack_history_fetch_failed",
+    });
+    assert.ok(entry);
+    assert.equal(entry.message, "channels.slack_history_fetch_failed");
+    assert.deepEqual(entry.data, {
+      channel: "C123",
+      threadTs: "123.45",
+      reason: "request_failed",
+      error: "network down",
+    });
+  } finally {
+    _resetLogBuffer();
+  }
 });

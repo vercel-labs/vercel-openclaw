@@ -6,6 +6,7 @@ import type {
   OpenClawMessage,
   PlatformAdapter,
 } from "@/server/channels/core/types";
+import { logWarn } from "@/server/log";
 
 const SLACK_SIGNATURE_VERSION = "v0";
 const SLACK_SIGNATURE_MAX_AGE_SECONDS = 60 * 5;
@@ -127,51 +128,61 @@ async function fetchSlackThreadHistory(options: {
   currentTs: string;
   fetchFn?: typeof fetch;
 }): Promise<OpenClawMessage[]> {
-  const fetchFn = options.fetchFn ?? globalThis.fetch;
-  const url = new URL(SLACK_CONVERSATIONS_REPLIES_URL);
-  url.searchParams.set("channel", options.channel);
-  url.searchParams.set("ts", options.threadTs);
-  url.searchParams.set("inclusive", "true");
-  url.searchParams.set("limit", String(SLACK_THREAD_HISTORY_LIMIT));
-
-  const response = await fetchFn(url, {
-    method: "GET",
-    headers: {
-      authorization: `Bearer ${options.botToken}`,
-    },
-    signal: AbortSignal.timeout(SLACK_REQUEST_TIMEOUT_MS),
-  });
-
-  if (!response.ok) {
-    return [];
-  }
-
-  let payload: SlackConversationsRepliesResponse | null = null;
   try {
-    payload = (await response.json()) as SlackConversationsRepliesResponse;
-  } catch {
-    payload = null;
-  }
+    const fetchFn = options.fetchFn ?? globalThis.fetch;
+    const url = new URL(SLACK_CONVERSATIONS_REPLIES_URL);
+    url.searchParams.set("channel", options.channel);
+    url.searchParams.set("ts", options.threadTs);
+    url.searchParams.set("inclusive", "true");
+    url.searchParams.set("limit", String(SLACK_THREAD_HISTORY_LIMIT));
 
-  if (!payload?.ok || !Array.isArray(payload.messages)) {
+    const response = await fetchFn(url, {
+      method: "GET",
+      headers: {
+        authorization: `Bearer ${options.botToken}`,
+      },
+      signal: AbortSignal.timeout(SLACK_REQUEST_TIMEOUT_MS),
+    });
+
+    if (!response.ok) {
+      return [];
+    }
+
+    let payload: SlackConversationsRepliesResponse | null = null;
+    try {
+      payload = (await response.json()) as SlackConversationsRepliesResponse;
+    } catch {
+      payload = null;
+    }
+
+    if (!payload?.ok || !Array.isArray(payload.messages)) {
+      return [];
+    }
+
+    const history: OpenClawMessage[] = [];
+    for (const reply of payload.messages) {
+      if (!reply?.text || !reply.ts || reply.ts === options.currentTs) {
+        continue;
+      }
+      if (reply.subtype && reply.subtype !== "bot_message") {
+        continue;
+      }
+      history.push({
+        role: toSlackHistoryRole(reply),
+        content: reply.text,
+      });
+    }
+
+    return history.slice(-SLACK_THREAD_HISTORY_LIMIT);
+  } catch (error) {
+    logWarn("channels.slack_history_fetch_failed", {
+      channel: options.channel,
+      threadTs: options.threadTs,
+      reason: "request_failed",
+      error: error instanceof Error ? error.message : String(error),
+    });
     return [];
   }
-
-  const history: OpenClawMessage[] = [];
-  for (const reply of payload.messages) {
-    if (!reply?.text || !reply.ts || reply.ts === options.currentTs) {
-      continue;
-    }
-    if (reply.subtype && reply.subtype !== "bot_message") {
-      continue;
-    }
-    history.push({
-      role: toSlackHistoryRole(reply),
-      content: reply.text,
-    });
-  }
-
-  return history.slice(-SLACK_THREAD_HISTORY_LIMIT);
 }
 
 async function postSlackReply(
