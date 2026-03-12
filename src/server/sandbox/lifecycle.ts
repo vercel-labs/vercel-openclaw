@@ -8,6 +8,7 @@ import { applyFirewallPolicyToSandbox } from "@/server/firewall/policy";
 import { logError, logInfo, logWarn } from "@/server/log";
 import { setupOpenClaw } from "@/server/openclaw/bootstrap";
 import {
+  buildForcePairScript,
   buildGatewayConfig,
   buildImageGenScript,
   buildImageGenSkill,
@@ -15,6 +16,7 @@ import {
   OPENCLAW_BUILTIN_IMAGE_GEN_SCRIPT_PATH,
   OPENCLAW_BUILTIN_IMAGE_GEN_SKILL_PATH,
   OPENCLAW_CONFIG_PATH,
+  OPENCLAW_FORCE_PAIR_SCRIPT_PATH,
   OPENCLAW_IMAGE_GEN_SCRIPT_PATH,
   OPENCLAW_IMAGE_GEN_SKILL_PATH,
   OPENCLAW_STARTUP_SCRIPT_PATH,
@@ -496,12 +498,16 @@ async function restoreSandboxFromSnapshot(origin: string): Promise<SingleMeta> {
       ]);
     }
 
-    // Re-write config and skill files so snapshots taken before code
-    // changes still get the latest gateway config and skills.
+    // Re-write config, skill files, and force-pair script so snapshots
+    // taken before code changes still get the latest versions.
     await sandbox.writeFiles([
       {
         path: OPENCLAW_CONFIG_PATH,
         content: Buffer.from(buildGatewayConfig(freshApiKey, origin)),
+      },
+      {
+        path: OPENCLAW_FORCE_PAIR_SCRIPT_PATH,
+        content: Buffer.from(buildForcePairScript()),
       },
       {
         path: OPENCLAW_IMAGE_GEN_SKILL_PATH,
@@ -527,6 +533,17 @@ async function restoreSandboxFromSnapshot(origin: string): Promise<SingleMeta> {
     if (restoreResult.exitCode !== 0) {
       const output = await restoreResult.output("both");
       throw new Error(`Restore startup script failed: ${output.slice(0, 500)}`);
+    }
+
+    // Force-pair the device identity so the gateway doesn't require
+    // manual pairing after restore (the startup script clears paired.json).
+    try {
+      await sandbox.runCommand("node", [
+        OPENCLAW_FORCE_PAIR_SCRIPT_PATH,
+        OPENCLAW_STATE_DIR,
+      ]);
+    } catch {
+      // Best-effort only — matches setupOpenClaw behavior.
     }
 
     const next = await mutateMeta((meta) => {

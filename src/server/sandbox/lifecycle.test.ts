@@ -30,6 +30,7 @@ import {
 import { _setAiGatewayTokenOverrideForTesting } from "@/server/env";
 import {
   OPENCLAW_CONFIG_PATH,
+  OPENCLAW_FORCE_PAIR_SCRIPT_PATH,
   OPENCLAW_IMAGE_GEN_SKILL_PATH,
   OPENCLAW_IMAGE_GEN_SCRIPT_PATH,
   OPENCLAW_BUILTIN_IMAGE_GEN_SKILL_PATH,
@@ -631,7 +632,7 @@ async function triggerRestore(
   }
 }
 
-test("restoreSandboxFromSnapshot writes config, image-gen-skill, image-gen-script, builtin-image-gen-skill, builtin-image-gen-script (5 files via writeFiles)", async () => {
+test("restoreSandboxFromSnapshot writes config, force-pair, image-gen-skill, image-gen-script, builtin-image-gen-skill, builtin-image-gen-script (6 files via writeFiles)", async () => {
   const fake = new FakeSandboxController();
   const originalFetch = globalThis.fetch;
 
@@ -653,11 +654,12 @@ test("restoreSandboxFromSnapshot writes config, image-gen-skill, image-gen-scrip
 
       const writtenPaths = handle.writtenFiles.map((f) => f.path);
       assert.ok(writtenPaths.includes(OPENCLAW_CONFIG_PATH), "Should write config");
+      assert.ok(writtenPaths.includes(OPENCLAW_FORCE_PAIR_SCRIPT_PATH), "Should write force-pair script");
       assert.ok(writtenPaths.includes(OPENCLAW_IMAGE_GEN_SKILL_PATH), "Should write image-gen skill");
       assert.ok(writtenPaths.includes(OPENCLAW_IMAGE_GEN_SCRIPT_PATH), "Should write image-gen script");
       assert.ok(writtenPaths.includes(OPENCLAW_BUILTIN_IMAGE_GEN_SKILL_PATH), "Should write builtin image-gen skill");
       assert.ok(writtenPaths.includes(OPENCLAW_BUILTIN_IMAGE_GEN_SCRIPT_PATH), "Should write builtin image-gen script");
-      assert.equal(handle.writtenFiles.length, 5, "Should write exactly 5 files");
+      assert.equal(handle.writtenFiles.length, 6, "Should write exactly 6 files");
     } finally {
       globalThis.fetch = originalFetch;
     }
