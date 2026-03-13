@@ -290,8 +290,9 @@ test("full-smoke: complete lifecycle with channels, firewall, and proxy", async 
 
       // Verify controller events
       const snapshotEvents = h.controller.eventsOfKind("snapshot");
-      assert.equal(snapshotEvents.length, 1, "One snapshot event");
+      assert.equal(snapshotEvents.length, 2, "Bootstrap auto-snapshot plus stop snapshot should be recorded");
       assert.equal(snapshotEvents[0]!.sandboxId, sandboxId);
+      assert.equal(snapshotEvents[1]!.sandboxId, sandboxId);
 
       // Verify the handle's snapshot was called
       const handle = h.controller.getHandle(sandboxId);
@@ -522,8 +523,8 @@ test("full-smoke: complete lifecycle with channels, firewall, and proxy", async 
 
       assert.deepEqual(
         lifecycleEvents,
-        ["create", "snapshot", "restore"],
-        "Lifecycle sequence should be: create → snapshot → restore",
+        ["create", "snapshot", "snapshot", "restore"],
+        "Lifecycle sequence should be: create → bootstrap snapshot → stop snapshot → restore",
       );
 
       // --- Timestamps are monotonically non-decreasing ---
@@ -592,11 +593,11 @@ test("full-smoke: complete lifecycle with channels, firewall, and proxy", async 
       assert.deepStrictEqual(reshapedMeta.firewall.allowlist, meta.firewall.allowlist, "Allowlist preserved");
       assert.equal(reshapedMeta.snapshotHistory.length, meta.snapshotHistory.length, "Snapshot history length preserved");
 
-      // --- Snapshot history is ordered by timestamp (ascending) ---
+      // --- Snapshot history is ordered by recency (descending/newest first) ---
       for (let i = 1; i < meta.snapshotHistory.length; i++) {
         assert.ok(
-          meta.snapshotHistory[i]!.timestamp >= meta.snapshotHistory[i - 1]!.timestamp,
-          `Snapshot history[${i}] timestamp should be >= history[${i - 1}]`,
+          meta.snapshotHistory[i - 1]!.timestamp >= meta.snapshotHistory[i]!.timestamp,
+          `Snapshot history[${i - 1}] timestamp should be >= history[${i}]`,
         );
       }
 
