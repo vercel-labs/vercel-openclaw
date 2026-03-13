@@ -67,19 +67,53 @@ export function AdminShell({
     }
   }, []);
 
+  const ingestFirewallLearning = useCallback(async () => {
+    try {
+      const response = await fetch("/api/firewall/ingest", {
+        method: "POST",
+        cache: "no-store",
+        headers: {
+          accept: "application/json",
+          "x-requested-with": "XMLHttpRequest",
+        },
+      });
+
+      if (response.status === 401) {
+        const payload = (await response.json()) as UnauthorizedPayload;
+        setStatus(null);
+        setAuthorizeUrl(
+          payload.authorizeUrl ?? "/api/auth/authorize?next=/admin",
+        );
+      }
+    } catch {
+      // Best-effort background ingest; status refresh below handles visible errors.
+    }
+  }, []);
+
+  const shouldPollFirewallIngest =
+    status?.firewall.mode === "learning" && status.status === "running";
+
+  const pollStatus = useCallback(async () => {
+    if (shouldPollFirewallIngest) {
+      await ingestFirewallLearning();
+    }
+
+    await refresh();
+  }, [ingestFirewallLearning, refresh, shouldPollFirewallIngest]);
+
   useEffect(() => {
     startTransition(() => {
-      void refresh();
+      void pollStatus();
     });
 
     const interval = window.setInterval(() => {
-      void refresh();
+      void pollStatus();
     }, 5000);
 
     return () => {
       window.clearInterval(interval);
     };
-  }, [refresh]);
+  }, [pollStatus]);
 
   async function requestJson<T>(
     action: string,
