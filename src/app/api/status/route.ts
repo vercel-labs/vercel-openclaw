@@ -2,7 +2,7 @@ import { requireRouteAuth } from "@/server/auth/vercel-auth";
 import { verifyCsrf } from "@/server/auth/csrf";
 import { getPublicChannelState } from "@/server/channels/state";
 import { getAuthMode } from "@/server/env";
-import { ingestLearningFromSandbox } from "@/server/firewall/state";
+import { computeWouldBlock } from "@/server/firewall/state";
 import { extractRequestId, logError } from "@/server/log";
 import { probeGatewayReady, touchRunningSandbox } from "@/server/sandbox/lifecycle";
 import { getStore, getInitializedMeta } from "@/server/store/store";
@@ -19,7 +19,6 @@ export async function GET(request: Request): Promise<Response> {
   try {
     const url = new URL(request.url);
     const includeHealth = url.searchParams.get("health") === "1";
-    await ingestLearningFromSandbox();
     const meta = await getInitializedMeta();
     const gatewayReady =
       meta.status === "running"
@@ -40,7 +39,7 @@ export async function GET(request: Request): Promise<Response> {
       gatewayReady,
       gatewayUrl: "/gateway",
       lastError: meta.lastError,
-      firewall: meta.firewall,
+      firewall: { ...meta.firewall, wouldBlock: computeWouldBlock(meta.firewall) },
       channels: await getPublicChannelState(request, meta),
       user: auth.session.user,
     });

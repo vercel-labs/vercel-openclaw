@@ -1,13 +1,12 @@
-import { jsonError } from "@/shared/http";
+import { ApiError, jsonError } from "@/shared/http";
 import { isFirewallMode } from "@/shared/types";
 import { verifyCsrf } from "@/server/auth/csrf";
 import { requireRouteAuth } from "@/server/auth/vercel-auth";
 import {
   getFirewallState,
-  ingestLearningFromSandbox,
   setFirewallMode,
-  syncFirewallPolicyIfRunning,
 } from "@/server/firewall/state";
+import { extractRequestId } from "@/server/log";
 
 export async function GET(request: Request): Promise<Response> {
   const auth = await requireRouteAuth(request, { mode: "json" });
@@ -15,7 +14,6 @@ export async function GET(request: Request): Promise<Response> {
     return auth;
   }
 
-  await ingestLearningFromSandbox();
   const firewall = await getFirewallState();
   const response = Response.json(firewall);
   if (auth.setCookieHeader) {
@@ -34,17 +32,14 @@ export async function PUT(request: Request): Promise<Response> {
   }
 
   try {
+    const requestId = extractRequestId(request);
     const body = (await request.json()) as { mode?: unknown };
     if (!isFirewallMode(body.mode)) {
-      throw new Error("Invalid firewall mode.");
+      throw new ApiError(400, "INVALID_MODE", "Invalid firewall mode.");
     }
 
-    const firewall = await setFirewallMode(body.mode);
-    const policy = await syncFirewallPolicyIfRunning();
-    const response = Response.json({
-      firewall,
-      policy,
-    });
+    const firewall = await setFirewallMode(body.mode, { requestId });
+    const response = Response.json({ firewall });
     if (auth.setCookieHeader) {
       response.headers.append("Set-Cookie", auth.setCookieHeader);
     }

@@ -20,7 +20,7 @@ import {
   callRoute,
   buildPostRequest,
   getSlackWebhookRoute,
-  drainAfterCallbacks,
+  resetAfterCallbacks,
 } from "@/test-utils/route-caller";
 
 const SLACK_SIGNING_SECRET = "test-slack-signing-secret-direct";
@@ -108,7 +108,7 @@ test("Slack webhook: valid event enqueues job and returns 200", async () => {
     assert.equal(result.status, 200);
     const body = result.json as { ok: boolean };
     assert.equal(body.ok, true);
-    await drainAfterCallbacks();
+    resetAfterCallbacks();
   });
 });
 
@@ -136,7 +136,7 @@ test("Slack webhook: duplicate event_id is deduplicated", async () => {
     const req1 = buildSlackWebhook({ signingSecret: SLACK_SIGNING_SECRET, payload });
     const result1 = await callRoute(route.POST, req1);
     assert.equal(result1.status, 200);
-    await drainAfterCallbacks();
+    resetAfterCallbacks();
 
     // Second request with same event_id — should be deduped
     const req2 = buildSlackWebhook({ signingSecret: SLACK_SIGNING_SECRET, payload });

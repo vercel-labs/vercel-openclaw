@@ -20,7 +20,7 @@ import {
   callRoute,
   buildPostRequest,
   getDiscordWebhookRoute,
-  drainAfterCallbacks,
+  resetAfterCallbacks,
 } from "@/test-utils/route-caller";
 
 const discordKeys = generateDiscordKeyPair();
@@ -116,7 +116,7 @@ test("Discord webhook: valid interaction enqueues job and returns type 5", async
     });
     const result = await callRoute(route.POST, req);
     assert.ok(result.status === 200 || result.status === 201);
-    await drainAfterCallbacks();
+    resetAfterCallbacks();
   });
 });
 
@@ -149,7 +149,7 @@ test("Discord webhook: duplicate interaction is deduplicated", async () => {
     });
     const result1 = await callRoute(route.POST, req1);
     assert.ok(result1.status === 200 || result1.status === 201);
-    await drainAfterCallbacks();
+    resetAfterCallbacks();
 
     const req2 = buildDiscordWebhook({
       privateKey: discordKeys.privateKey,

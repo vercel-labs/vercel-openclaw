@@ -59,6 +59,20 @@ test("admin/snapshots/restore POST: empty snapshotId returns 400", async () => {
   });
 });
 
+test("admin/snapshots/restore POST: invalid JSON returns 400", async () => {
+  await withHarness(async () => {
+    const route = getAdminRestoreRoute();
+    const req = buildPostRequest("/api/admin/snapshots/restore", "not-json", {
+      origin: "http://localhost:3000",
+      "x-requested-with": "XMLHttpRequest",
+    });
+    const result = await callRoute(route.POST, req);
+    assert.equal(result.status, 400);
+    const body = result.json as { error: string };
+    assert.equal(body.error, "INVALID_JSON");
+  });
+});
+
 test("admin/snapshots/restore POST: unknown snapshotId returns 404", async () => {
   await withHarness(async () => {
     const route = getAdminRestoreRoute();
@@ -91,6 +105,35 @@ test("admin/snapshots/restore POST: restores known snapshot", async () => {
     assert.ok(result.status === 200 || result.status === 202);
     const body = result.json as { snapshotId: string; status: string; state: string };
     assert.equal(body.snapshotId, snapshotId);
+    await drainAfterCallbacks();
+  });
+});
+
+test("admin/snapshots/restore POST: restores snapshot from history", async () => {
+  await withHarness(async (h) => {
+    await h.mutateMeta((meta) => {
+      meta.status = "stopped";
+      meta.snapshotId = "snap-current";
+      meta.snapshotHistory = [
+        {
+          id: "hist-1",
+          snapshotId: "snap-from-history",
+          timestamp: Date.now() - 1_000,
+          reason: "scheduled",
+        },
+      ];
+    });
+
+    const route = getAdminRestoreRoute();
+    const result = await callAdminPost(
+      route.POST,
+      "/api/admin/snapshots/restore",
+      JSON.stringify({ snapshotId: "snap-from-history" }),
+    );
+
+    assert.ok(result.status === 200 || result.status === 202);
+    const body = result.json as { snapshotId: string; state: string };
+    assert.equal(body.snapshotId, "snap-from-history");
     await drainAfterCallbacks();
   });
 });

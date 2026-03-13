@@ -5,18 +5,23 @@ import type { NetworkPolicy } from "@vercel/sandbox";
 
 import { ApiError } from "@/shared/http";
 import type { SingleMeta } from "@/shared/types";
+import { DOMAIN_PRESETS, computePolicyHash, ensureMetaShape } from "@/shared/types";
 import {
   approveDomains,
+  computeWouldBlock,
+  dismissLearnedDomains,
   getFirewallState,
   ingestLearningFromSandbox,
   promoteLearnedDomainsToEnforcing,
   removeDomains,
   setFirewallMode,
+  syncFirewallPolicyIfRunning,
 } from "@/server/firewall/state";
 import { toNetworkPolicy } from "@/server/firewall/policy";
 import { _setSandboxControllerForTesting } from "@/server/sandbox/controller";
 import type { SandboxController, SandboxHandle } from "@/server/sandbox/controller";
 import { _resetStoreForTesting, mutateMeta } from "@/server/store/store";
+import { getServerLogs, _resetLogBuffer } from "@/server/log";
 
 async function withFirewallTestStore(fn: () => Promise<void>): Promise<void> {
   const overrides: Record<string, string | undefined> = {
@@ -49,6 +54,7 @@ async function withFirewallTestStore(fn: () => Promise<void>): Promise<void> {
       }
     }
     _resetStoreForTesting();
+    _resetLogBuffer();
   }
 }
 
@@ -538,6 +544,91 @@ test("setFirewallMode to enforcing with empty allowlist throws 409", async () =>
 // Domain merge: ingesting same domain multiple times increments hitCount
 // ===========================================================================
 
+test("learning ingestion: enriches events with sourceCommand and category, and learned domains with categories", async () => {
+  await withFirewallTestStore(async () => {
+    const shellLog = [
+      "curl https://api.openai.com/v1/chat/completions",
+      "npm http fetch GET 200 https://registry.npmjs.org/typescript 50ms",
+    ].join("\n");
+
+    const ctrl = installSucceedingSandboxController({ shellLog });
+    try {
+      await prepareRunningSandbox((meta) => {
+        meta.firewall.mode = "learning";
+      });
+
+      const result = await ingestLearningFromSandbox(true);
+      assert.equal(result.ingested, true);
+
+      const fw = await getFirewallState();
+
+      // Verify events carry sourceCommand and category
+      const curlEvent = fw.events.find(
+        (e) => e.domain === "api.openai.com" && e.action === "domain_observed",
+      );
+      assert.ok(curlEvent, "Expected domain_observed event for api.openai.com");
+      assert.equal(curlEvent.category, "curl");
+      assert.ok(curlEvent.sourceCommand?.includes("curl"));
+
+      const npmEvent = fw.events.find(
+        (e) => e.domain === "registry.npmjs.org" && e.action === "domain_observed",
+      );
+      assert.ok(npmEvent, "Expected domain_observed event for registry.npmjs.org");
+      assert.equal(npmEvent.category, "npm");
+
+      // Verify learned domains carry categories
+      const openaiLearned = fw.learned.find((l) => l.domain === "api.openai.com");
+      assert.ok(openaiLearned);
+      assert.ok(openaiLearned.categories?.includes("curl"));
+
+      const npmLearned = fw.learned.find((l) => l.domain === "registry.npmjs.org");
+      assert.ok(npmLearned);
+      assert.ok(npmLearned.categories?.includes("npm"));
+    } finally {
+      ctrl.restore();
+    }
+  });
+});
+
+test("learning ingestion: caps learned list at 500 entries", async () => {
+  await withFirewallTestStore(async () => {
+    // Pre-fill with 499 learned domains so ingesting 2 more exceeds the 500 cap
+    const existing = Array.from({ length: 499 }, (_, i) => ({
+      domain: `d${String(i).padStart(4, "0")}.example.com`,
+      firstSeenAt: 1000,
+      lastSeenAt: 2000,
+      hitCount: 1,
+    }));
+
+    const shellLog = [
+      "curl https://new-a.example.com/api",
+      "curl https://new-b.example.com/api",
+    ].join("\n");
+
+    const ctrl = installSucceedingSandboxController({ shellLog });
+    try {
+      await prepareRunningSandbox((meta) => {
+        meta.firewall.mode = "learning";
+        meta.firewall.learned = existing;
+      });
+
+      const result = await ingestLearningFromSandbox(true);
+      assert.equal(result.ingested, true);
+
+      const fw = await getFirewallState();
+      // 499 existing + 2 new = 501 → capped at 500
+      assert.equal(fw.learned.length, 500);
+
+      // New domains should be present (sorted by lastSeenAt desc, newest first)
+      const learnedDomains = fw.learned.map((e) => e.domain);
+      assert.ok(learnedDomains.includes("new-a.example.com"));
+      assert.ok(learnedDomains.includes("new-b.example.com"));
+    } finally {
+      ctrl.restore();
+    }
+  });
+});
+
 test("learning ingestion: re-ingesting same domain increments hitCount", async () => {
   await withFirewallTestStore(async () => {
     const shellLog = "curl https://api.openai.com/v1/chat";
@@ -568,4 +659,873 @@ test("learning ingestion: re-ingesting same domain increments hitCount", async (
       ctrl.restore();
     }
   });
+});
+
+// ===========================================================================
+// wouldBlock computation tests
+// ===========================================================================
+
+test("computeWouldBlock: returns learned domains not in allowlist when mode is learning", () => {
+  const state = {
+    mode: "learning" as const,
+    allowlist: ["api.openai.com"],
+    learned: [
+      { domain: "api.openai.com", firstSeenAt: 1, lastSeenAt: 2, hitCount: 1 },
+      { domain: "cdn.vercel.com", firstSeenAt: 1, lastSeenAt: 2, hitCount: 1 },
+      { domain: "registry.npmjs.org", firstSeenAt: 1, lastSeenAt: 2, hitCount: 1 },
+    ],
+    events: [],
+    updatedAt: 0,
+    lastIngestedAt: null,
+    learningStartedAt: null,
+    commandsObserved: 0,
+    wouldBlock: [],
+    lastSyncAppliedAt: null,
+    lastSyncFailedAt: null,
+    lastSyncReason: null,
+    lastIngestionSkipReason: null,
+    ingestionSkipCount: 0,
+    lastIngestOutcome: null,
+    lastSyncOutcome: null,
+  };
+
+  const result = computeWouldBlock(state);
+  assert.deepEqual(result, ["cdn.vercel.com", "registry.npmjs.org"]);
+});
+
+test("computeWouldBlock: returns empty array when mode is disabled", () => {
+  const state = {
+    mode: "disabled" as const,
+    allowlist: [],
+    learned: [
+      { domain: "cdn.vercel.com", firstSeenAt: 1, lastSeenAt: 2, hitCount: 1 },
+    ],
+    events: [],
+    updatedAt: 0,
+    lastIngestedAt: null,
+    learningStartedAt: null,
+    commandsObserved: 0,
+    wouldBlock: [],
+    lastSyncAppliedAt: null,
+    lastSyncFailedAt: null,
+    lastSyncReason: null,
+    lastIngestionSkipReason: null,
+    ingestionSkipCount: 0,
+    lastIngestOutcome: null,
+    lastSyncOutcome: null,
+  };
+
+  assert.deepEqual(computeWouldBlock(state), []);
+});
+
+test("computeWouldBlock: returns empty array when mode is enforcing", () => {
+  const state = {
+    mode: "enforcing" as const,
+    allowlist: ["api.openai.com"],
+    learned: [],
+    events: [],
+    updatedAt: 0,
+    lastIngestedAt: null,
+    learningStartedAt: null,
+    commandsObserved: 0,
+    wouldBlock: [],
+    lastSyncAppliedAt: null,
+    lastSyncFailedAt: null,
+    lastSyncReason: null,
+    lastIngestionSkipReason: null,
+    ingestionSkipCount: 0,
+    lastIngestOutcome: null,
+    lastSyncOutcome: null,
+  };
+
+  assert.deepEqual(computeWouldBlock(state), []);
+});
+
+test("computeWouldBlock: returns empty when all learned domains are in allowlist", () => {
+  const state = {
+    mode: "learning" as const,
+    allowlist: ["api.openai.com", "cdn.vercel.com"],
+    learned: [
+      { domain: "api.openai.com", firstSeenAt: 1, lastSeenAt: 2, hitCount: 1 },
+      { domain: "cdn.vercel.com", firstSeenAt: 1, lastSeenAt: 2, hitCount: 1 },
+    ],
+    events: [],
+    updatedAt: 0,
+    lastIngestedAt: null,
+    learningStartedAt: null,
+    commandsObserved: 0,
+    wouldBlock: [],
+    lastSyncAppliedAt: null,
+    lastSyncFailedAt: null,
+    lastSyncReason: null,
+    lastIngestionSkipReason: null,
+    ingestionSkipCount: 0,
+    lastIngestOutcome: null,
+    lastSyncOutcome: null,
+  };
+
+  assert.deepEqual(computeWouldBlock(state), []);
+});
+
+test("getFirewallState: includes wouldBlock in response during learning", async () => {
+  await withFirewallTestStore(async () => {
+    await mutateMeta((meta) => {
+      meta.firewall.mode = "learning";
+      meta.firewall.allowlist = ["api.openai.com"];
+      meta.firewall.learned = [
+        { domain: "api.openai.com", firstSeenAt: 1, lastSeenAt: 2, hitCount: 1 },
+        { domain: "cdn.vercel.com", firstSeenAt: 1, lastSeenAt: 2, hitCount: 3 },
+      ];
+    });
+
+    const fw = await getFirewallState();
+    assert.deepEqual(fw.wouldBlock, ["cdn.vercel.com"]);
+  });
+});
+
+test("getFirewallState: wouldBlock is empty when mode is disabled", async () => {
+  await withFirewallTestStore(async () => {
+    await mutateMeta((meta) => {
+      meta.firewall.learned = [
+        { domain: "cdn.vercel.com", firstSeenAt: 1, lastSeenAt: 2, hitCount: 1 },
+      ];
+    });
+
+    const fw = await getFirewallState();
+    assert.deepEqual(fw.wouldBlock, []);
+  });
+});
+
+// ===========================================================================
+// Soak-time tracking tests
+// ===========================================================================
+
+test("setFirewallMode('learning') sets learningStartedAt and resets commandsObserved", async () => {
+  await withFirewallTestStore(async () => {
+    const ctrl = installSucceedingSandboxController();
+    try {
+      await prepareRunningSandbox((meta) => {
+        meta.firewall.commandsObserved = 42;
+        meta.firewall.learningStartedAt = 1000;
+      });
+
+      const before = Date.now();
+      const fw = await setFirewallMode("learning");
+
+      assert.equal(fw.mode, "learning");
+      assert.equal(fw.commandsObserved, 0);
+      assert.ok(
+        fw.learningStartedAt !== null && fw.learningStartedAt >= before,
+        "learningStartedAt should be set to current time",
+      );
+    } finally {
+      ctrl.restore();
+    }
+  });
+});
+
+test("setFirewallMode('disabled') does not reset learningStartedAt", async () => {
+  await withFirewallTestStore(async () => {
+    const ctrl = installSucceedingSandboxController();
+    try {
+      await prepareRunningSandbox((meta) => {
+        meta.firewall.mode = "learning";
+        meta.firewall.learningStartedAt = 5000;
+        meta.firewall.commandsObserved = 10;
+      });
+
+      const fw = await setFirewallMode("disabled");
+      assert.equal(fw.mode, "disabled");
+      // learningStartedAt and commandsObserved are preserved (not reset) when leaving learning
+      assert.equal(fw.learningStartedAt, 5000);
+      assert.equal(fw.commandsObserved, 10);
+    } finally {
+      ctrl.restore();
+    }
+  });
+});
+
+test("ingestLearningFromSandbox increments commandsObserved by number of log lines", async () => {
+  await withFirewallTestStore(async () => {
+    const shellLog = [
+      "curl https://api.openai.com/v1/chat",
+      "npm http fetch GET 200 https://registry.npmjs.org/express",
+      "some other command without a domain",
+    ].join("\n");
+
+    const ctrl = installSucceedingSandboxController({ shellLog });
+    try {
+      await prepareRunningSandbox((meta) => {
+        meta.firewall.mode = "learning";
+        meta.firewall.commandsObserved = 5;
+      });
+
+      await ingestLearningFromSandbox(true);
+
+      const fw = await getFirewallState();
+      // 5 existing + 3 log lines = 8
+      assert.equal(fw.commandsObserved, 8);
+    } finally {
+      ctrl.restore();
+    }
+  });
+});
+
+test("ingestLearningFromSandbox increments commandsObserved even when no domains are found", async () => {
+  await withFirewallTestStore(async () => {
+    const shellLog = "ls -la\necho hello";
+    const ctrl = installSucceedingSandboxController({ shellLog });
+    try {
+      await prepareRunningSandbox((meta) => {
+        meta.firewall.mode = "learning";
+        meta.firewall.commandsObserved = 0;
+      });
+
+      await ingestLearningFromSandbox(true);
+
+      const fw = await getFirewallState();
+      assert.equal(fw.commandsObserved, 2);
+    } finally {
+      ctrl.restore();
+    }
+  });
+});
+
+// ===========================================================================
+// DOMAIN_PRESETS tests
+// ===========================================================================
+
+test("DOMAIN_PRESETS contains at least 4 presets with non-empty domain lists", () => {
+  const keys = Object.keys(DOMAIN_PRESETS);
+  assert.ok(keys.length >= 4, `Expected ≥4 presets, got ${keys.length}`);
+  for (const key of keys) {
+    const preset = DOMAIN_PRESETS[key];
+    assert.ok(preset.label.length > 0, `Preset ${key} should have a label`);
+    assert.ok(preset.domains.length > 0, `Preset ${key} should have at least one domain`);
+    for (const domain of preset.domains) {
+      assert.ok(domain.includes("."), `Domain ${domain} in preset ${key} should be a valid hostname`);
+    }
+  }
+});
+
+test("DOMAIN_PRESETS domains can be approved via approveDomains", async () => {
+  await withFirewallTestStore(async () => {
+    const fw = await approveDomains(DOMAIN_PRESETS.npm.domains);
+    for (const domain of DOMAIN_PRESETS.npm.domains) {
+      assert.ok(fw.allowlist.includes(domain), `Expected ${domain} in allowlist`);
+    }
+  });
+});
+
+// ===========================================================================
+// ensureMetaShape migration tests for new fields
+// ===========================================================================
+
+test("ensureMetaShape: migrates metadata missing learningStartedAt and commandsObserved", () => {
+  const old = {
+    _schemaVersion: 1,
+    version: 1,
+    id: "openclaw-single",
+    sandboxId: null,
+    snapshotId: null,
+    status: "running",
+    gatewayToken: "tok",
+    createdAt: 1000,
+    updatedAt: 2000,
+    lastAccessedAt: null,
+    portUrls: null,
+    startupScript: null,
+    lastError: null,
+    firewall: {
+      mode: "learning",
+      allowlist: ["example.com"],
+      learned: [],
+      events: [],
+      updatedAt: 1000,
+      lastIngestedAt: null,
+      // No learningStartedAt or commandsObserved
+    },
+    lastTokenRefreshAt: null,
+    channels: {},
+    snapshotHistory: [],
+  };
+
+  const result = ensureMetaShape(old);
+  assert.ok(result);
+  assert.equal(result.firewall.learningStartedAt, null);
+  assert.equal(result.firewall.commandsObserved, 0);
+});
+
+// ===========================================================================
+// Same-mode idempotency tests
+// ===========================================================================
+
+test("setFirewallMode is a no-op when requested mode equals current mode", async () => {
+  await withFirewallTestStore(async () => {
+    const ctrl = installSucceedingSandboxController();
+    try {
+      await prepareRunningSandbox((meta) => {
+        meta.firewall.mode = "learning";
+        meta.firewall.learningStartedAt = 5000;
+        meta.firewall.commandsObserved = 42;
+        meta.firewall.updatedAt = 9000;
+      });
+
+      const fw = await setFirewallMode("learning");
+
+      // Mode unchanged, learning counters preserved (not reset)
+      assert.equal(fw.mode, "learning");
+      assert.equal(fw.learningStartedAt, 5000);
+      assert.equal(fw.commandsObserved, 42);
+
+      // No sync should have been triggered
+      assert.equal(ctrl.appliedPolicies.length, 0);
+    } finally {
+      ctrl.restore();
+    }
+  });
+});
+
+test("setFirewallMode is a no-op for disabled → disabled", async () => {
+  await withFirewallTestStore(async () => {
+    const ctrl = installSucceedingSandboxController();
+    try {
+      await prepareRunningSandbox(); // default mode is disabled
+
+      const fw = await setFirewallMode("disabled");
+      assert.equal(fw.mode, "disabled");
+      assert.equal(ctrl.appliedPolicies.length, 0);
+    } finally {
+      ctrl.restore();
+    }
+  });
+});
+
+// ===========================================================================
+// Single sync per mode change (no double sync)
+// ===========================================================================
+
+test("setFirewallMode syncs sandbox policy exactly once per mode change", async () => {
+  await withFirewallTestStore(async () => {
+    const ctrl = installSucceedingSandboxController();
+    try {
+      await prepareRunningSandbox();
+
+      await setFirewallMode("learning");
+      assert.equal(ctrl.appliedPolicies.length, 1, "Expected exactly 1 sync for mode change");
+
+      // Same mode again — no additional sync
+      await setFirewallMode("learning");
+      assert.equal(ctrl.appliedPolicies.length, 1, "Expected no additional sync for same-mode no-op");
+    } finally {
+      ctrl.restore();
+    }
+  });
+});
+
+// ===========================================================================
+// removeDomains rejects emptying allowlist while enforcing
+// ===========================================================================
+
+test("removeDomains rejects with 409 when removal would empty allowlist while enforcing", async () => {
+  await withFirewallTestStore(async () => {
+    await mutateMeta((meta) => {
+      meta.firewall.mode = "enforcing";
+      meta.firewall.allowlist = ["api.openai.com"];
+    });
+
+    await assert.rejects(
+      removeDomains(["api.openai.com"]),
+      (error: unknown) => {
+        assert.ok(error instanceof ApiError);
+        assert.equal(error.status, 409);
+        assert.equal(error.code, "FIREWALL_ALLOWLIST_EMPTY");
+        return true;
+      },
+    );
+
+    // Allowlist should be unchanged
+    const fw = await getFirewallState();
+    assert.deepEqual(fw.allowlist, ["api.openai.com"]);
+  });
+});
+
+test("removeDomains allows partial removal while enforcing (non-empty result)", async () => {
+  await withFirewallTestStore(async () => {
+    await mutateMeta((meta) => {
+      meta.firewall.mode = "enforcing";
+      meta.firewall.allowlist = ["api.openai.com", "vercel.com"];
+    });
+
+    const fw = await removeDomains(["api.openai.com"]);
+    assert.deepEqual(fw.allowlist, ["vercel.com"]);
+  });
+});
+
+test("removeDomains allows emptying allowlist when mode is not enforcing", async () => {
+  await withFirewallTestStore(async () => {
+    await mutateMeta((meta) => {
+      meta.firewall.mode = "learning";
+      meta.firewall.allowlist = ["api.openai.com"];
+    });
+
+    const fw = await removeDomains(["api.openai.com"]);
+    assert.deepEqual(fw.allowlist, []);
+  });
+});
+
+// ===========================================================================
+// computeWouldBlock deduplicates learned domains
+// ===========================================================================
+
+test("computeWouldBlock deduplicates when learned list contains duplicate domain entries", () => {
+  const state = {
+    mode: "learning" as const,
+    allowlist: [],
+    learned: [
+      { domain: "cdn.vercel.com", firstSeenAt: 1, lastSeenAt: 2, hitCount: 1 },
+      { domain: "cdn.vercel.com", firstSeenAt: 3, lastSeenAt: 4, hitCount: 2 },
+      { domain: "api.openai.com", firstSeenAt: 1, lastSeenAt: 2, hitCount: 1 },
+    ],
+    events: [],
+    updatedAt: 0,
+    lastIngestedAt: null,
+    learningStartedAt: null,
+    commandsObserved: 0,
+    wouldBlock: [],
+    lastSyncAppliedAt: null,
+    lastSyncFailedAt: null,
+    lastSyncReason: null,
+    lastIngestionSkipReason: null,
+    ingestionSkipCount: 0,
+    lastIngestOutcome: null,
+    lastSyncOutcome: null,
+  };
+
+  const result = computeWouldBlock(state);
+  assert.deepEqual(result, ["api.openai.com", "cdn.vercel.com"]);
+});
+
+test("ensureMetaShape: preserves existing learningStartedAt and commandsObserved", () => {
+  const existing = {
+    _schemaVersion: 2,
+    version: 1,
+    id: "openclaw-single",
+    sandboxId: null,
+    snapshotId: null,
+    status: "running",
+    gatewayToken: "tok",
+    createdAt: 1000,
+    updatedAt: 2000,
+    lastAccessedAt: null,
+    portUrls: null,
+    startupScript: null,
+    lastError: null,
+    firewall: {
+      mode: "learning",
+      allowlist: [],
+      learned: [],
+      events: [],
+      updatedAt: 1000,
+      lastIngestedAt: null,
+      learningStartedAt: 5000,
+      commandsObserved: 42,
+    },
+    lastTokenRefreshAt: null,
+    channels: {},
+    snapshotHistory: [],
+  };
+
+  const result = ensureMetaShape(existing);
+  assert.ok(result);
+  assert.equal(result.firewall.learningStartedAt, 5000);
+  assert.equal(result.firewall.commandsObserved, 42);
+});
+
+// ===========================================================================
+// Structured logging: logWarn before ApiError throws
+// ===========================================================================
+
+test("setFirewallMode to enforcing with empty allowlist emits logWarn before throwing", async () => {
+  await withFirewallTestStore(async () => {
+    _resetLogBuffer();
+    await assert.rejects(
+      setFirewallMode("enforcing"),
+      (error: unknown) => {
+        assert.ok(error instanceof ApiError);
+        assert.equal(error.code, "FIREWALL_ALLOWLIST_EMPTY");
+        return true;
+      },
+    );
+
+    const logs = getServerLogs();
+    const warnLog = logs.find(
+      (e) => e.level === "warn" && e.data?.code === "FIREWALL_ALLOWLIST_EMPTY",
+    );
+    assert.ok(warnLog, "Expected logWarn with FIREWALL_ALLOWLIST_EMPTY before throw");
+    assert.equal(warnLog.message, "firewall.mode_change_failed");
+  });
+});
+
+test("approveDomains with invalid domains emits logWarn before throwing", async () => {
+  await withFirewallTestStore(async () => {
+    _resetLogBuffer();
+    await assert.rejects(
+      approveDomains(["not-valid"]),
+      (error: unknown) => {
+        assert.ok(error instanceof ApiError);
+        assert.equal(error.code, "INVALID_DOMAINS");
+        return true;
+      },
+    );
+
+    const logs = getServerLogs();
+    const warnLog = logs.find(
+      (e) => e.level === "warn" && e.data?.code === "INVALID_DOMAINS",
+    );
+    assert.ok(warnLog, "Expected logWarn with INVALID_DOMAINS before throw");
+  });
+});
+
+test("removeDomains with invalid domains emits logWarn before throwing", async () => {
+  await withFirewallTestStore(async () => {
+    _resetLogBuffer();
+    await assert.rejects(
+      removeDomains(["not-valid"]),
+      (error: unknown) => {
+        assert.ok(error instanceof ApiError);
+        assert.equal(error.code, "INVALID_DOMAINS");
+        return true;
+      },
+    );
+
+    const logs = getServerLogs();
+    const warnLog = logs.find(
+      (e) => e.level === "warn" && e.data?.code === "INVALID_DOMAINS",
+    );
+    assert.ok(warnLog, "Expected logWarn with INVALID_DOMAINS before throw");
+  });
+});
+
+test("removeDomains emptying allowlist while enforcing emits logWarn before throwing", async () => {
+  await withFirewallTestStore(async () => {
+    await mutateMeta((meta) => {
+      meta.firewall.mode = "enforcing";
+      meta.firewall.allowlist = ["api.openai.com"];
+    });
+
+    _resetLogBuffer();
+    await assert.rejects(
+      removeDomains(["api.openai.com"]),
+      (error: unknown) => {
+        assert.ok(error instanceof ApiError);
+        assert.equal(error.code, "FIREWALL_ALLOWLIST_EMPTY");
+        return true;
+      },
+    );
+
+    const logs = getServerLogs();
+    const warnLog = logs.find(
+      (e) => e.level === "warn" && e.data?.code === "FIREWALL_ALLOWLIST_EMPTY",
+    );
+    assert.ok(warnLog, "Expected logWarn with FIREWALL_ALLOWLIST_EMPTY before throw");
+  });
+});
+
+test("dismissLearnedDomains with invalid domains emits logWarn before throwing", async () => {
+  await withFirewallTestStore(async () => {
+    _resetLogBuffer();
+    await assert.rejects(
+      dismissLearnedDomains(["not-valid"]),
+      (error: unknown) => {
+        assert.ok(error instanceof ApiError);
+        assert.equal(error.code, "INVALID_DOMAINS");
+        return true;
+      },
+    );
+
+    const logs = getServerLogs();
+    const warnLog = logs.find(
+      (e) => e.level === "warn" && e.data?.code === "INVALID_DOMAINS",
+    );
+    assert.ok(warnLog, "Expected logWarn with INVALID_DOMAINS before throw");
+  });
+});
+
+// ===========================================================================
+// Structured logging: ingestion skip reasons
+// ===========================================================================
+
+test("ingestLearningFromSandbox emits logInfo with skip reason when mode is not learning", async () => {
+  await withFirewallTestStore(async () => {
+    const ctrl = installSucceedingSandboxController();
+    try {
+      await prepareRunningSandbox(); // mode = disabled
+
+      _resetLogBuffer();
+      await ingestLearningFromSandbox(true);
+
+      const logs = getServerLogs();
+      const skipLog = logs.find(
+        (e) => e.message === "firewall.ingest_skipped" && e.data?.reason === "mode-not-learning",
+      );
+      assert.ok(skipLog, "Expected logInfo with reason 'mode-not-learning'");
+    } finally {
+      ctrl.restore();
+    }
+  });
+});
+
+test("ingestLearningFromSandbox emits logInfo with skip reason when sandbox is not running", async () => {
+  await withFirewallTestStore(async () => {
+    await mutateMeta((meta) => {
+      meta.firewall.mode = "learning";
+      meta.status = "stopped";
+    });
+
+    _resetLogBuffer();
+    await ingestLearningFromSandbox(true);
+
+    const logs = getServerLogs();
+    const skipLog = logs.find(
+      (e) => e.message === "firewall.ingest_skipped" && e.data?.reason === "sandbox-not-running",
+    );
+    assert.ok(skipLog, "Expected logInfo with reason 'sandbox-not-running'");
+  });
+});
+
+// ===========================================================================
+// Request correlation: requestId passed through mutation functions
+// ===========================================================================
+
+test("setFirewallMode includes requestId in log entries", async () => {
+  await withFirewallTestStore(async () => {
+    _resetLogBuffer();
+    await setFirewallMode("learning", { requestId: "req-abc-123" });
+
+    const logs = getServerLogs();
+    const modeChangeLog = logs.find(
+      (e) => e.message === "firewall.mode_change_started" && e.data?.requestId === "req-abc-123",
+    );
+    assert.ok(modeChangeLog, "Expected firewall.mode_change_started log with requestId");
+  });
+});
+
+// ===========================================================================
+// FirewallIngestOutcome and FirewallSyncOutcome
+// ===========================================================================
+
+test("computePolicyHash: deterministic — same inputs produce same hash", () => {
+  const h1 = computePolicyHash("enforcing", ["b.com", "a.com"]);
+  const h2 = computePolicyHash("enforcing", ["a.com", "b.com"]);
+  assert.equal(h1, h2, "Hash must be deterministic regardless of allowlist order");
+  assert.equal(h1.length, 64, "SHA-256 hex should be 64 chars");
+});
+
+test("computePolicyHash: different mode produces different hash", () => {
+  const h1 = computePolicyHash("enforcing", ["a.com"]);
+  const h2 = computePolicyHash("disabled", ["a.com"]);
+  assert.notEqual(h1, h2, "Different modes must produce different hashes");
+});
+
+test("computePolicyHash: different allowlist produces different hash", () => {
+  const h1 = computePolicyHash("enforcing", ["a.com"]);
+  const h2 = computePolicyHash("enforcing", ["a.com", "b.com"]);
+  assert.notEqual(h1, h2, "Different allowlists must produce different hashes");
+});
+
+test("syncFirewallPolicyIfRunning returns FirewallSyncOutcome with policyHash", async () => {
+  await withFirewallTestStore(async () => {
+    const ctrl = installSucceedingSandboxController();
+    try {
+      await prepareRunningSandbox();
+      const outcome = await syncFirewallPolicyIfRunning();
+      assert.equal(typeof outcome.timestamp, "number");
+      assert.equal(typeof outcome.durationMs, "number");
+      assert.equal(typeof outcome.allowlistCount, "number");
+      assert.equal(typeof outcome.policyHash, "string");
+      assert.equal(outcome.policyHash.length, 64);
+      assert.equal(typeof outcome.applied, "boolean");
+      assert.equal(typeof outcome.reason, "string");
+    } finally {
+      ctrl.restore();
+    }
+  });
+});
+
+test("syncFirewallPolicyIfRunning persists lastSyncOutcome in metadata", async () => {
+  await withFirewallTestStore(async () => {
+    const ctrl = installSucceedingSandboxController();
+    try {
+      await prepareRunningSandbox();
+      await syncFirewallPolicyIfRunning();
+      const state = await getFirewallState();
+      assert.ok(state.lastSyncOutcome, "lastSyncOutcome should be persisted");
+      assert.equal(state.lastSyncOutcome.applied, true);
+      assert.equal(state.lastSyncOutcome.reason, "policy-applied");
+      assert.equal(state.lastSyncOutcome.policyHash.length, 64);
+    } finally {
+      ctrl.restore();
+    }
+  });
+});
+
+test("ingestLearningFromSandbox returns FirewallIngestOutcome with timing", async () => {
+  await withFirewallTestStore(async () => {
+    // Mode not learning — should return skip outcome
+    const ctrl = installSucceedingSandboxController();
+    try {
+      await prepareRunningSandbox(); // mode = disabled
+      const result = await ingestLearningFromSandbox(true);
+      const outcome = result.outcome;
+      assert.equal(typeof outcome.timestamp, "number");
+      assert.equal(typeof outcome.durationMs, "number");
+      assert.equal(outcome.domainsSeenCount, 0);
+      assert.equal(outcome.newCount, 0);
+      assert.equal(outcome.updatedCount, 0);
+      assert.equal(outcome.skipReason, "mode-not-learning");
+    } finally {
+      ctrl.restore();
+    }
+  });
+});
+
+test("ingestLearningFromSandbox persists lastIngestOutcome in metadata", async () => {
+  await withFirewallTestStore(async () => {
+    const ctrl = installSucceedingSandboxController();
+    try {
+      await prepareRunningSandbox();
+      await ingestLearningFromSandbox(true);
+      const state = await getFirewallState();
+      assert.ok(state.lastIngestOutcome, "lastIngestOutcome should be persisted");
+      assert.equal(state.lastIngestOutcome.skipReason, "mode-not-learning");
+    } finally {
+      ctrl.restore();
+    }
+  });
+});
+
+test("ensureMetaShape: migrates old metadata without lastIngestOutcome/lastSyncOutcome", () => {
+  const existing = {
+    _schemaVersion: 2,
+    version: 1,
+    id: "openclaw-single",
+    sandboxId: null,
+    snapshotId: null,
+    status: "running",
+    gatewayToken: "tok",
+    createdAt: 1000,
+    updatedAt: 2000,
+    lastAccessedAt: null,
+    portUrls: null,
+    startupScript: null,
+    lastError: null,
+    firewall: {
+      mode: "learning",
+      allowlist: [],
+      learned: [],
+      events: [],
+      updatedAt: 1000,
+      lastIngestedAt: null,
+      learningStartedAt: 5000,
+      commandsObserved: 42,
+      // No lastIngestOutcome or lastSyncOutcome — simulates old data
+    },
+    lastTokenRefreshAt: null,
+    channels: {},
+    snapshotHistory: [],
+  };
+
+  const result = ensureMetaShape(existing);
+  assert.ok(result);
+  assert.equal(result.firewall.lastIngestOutcome, null);
+  assert.equal(result.firewall.lastSyncOutcome, null);
+});
+
+test("ensureMetaShape: is idempotent — running twice produces identical output", () => {
+  const existing = {
+    _schemaVersion: 2,
+    version: 1,
+    id: "openclaw-single",
+    sandboxId: null,
+    snapshotId: null,
+    status: "running",
+    gatewayToken: "tok",
+    createdAt: 1000,
+    updatedAt: 2000,
+    lastAccessedAt: null,
+    portUrls: null,
+    startupScript: null,
+    lastError: null,
+    firewall: {
+      mode: "disabled",
+      allowlist: ["a.com"],
+      learned: [],
+      events: [],
+      updatedAt: 1000,
+      lastIngestedAt: null,
+    },
+    lastTokenRefreshAt: null,
+    channels: {},
+    snapshotHistory: [],
+  };
+
+  const first = ensureMetaShape(existing);
+  assert.ok(first);
+  const second = ensureMetaShape(first);
+  assert.ok(second);
+  assert.deepEqual(first, second, "ensureMetaShape must be idempotent");
+});
+
+test("ensureMetaShape: preserves valid FirewallIngestOutcome and FirewallSyncOutcome", () => {
+  const ingestOutcome = {
+    timestamp: 1000,
+    durationMs: 50,
+    domainsSeenCount: 3,
+    newCount: 2,
+    updatedCount: 1,
+    skipReason: null,
+  };
+  const syncOutcome = {
+    timestamp: 2000,
+    durationMs: 100,
+    allowlistCount: 5,
+    policyHash: "a".repeat(64),
+    applied: true,
+    reason: "policy-applied",
+  };
+
+  const existing = {
+    _schemaVersion: 2,
+    version: 1,
+    id: "openclaw-single",
+    sandboxId: null,
+    snapshotId: null,
+    status: "running",
+    gatewayToken: "tok",
+    createdAt: 1000,
+    updatedAt: 2000,
+    lastAccessedAt: null,
+    portUrls: null,
+    startupScript: null,
+    lastError: null,
+    firewall: {
+      mode: "disabled",
+      allowlist: [],
+      learned: [],
+      events: [],
+      updatedAt: 1000,
+      lastIngestedAt: null,
+      lastIngestOutcome: ingestOutcome,
+      lastSyncOutcome: syncOutcome,
+    },
+    lastTokenRefreshAt: null,
+    channels: {},
+    snapshotHistory: [],
+  };
+
+  const result = ensureMetaShape(existing);
+  assert.ok(result);
+  assert.deepEqual(result.firewall.lastIngestOutcome, ingestOutcome);
+  assert.deepEqual(result.firewall.lastSyncOutcome, syncOutcome);
 });

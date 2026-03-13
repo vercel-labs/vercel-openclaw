@@ -39,6 +39,22 @@ export function ChannelsPanel({
 }: ChannelsPanelProps) {
   const [summary, setSummary] = useState<ChannelSummary | null>(null);
 
+  useEffect(() => {
+    let active = true;
+    fetch("/api/channels/summary", {
+      cache: "no-store",
+      headers: { accept: "application/json" },
+    })
+      .then((res) => (res.ok ? (res.json() as Promise<ChannelSummary>) : null))
+      .then((data) => {
+        if (active && data) setSummary(data);
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, []);
+
   const fetchSummary = useCallback(async () => {
     try {
       const res = await fetch("/api/channels/summary", {
@@ -52,10 +68,6 @@ export function ChannelsPanel({
       // Best-effort
     }
   }, []);
-
-  useEffect(() => {
-    void fetchSummary();
-  }, [fetchSummary]);
 
   const totalQueue =
     (summary?.slack.queueDepth ?? 0) +

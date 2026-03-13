@@ -21,6 +21,7 @@ function parseLogLine(line: string, index: number): LogEntry | null {
       ts?: string;
       level?: string;
       msg?: string;
+      source?: string;
       ctx?: Record<string, unknown>;
     };
 
@@ -32,7 +33,7 @@ function parseLogLine(line: string, index: number): LogEntry | null {
       id: `log-${parsed.ts ?? index}-${index}`,
       timestamp: parsed.ts ? new Date(parsed.ts).getTime() : Date.now(),
       level,
-      source: normalizeSource(parsed.ctx?.source),
+      source: normalizeSource(parsed.source ?? parsed.ctx?.source),
       message: parsed.msg ?? trimmed,
       ...(data ? { data } : {}),
     };

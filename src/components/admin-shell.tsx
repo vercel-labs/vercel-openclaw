@@ -25,8 +25,12 @@ const TABS = [
   { id: "snapshots", label: "Snapshots" },
 ] as const;
 
-export function AdminShell() {
-  const [status, setStatus] = useState<StatusPayload | null>(null);
+export function AdminShell({
+  initialStatus = null,
+}: {
+  initialStatus?: StatusPayload | null;
+}) {
+  const [status, setStatus] = useState<StatusPayload | null>(initialStatus);
   const [authorizeUrl, setAuthorizeUrl] = useState(
     "/api/auth/authorize?next=/admin",
   );

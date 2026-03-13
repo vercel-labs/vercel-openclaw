@@ -21,6 +21,12 @@ import {
 } from "@/server/store/store";
 import { _setSandboxControllerForTesting } from "@/server/sandbox/controller";
 import type { ExtractedChannelMessage, PlatformAdapter } from "@/server/channels/core/types";
+import { RetryableSendError } from "@/server/channels/core/types";
+import {
+  withHarness,
+  type ScenarioHarness,
+} from "@/test-utils/harness";
+import { chatCompletionsResponse } from "@/test-utils/fake-fetch";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -431,6 +437,419 @@ test("[drain] job with nextAttemptAt in the past -> processed, not parked", asyn
     // The adapter's extractMessage should have been called (job was processed)
     assert.equal(extractMessageCalled, true);
     // Queues should be empty after processing
+    assert.equal(await store.getQueueLength(channelQueueKey(channel)), 0);
+    assert.equal(await store.getQueueLength(channelProcessingKey(channel)), 0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Retry semantics: RetryableChannelError triggers retry, permanent does not
+// ---------------------------------------------------------------------------
+
+test("[drain] retryable error (TimeoutError) -> job requeued in processing, not dead-lettered", async () => {
+  await withEnv(TEST_ENV, async () => {
+    const channel: ChannelName = "slack";
+    const store = getStore();
+
+    await enqueueChannelJob(channel, createJob());
+
+    await drainChannelQueue({
+      channel,
+      getConfig: () => ({ configured: true }),
+      createAdapter: () => ({
+        extractMessage: () => {
+          const err = new Error("request timed out");
+          err.name = "TimeoutError";
+          throw err;
+        },
+        sendReply: async () => {},
+      }),
+    });
+
+    // Main queue should be empty (job was leased)
+    assert.equal(await store.getQueueLength(channelQueueKey(channel)), 0);
+    // Processing queue should have the retried job (parked with future visibility)
+    assert.ok(
+      (await store.getQueueLength(channelProcessingKey(channel))) >= 1,
+      "Retried job should be parked in processing queue",
+    );
+    // Dead letter should be empty (not a permanent failure)
+    const dlEntry = await store.dequeue(channelDeadLetterKey(channel));
+    assert.equal(dlEntry, null, "Should NOT be dead-lettered on retryable error");
+  });
+});
+
+test("[drain] RetryableSendError triggers retry, not dead-letter", async () => {
+  await withEnv(TEST_ENV, async () => {
+    const channel: ChannelName = "telegram";
+    const store = getStore();
+
+    await enqueueChannelJob(channel, createJob());
+
+    await drainChannelQueue({
+      channel,
+      getConfig: () => ({ configured: true }),
+      createAdapter: () => ({
+        extractMessage: () => {
+          throw new RetryableSendError("platform_rate_limited", {
+            retryAfterSeconds: 30,
+          });
+        },
+        sendReply: async () => {},
+      }),
+    });
+
+    // Processing queue should hold the retried job
+    assert.ok(
+      (await store.getQueueLength(channelProcessingKey(channel))) >= 1,
+      "Retried job should be parked in processing queue",
+    );
+    // Dead letter should be empty
+    const dlEntry = await store.dequeue(channelDeadLetterKey(channel));
+    assert.equal(dlEntry, null, "RetryableSendError should not dead-letter");
+  });
+});
+
+test("[drain] permanent error (plain Error) -> dead-lettered immediately, no retry", async () => {
+  await withEnv(TEST_ENV, async () => {
+    const channel: ChannelName = "discord";
+    const store = getStore();
+
+    await enqueueChannelJob(channel, createJob());
+
+    await drainChannelQueue({
+      channel,
+      getConfig: () => ({ configured: true }),
+      createAdapter: () => ({
+        extractMessage: () => {
+          throw new Error("permanent_auth_failure");
+        },
+        sendReply: async () => {},
+      }),
+    });
+
+    // Both queues should be empty (job acked after dead-letter)
+    assert.equal(await store.getQueueLength(channelQueueKey(channel)), 0);
+    assert.equal(await store.getQueueLength(channelProcessingKey(channel)), 0);
+    // Dead letter should have exactly 1 entry
+    const dlEntry = await store.dequeue(channelDeadLetterKey(channel));
+    assert.ok(dlEntry, "Permanent error should produce a dead-letter entry");
+    const parsed = JSON.parse(dlEntry);
+    assert.match(parsed.error, /permanent_auth_failure/);
+    assert.equal(parsed.channel, channel);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Exponential backoff: retry delays double up to 5min cap
+// ---------------------------------------------------------------------------
+
+test("[drain] exponential backoff: retry delays double, capped at 5 minutes", async () => {
+  // Base delay = 1000ms, so:
+  //   retry 1 (previousRetryCount=0): 1000 * 2^0 = 1000ms
+  //   retry 2 (previousRetryCount=1): 1000 * 2^1 = 2000ms
+  //   retry 3 (previousRetryCount=2): 1000 * 2^2 = 4000ms
+  //   ...
+  //   retry 8 (previousRetryCount=7): 1000 * 2^7 = 128000ms
+
+  const expectedDelays = [1000, 2000, 4000, 8000, 16000, 32000, 64000, 128000];
+
+  for (let round = 0; round < expectedDelays.length; round++) {
+    await withEnv(TEST_ENV, async () => {
+      const channel: ChannelName = "slack";
+
+      const job = createJob({ retryCount: round });
+      // Set nextAttemptAt to the past so the job is eligible for processing
+      if (round > 0) {
+        job.nextAttemptAt = Date.now() - 1000;
+      }
+
+      await enqueueChannelJob(channel, job);
+      const beforeDrain = Date.now();
+
+      await drainChannelQueue({
+        channel,
+        getConfig: () => ({ configured: true }),
+        createAdapter: () => ({
+          extractMessage: () => {
+            const err = new Error("fetch failed");
+            throw err;
+          },
+          sendReply: async () => {},
+        }),
+      });
+
+      const store = getStore();
+
+      // The job should be retried (parked in processing queue)
+      const processingLen = await store.getQueueLength(channelProcessingKey(channel));
+      assert.ok(processingLen >= 1, `Round ${round}: job should be in processing queue`);
+
+      // Dequeue the processing entry to inspect the parked lease
+      const rawLease = await store.dequeue(channelProcessingKey(channel));
+      assert.ok(rawLease, `Round ${round}: should have a processing entry`);
+
+      const lease = JSON.parse(rawLease);
+      const innerJob = JSON.parse(lease.job);
+      const actualDelay = innerJob.nextAttemptAt - beforeDrain;
+
+      // Allow 500ms tolerance for Date.now() drift during test execution
+      assert.ok(
+        Math.abs(actualDelay - expectedDelays[round]) < 500,
+        `Round ${round}: expected ~${expectedDelays[round]}ms delay, got ${actualDelay}ms`,
+      );
+      assert.equal(innerJob.retryCount, round + 1);
+    });
+  }
+});
+
+test("[drain] backoff caps at 5 minutes (300000ms)", async () => {
+  await withEnv(TEST_ENV, async () => {
+    const channel: ChannelName = "slack";
+    const store = getStore();
+
+    // retryCount=7 means previousRetryCount will be 7, giving 2^7 * 1000 = 128000ms
+    // retryCount=8 would exceed max retries so test with retryCount=7
+    // to verify the cap we need previousRetryCount >= 9: 2^9 * 1000 = 512000 → capped at 300000
+    // But MAX_RETRY_COUNT is 8, so the highest we can reach is previousRetryCount=7 (retryCount=7→8)
+    // Let's verify with a very high previousRetryCount if the formula was different
+    // Actually the cap matters for retryAfterSeconds too. Let's test with retryAfterSeconds > 5min
+    // Since RetryableSendError supports retryAfterSeconds, we can test the cap that way.
+
+    const job = createJob({ retryCount: 0 });
+    await enqueueChannelJob(channel, job);
+    const beforeDrain = Date.now();
+
+    await drainChannelQueue({
+      channel,
+      getConfig: () => ({ configured: true }),
+      createAdapter: () => ({
+        extractMessage: () => {
+          // retryAfterSeconds of 600 (10 min) should be capped to 5 min
+          throw new RetryableSendError("rate_limited", {
+            retryAfterSeconds: 600,
+          });
+        },
+        sendReply: async () => {},
+      }),
+    });
+
+    const rawLease = await store.dequeue(channelProcessingKey(channel));
+    assert.ok(rawLease);
+    const lease = JSON.parse(rawLease);
+    const innerJob = JSON.parse(lease.job);
+    const actualDelay = innerJob.nextAttemptAt - beforeDrain;
+
+    // Should be capped at 300000ms (5 minutes), with some tolerance
+    assert.ok(
+      actualDelay <= 300_500,
+      `Delay should be capped at ~300000ms, got ${actualDelay}ms`,
+    );
+    assert.ok(
+      actualDelay >= 299_500,
+      `Delay should be at least ~300000ms (cap), got ${actualDelay}ms`,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Max 8 retries then dead-letter
+// ---------------------------------------------------------------------------
+
+test("[drain] max 8 retries exhausted -> dead-lettered on next retryable error", async () => {
+  await withEnv(TEST_ENV, async () => {
+    const channel: ChannelName = "slack";
+    const store = getStore();
+
+    // Seed a job that has already been retried 8 times (the max)
+    const job = createJob({
+      retryCount: 8,
+      nextAttemptAt: Date.now() - 1000, // eligible for processing
+    });
+    await enqueueChannelJob(channel, job);
+
+    await drainChannelQueue({
+      channel,
+      getConfig: () => ({ configured: true }),
+      createAdapter: () => ({
+        extractMessage: () => {
+          // This is a retryable error, but retries are exhausted
+          const err = new Error("fetch failed");
+          throw err;
+        },
+        sendReply: async () => {},
+      }),
+    });
+
+    // Both queues should be empty
+    assert.equal(await store.getQueueLength(channelQueueKey(channel)), 0);
+    assert.equal(await store.getQueueLength(channelProcessingKey(channel)), 0);
+
+    // Dead letter should have exactly 1 entry
+    const dlEntry = await store.dequeue(channelDeadLetterKey(channel));
+    assert.ok(dlEntry, "Exhausted retries should produce a dead-letter entry");
+    const parsed = JSON.parse(dlEntry);
+    assert.equal(parsed.channel, channel);
+    assert.match(parsed.error, /fetch failed/);
+
+    // No second dead-letter entry
+    assert.equal(await store.dequeue(channelDeadLetterKey(channel)), null);
+  });
+});
+
+test("[drain] retryCount 7 still retries (not exhausted yet)", async () => {
+  await withEnv(TEST_ENV, async () => {
+    const channel: ChannelName = "telegram";
+    const store = getStore();
+
+    const job = createJob({
+      retryCount: 7,
+      nextAttemptAt: Date.now() - 1000,
+    });
+    await enqueueChannelJob(channel, job);
+
+    await drainChannelQueue({
+      channel,
+      getConfig: () => ({ configured: true }),
+      createAdapter: () => ({
+        extractMessage: () => {
+          const err = new Error("fetch failed");
+          throw err;
+        },
+        sendReply: async () => {},
+      }),
+    });
+
+    // Should be retried (in processing queue), NOT dead-lettered
+    assert.ok(
+      (await store.getQueueLength(channelProcessingKey(channel))) >= 1,
+      "RetryCount 7 should still retry",
+    );
+    assert.equal(
+      await store.dequeue(channelDeadLetterKey(channel)),
+      null,
+      "Should not be dead-lettered at retryCount 7",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Job dedup: same dedup key within visibility window is skipped
+// ---------------------------------------------------------------------------
+
+test("[enqueue] same dedup key within TTL window -> second job skipped", async () => {
+  await withEnv(TEST_ENV, async () => {
+    const channel: ChannelName = "slack";
+
+    // First enqueue succeeds
+    await enqueueChannelJob(channel, createJob({ dedupId: "dedup-window-test" }));
+    assert.equal(await getChannelQueueDepth(channel), 1);
+
+    // Second enqueue with same dedupId within the TTL window -> skipped
+    await enqueueChannelJob(channel, createJob({
+      payload: { text: "different payload" },
+      dedupId: "dedup-window-test",
+      receivedAt: Date.now() + 1000,
+    }));
+    assert.equal(await getChannelQueueDepth(channel), 1, "Duplicate should be skipped");
+
+    // Different dedupId -> accepted
+    await enqueueChannelJob(channel, createJob({ dedupId: "different-key" }));
+    assert.equal(await getChannelQueueDepth(channel), 2, "Different key should be accepted");
+  });
+});
+
+test("[enqueue] payload-based dedup: identical payloads deduped, different payloads accepted", async () => {
+  await withEnv(TEST_ENV, async () => {
+    const channel: ChannelName = "discord";
+
+    await enqueueChannelJob(channel, createJob({ payload: { text: "same" } }));
+    await enqueueChannelJob(channel, createJob({ payload: { text: "same" } }));
+    assert.equal(await getChannelQueueDepth(channel), 1, "Same payload should dedup");
+
+    await enqueueChannelJob(channel, createJob({ payload: { text: "different" } }));
+    assert.equal(await getChannelQueueDepth(channel), 2, "Different payload should not dedup");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Sandbox restore triggered when sandbox not running during drain
+// ---------------------------------------------------------------------------
+
+test("[drain] sandbox restore triggered when sandbox not running", async () => {
+  await withHarness(async (h) => {
+    const channel: ChannelName = "slack";
+
+    // Configure slack channel
+    await h.mutateMeta((meta) => {
+      meta.channels.slack = {
+        signingSecret: "test-signing-secret",
+        botToken: "xoxb-test-bot-token",
+        configuredAt: Date.now(),
+      };
+    });
+
+    // Install gateway handlers so the full processing path works
+    h.installDefaultGatewayHandlers("test reply from restored sandbox");
+
+    // Drive sandbox to running first, then stop it
+    await h.driveToRunning();
+    const snapshotId = await h.stopToSnapshot();
+
+    const meta = await h.getMeta();
+    assert.equal(meta.status, "stopped");
+    assert.ok(snapshotId);
+
+    // Enqueue a job while sandbox is stopped
+    await enqueueChannelJob(channel, createJob());
+
+    // Install the gateway ready handler for the restore flow
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = h.fakeFetch.fetch;
+
+    try {
+      await drainChannelQueue<
+        { signingSecret: string; botToken: string; configuredAt: number },
+        { text: string },
+        ExtractedChannelMessage
+      >({
+        channel,
+        getConfig: (m) => m.channels.slack,
+        createAdapter: () => ({
+          extractMessage: (payload: { text: string }) => ({
+            kind: "message" as const,
+            message: { text: payload.text },
+          }),
+          sendReply: async () => {},
+          getSessionKey: () => "test-session",
+        }),
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+
+    // Verify that sandbox was restored (a new sandbox was created from snapshot)
+    const postDrainMeta = await h.getMeta();
+    assert.equal(postDrainMeta.status, "running", "Sandbox should be running after drain restore");
+
+    // Verify a restore event occurred (create from snapshot)
+    const restoreEvents = h.controller.eventsOfKind("restore");
+    assert.ok(
+      restoreEvents.length >= 1,
+      "At least one restore event should have occurred",
+    );
+
+    // Verify the gateway was called (message was forwarded)
+    const gatewayRequests = h.fakeFetch
+      .requests()
+      .filter((r) => r.url.includes("/v1/chat/completions"));
+    assert.ok(
+      gatewayRequests.length >= 1,
+      "Gateway should have been called after restore",
+    );
+
+    // Queue should be drained
+    const store = h.getStore();
     assert.equal(await store.getQueueLength(channelQueueKey(channel)), 0);
     assert.equal(await store.getQueueLength(channelProcessingKey(channel)), 0);
   });

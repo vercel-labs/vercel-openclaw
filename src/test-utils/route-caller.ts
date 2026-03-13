@@ -25,13 +25,26 @@ export function capturedAfter(callback: AfterCallback): void {
 
 /**
  * Execute all captured `after()` callbacks in order,
- * then clear the queue. Throws if any callback throws.
+ * then clear the queue.
+ *
+ * Each callback is raced against a timeout (default 10 s).
+ * Timed-out callbacks are detached — their unhandled rejections
+ * are suppressed and the timer is `unref`'d so it cannot prevent
+ * the process from exiting.  This mirrors the best-effort
+ * semantics of the real `after()` in production.
  */
-export async function drainAfterCallbacks(): Promise<void> {
+export async function drainAfterCallbacks(timeoutMs = 10_000): Promise<void> {
   const callbacks = [...pendingAfterCallbacks];
   pendingAfterCallbacks = [];
   for (const cb of callbacks) {
-    await cb();
+    const result = Promise.resolve(cb());
+    const timeout = new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, timeoutMs);
+      timer.unref();
+    });
+    await Promise.race([result, timeout]);
+    // Suppress unhandled rejection from any detached callback.
+    result.catch(() => {});
   }
 }
 
@@ -263,9 +276,12 @@ let _adminSshRoute: SimpleRouteModule | null = null;
 let _adminSnapshotsRoute: SimpleRouteModule | null = null;
 let _adminLogsRoute: SimpleRouteModule | null = null;
 let _firewallRoute: SimpleRouteModule | null = null;
+let _firewallDiagnosticsRoute: SimpleRouteModule | null = null;
 let _firewallTestRoute: SimpleRouteModule | null = null;
 let _firewallAllowlistRoute: SimpleRouteModule | null = null;
 let _firewallPromoteRoute: SimpleRouteModule | null = null;
+let _firewallLearnedRoute: SimpleRouteModule | null = null;
+let _firewallReportRoute: SimpleRouteModule | null = null;
 let _cronDrainRoute: SimpleRouteModule | null = null;
 let _channelsSummaryRoute: SimpleRouteModule | null = null;
 let _authAuthorizeRoute: SimpleRouteModule | null = null;
@@ -335,6 +351,15 @@ export function getFirewallRoute(): SimpleRouteModule {
   return _firewallRoute;
 }
 
+export function getFirewallDiagnosticsRoute(): SimpleRouteModule {
+  if (!_firewallDiagnosticsRoute) {
+    patchNextServerAfter();
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    _firewallDiagnosticsRoute = require("@/app/api/firewall/diagnostics/route") as SimpleRouteModule;
+  }
+  return _firewallDiagnosticsRoute;
+}
+
 export function getFirewallTestRoute(): SimpleRouteModule {
   if (!_firewallTestRoute) {
     patchNextServerAfter();
@@ -369,6 +394,24 @@ export function getFirewallAllowlistRoute(): SimpleRouteModule {
     _firewallAllowlistRoute = require("@/app/api/firewall/allowlist/route") as SimpleRouteModule;
   }
   return _firewallAllowlistRoute;
+}
+
+export function getFirewallLearnedRoute(): SimpleRouteModule {
+  if (!_firewallLearnedRoute) {
+    patchNextServerAfter();
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    _firewallLearnedRoute = require("@/app/api/firewall/learned/route") as SimpleRouteModule;
+  }
+  return _firewallLearnedRoute;
+}
+
+export function getFirewallReportRoute(): SimpleRouteModule {
+  if (!_firewallReportRoute) {
+    patchNextServerAfter();
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    _firewallReportRoute = require("@/app/api/firewall/report/route") as SimpleRouteModule;
+  }
+  return _firewallReportRoute;
 }
 
 export function getFirewallPromoteRoute(): SimpleRouteModule {

@@ -1,6 +1,16 @@
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { ConfirmDialog, useConfirm } from "@/components/ui/confirm-dialog";
-import type { StatusPayload, RunAction, RequestJson } from "@/components/admin-types";
+import type { StatusPayload, RunAction, RequestJson, LearnedDomain, FirewallReportPayload } from "@/components/admin-types";
+import type { LogEntry, LogLevel } from "@/shared/types";
+import { DOMAIN_PRESETS } from "@/shared/types";
+import {
+  computeEventCategoryCounts,
+  filterEventsByCategory,
+  isZeroMatchFilter,
+  computePageCount,
+  clampPage,
+  paginateItems,
+} from "./firewall-panel.helpers";
 
 type BlockTestResult = {
   allowed: boolean;
@@ -28,13 +38,157 @@ export function FirewallPanel({
   const [testDomain, setTestDomain] = useState("");
   const [testResult, setTestResult] = useState<BlockTestResult | null>(null);
   const [testLoading, setTestLoading] = useState(false);
+  const [learnedSearch, setLearnedSearch] = useState("");
+  const [wouldBlockOpen, setWouldBlockOpen] = useState(false);
+  const [logsOpen, setLogsOpen] = useState(false);
+  const [firewallLogs, setFirewallLogs] = useState<LogEntry[]>([]);
+  const [logsLoading, setLogsLoading] = useState(false);
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+  const [eventPage, setEventPage] = useState(0);
+  const [eventCategoryFilter, setEventCategoryFilter] = useState<string | null>(null);
+  const [report, setReport] = useState<FirewallReportPayload | null>(null);
+  const [syncIndicator, setSyncIndicator] = useState<{ ok: boolean; reason?: string } | null>(null);
+  const [limitationsOpen, setLimitationsOpen] = useState(false);
   const { confirm: confirmPromote, dialogProps: promoteDialogProps } = useConfirm();
   const { confirm: confirmRemove, dialogProps: removeDialogProps } = useConfirm();
+  const { confirm: confirmDismiss, dialogProps: dismissDialogProps } = useConfirm();
 
-  const sortedEvents = useMemo(
-    () => status.firewall.events.slice(0, 8),
-    [status.firewall.events],
+  const fetchReport = useCallback(async () => {
+    try {
+      const res = await fetch("/api/firewall/report", {
+        cache: "no-store",
+        headers: { accept: "application/json" },
+      });
+      if (res.ok) {
+        setReport(await res.json() as FirewallReportPayload);
+      }
+    } catch {
+      // Best-effort — report is non-critical, panel falls back to status data
+    }
+  }, []);
+
+  // Fetch report alongside status refreshes
+  useEffect(() => {
+    void fetchReport();
+  }, [status.firewall.updatedAt, fetchReport]);
+
+  // Derive firewall data from report when available, fall back to status
+  const fw = report?.state ?? status.firewall;
+  const diagnostics = report?.diagnostics ?? null;
+  const groupedLearned = report?.groupedLearned ?? null;
+
+  const fetchFirewallLogs = useCallback(async () => {
+    setLogsLoading(true);
+    try {
+      const res = await fetch("/api/admin/logs?source=firewall", {
+        cache: "no-store",
+        headers: { accept: "application/json" },
+      });
+      if (res.ok) {
+        const data = (await res.json()) as { logs: LogEntry[] };
+        setFirewallLogs(data.logs);
+      }
+    } catch {
+      // Best-effort — logs are non-critical
+    } finally {
+      setLogsLoading(false);
+    }
+  }, []);
+
+  // Fetch firewall logs when section is opened and on each refresh cycle
+  useEffect(() => {
+    if (logsOpen) {
+      void fetchFirewallLogs();
+    }
+  }, [logsOpen, status.firewall.updatedAt, fetchFirewallLogs]);
+
+  const eventCategoryCounts = useMemo(
+    () => computeEventCategoryCounts(fw.events),
+    [fw.events],
   );
+
+  const filteredEvents = useMemo(
+    () => filterEventsByCategory(fw.events, eventCategoryFilter),
+    [fw.events, eventCategoryFilter],
+  );
+
+  const eventPageCount = computePageCount(filteredEvents.length);
+  const clampedPage = clampPage(eventPage, eventPageCount);
+  const paginatedEvents = paginateItems(filteredEvents, eventPage);
+
+  const filteredLearned = useMemo(() => {
+    const query = learnedSearch.trim().toLowerCase();
+    if (!query) return fw.learned;
+    return fw.learned.filter(
+      (entry) =>
+        entry.domain.toLowerCase().includes(query) ||
+        (entry.categories ?? []).some((c) => c.toLowerCase().includes(query)),
+    );
+  }, [fw.learned, learnedSearch]);
+
+  // Use server-grouped data when available, else fall back to client-side grouping
+  const learnedGroups = useMemo(() => {
+    if (groupedLearned && !learnedSearch.trim()) {
+      return groupedLearned;
+    }
+    // Client-side grouping for filtered results
+    return clientGroupByRegistrableDomain(filteredLearned);
+  }, [groupedLearned, filteredLearned, learnedSearch]);
+
+  function toggleGroup(key: string): void {
+    setExpandedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
+  }
+
+  /** Wrap a firewall mutation: run the action, then re-fetch report to check sync status. */
+  async function runFirewallMutation(
+    action: string,
+    input: Parameters<RunAction>[1],
+  ): Promise<void> {
+    setSyncIndicator(null);
+    await runAction(action, input);
+    // After the mutation completes and status refreshes, fetch fresh report
+    try {
+      const res = await fetch("/api/firewall/report", {
+        cache: "no-store",
+        headers: { accept: "application/json" },
+      });
+      if (res.ok) {
+        const freshReport = (await res.json()) as FirewallReportPayload;
+        setReport(freshReport);
+        const sync = freshReport.diagnostics.syncStatus;
+        if (sync.lastAppliedAt && sync.lastReason) {
+          const applied = sync.lastAppliedAt;
+          const failed = sync.lastFailedAt ?? 0;
+          if (applied >= failed) {
+            setSyncIndicator({ ok: true });
+          } else {
+            setSyncIndicator({ ok: false, reason: sync.lastReason ?? undefined });
+          }
+        } else if (sync.lastFailedAt) {
+          setSyncIndicator({ ok: false, reason: sync.lastReason ?? undefined });
+        }
+      }
+    } catch {
+      // Best-effort
+    }
+  }
+
+  async function approveMultipleDomains(domains: string[]): Promise<void> {
+    await runFirewallMutation("/api/firewall/allowlist", {
+      label: `Approve ${domains.length} domains`,
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ domains }),
+    });
+  }
 
   async function handleBlockTest(): Promise<void> {
     const domain = testDomain.trim();
@@ -64,7 +218,7 @@ export function FirewallPanel({
       .filter(Boolean);
     if (domains.length === 0) return;
 
-    await runAction("/api/firewall/allowlist", {
+    await runFirewallMutation("/api/firewall/allowlist", {
       label: "Approve domains",
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -72,6 +226,45 @@ export function FirewallPanel({
     });
     setDomainInput("");
   }
+
+  async function approveSingleDomain(domain: string): Promise<void> {
+    await runFirewallMutation("/api/firewall/allowlist", {
+      label: `Approve ${domain}`,
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ domains: [domain] }),
+    });
+  }
+
+  async function dismissSingleDomain(domain: string): Promise<void> {
+    const ok = await confirmDismiss({
+      title: `Dismiss ${domain}?`,
+      description:
+        "This domain will be removed from the learned list without being added to the allowlist.",
+      confirmLabel: "Dismiss",
+      variant: "danger",
+    });
+    if (!ok) return;
+    await runFirewallMutation("/api/firewall/learned", {
+      label: `Dismiss ${domain}`,
+      method: "DELETE",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ domains: [domain] }),
+    });
+  }
+
+  // Freshness indicator for learning data
+  const learningFreshness = useMemo(() => {
+    if (!diagnostics || fw.mode !== "learning") return null;
+    const { stalenessMs, lastIngestedAt } = diagnostics.learningHealth;
+    if (lastIngestedAt === null) return { label: "no data ingested yet", stale: false };
+    if (stalenessMs === null) return null;
+    const isStale = stalenessMs > 30_000;
+    return {
+      label: `last ingested ${formatRelativeTime(lastIngestedAt)}`,
+      stale: isStale,
+    };
+  }, [diagnostics, fw.mode]);
 
   return (
     <>
@@ -86,10 +279,10 @@ export function FirewallPanel({
               {(["disabled", "learning", "enforcing"] as const).map((mode) => (
                 <button
                   key={mode}
-                  className={`pill ${status.firewall.mode === mode ? "active" : ""}`}
+                  className={`pill ${fw.mode === mode ? "active" : ""}`}
                   disabled={busy}
                   onClick={() =>
-                    void runAction("/api/firewall", {
+                    void runFirewallMutation("/api/firewall", {
                       label: `Set mode ${mode}`,
                       method: "PUT",
                       headers: { "content-type": "application/json" },
@@ -102,6 +295,125 @@ export function FirewallPanel({
               ))}
             </div>
           </div>
+
+          {syncIndicator && (
+            <div className={`sync-indicator ${syncIndicator.ok ? "sync-ok" : "sync-fail"}`}>
+              <span>{syncIndicator.ok ? "\u2713" : "\u2717"}</span>
+              <span className="muted-copy">
+                {syncIndicator.ok ? "Policy applied" : `Sync failed${syncIndicator.reason ? `: ${syncIndicator.reason}` : ""}`}
+              </span>
+            </div>
+          )}
+
+          {/* Policy hash & last apply */}
+          {report && (
+            <div className="policy-meta">
+              <span className="muted-copy">
+                Policy: <code>{report.policyHash.slice(0, 12)}</code>
+              </span>
+              {report.lastSync && report.lastSync.applied && (
+                <span className="muted-copy">
+                  {" · "}Applied {formatRelativeTime(report.lastSync.timestamp)}
+                </span>
+              )}
+              {report.lastSync && !report.lastSync.applied && (
+                <span className="muted-copy sync-fail-text">
+                  {" · "}Not applied: {report.lastSync.reason}
+                </span>
+              )}
+            </div>
+          )}
+
+          {fw.mode === "learning" && (
+            <div className="learning-status">
+              <span className="learning-dot" />
+              <span className="muted-copy">
+                Learning active
+                {fw.learningStartedAt
+                  ? ` · ${formatDuration(Date.now() - fw.learningStartedAt)}`
+                  : ""}
+                {` · ${fw.learned.length} unique domain${fw.learned.length === 1 ? "" : "s"}`}
+                {` · ${fw.commandsObserved} command${fw.commandsObserved === 1 ? "" : "s"} observed`}
+                {learningFreshness
+                  ? ` · ${learningFreshness.label}`
+                  : fw.lastIngestedAt
+                    ? ` · last ingested ${formatRelativeTime(fw.lastIngestedAt)}`
+                    : " · no data ingested yet"}
+              </span>
+              {learningFreshness?.stale && (
+                <span className="staleness-warning" title="Data may be stale — last ingest was more than 30s ago">
+                  {" "}⚠
+                </span>
+              )}
+            </div>
+          )}
+
+          {fw.mode === "learning" && (
+            <p className="learning-disclaimer">
+              Shell command observation only — does not capture all network traffic
+            </p>
+          )}
+
+          {fw.mode === "learning" &&
+            diagnostics?.ingestionStatus.lastSkipReason &&
+            diagnostics.learningHealth.stalenessMs !== null &&
+            diagnostics.learningHealth.stalenessMs > 30_000 && (
+            <p className="error-banner" style={{ marginTop: 0 }}>
+              Learning may be stuck: {diagnostics.ingestionStatus.lastSkipReason}
+              {diagnostics.ingestionStatus.consecutiveSkips > 1
+                ? ` (${diagnostics.ingestionStatus.consecutiveSkips} consecutive skips)`
+                : ""}
+            </p>
+          )}
+
+          {fw.mode === "learning" &&
+            fw.learningStartedAt !== null &&
+            Date.now() - fw.learningStartedAt < 3_600_000 && (
+            <p className="learning-recommendation">
+              Consider running learning longer to capture varied usage patterns
+            </p>
+          )}
+
+          {/* Enforcement preview */}
+          {(report?.wouldBlock ?? fw.wouldBlock).length > 0 && (
+            <div className="would-block-banner">
+              <button
+                type="button"
+                className="would-block-toggle"
+                onClick={() => setWouldBlockOpen((prev) => !prev)}
+                aria-expanded={wouldBlockOpen}
+              >
+                <span>
+                  {(report?.wouldBlock ?? fw.wouldBlock).length} domain
+                  {(report?.wouldBlock ?? fw.wouldBlock).length === 1 ? "" : "s"} would be
+                  blocked if enforcing were enabled
+                </span>
+                <span
+                  className="firewall-logs-chevron"
+                  data-open={wouldBlockOpen}
+                >
+                  &#9656;
+                </span>
+              </button>
+              {wouldBlockOpen && (
+                <ul className="would-block-list">
+                  {(report?.wouldBlock ?? fw.wouldBlock).map((domain) => (
+                    <li key={domain}>
+                      <code>{domain}</code>
+                      <button
+                        className="tiny-link learned-approve"
+                        disabled={busy}
+                        onClick={() => void approveSingleDomain(domain)}
+                        title="Approve to allowlist"
+                      >
+                        approve
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
 
           <div className="stack" style={{ marginTop: 16 }}>
             <span className="field-label">Block test</span>
@@ -151,6 +463,23 @@ export function FirewallPanel({
                 onChange={(event) => setDomainInput(event.target.value)}
               />
             </label>
+            <div className="preset-row">
+              <span className="field-label">Presets</span>
+              <div className="preset-chips">
+                {Object.entries(DOMAIN_PRESETS).map(([key, preset]) => (
+                  <button
+                    key={key}
+                    className="ssh-suggestion-chip"
+                    disabled={busy}
+                    onClick={() => void approveMultipleDomains(preset.domains)}
+                    title={preset.domains.join(", ")}
+                  >
+                    {preset.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
             <div className="inline-actions">
               <button
                 className="button secondary"
@@ -161,7 +490,7 @@ export function FirewallPanel({
               </button>
               <button
                 className="button ghost"
-                disabled={busy || status.firewall.learned.length === 0}
+                disabled={busy || fw.learned.length === 0}
                 onClick={() =>
                   void (async () => {
                     const ok = await confirmPromote({
@@ -172,7 +501,7 @@ export function FirewallPanel({
                       variant: "danger",
                     });
                     if (!ok) return;
-                    void runAction("/api/firewall/promote", {
+                    void runFirewallMutation("/api/firewall/promote", {
                       label: "Promote learned domains",
                       method: "POST",
                     });
@@ -186,12 +515,12 @@ export function FirewallPanel({
 
           <div className="split-lists">
             <div>
-              <h3>Allowlist</h3>
+              <h3>Allowlist ({fw.allowlist.length})</h3>
               <ul className="token-list">
-                {status.firewall.allowlist.length === 0 ? (
+                {fw.allowlist.length === 0 ? (
                   <li className="empty-token">No approved domains yet.</li>
                 ) : (
-                  status.firewall.allowlist.map((domain) => (
+                  fw.allowlist.map((domain) => (
                     <li key={domain}>
                       <code>{domain}</code>
                       <button
@@ -207,7 +536,7 @@ export function FirewallPanel({
                               variant: "danger",
                             });
                             if (!ok) return;
-                            void runAction("/api/firewall/allowlist", {
+                            void runFirewallMutation("/api/firewall/allowlist", {
                               label: `Remove ${domain}`,
                               method: "DELETE",
                               headers: { "content-type": "application/json" },
@@ -225,21 +554,159 @@ export function FirewallPanel({
             </div>
 
             <div>
-              <h3>Learned</h3>
-              <ul className="token-list">
-                {status.firewall.learned.length === 0 ? (
-                  <li className="empty-token">No learned domains yet.</li>
+              <h3>Learned ({fw.learned.length})</h3>
+              {fw.learned.length > 3 && (
+                <input
+                  className="text-input learned-search"
+                  type="text"
+                  placeholder="Filter learned domains…"
+                  value={learnedSearch}
+                  onChange={(event) => setLearnedSearch(event.target.value)}
+                />
+              )}
+              <div className="domain-groups">
+                {fw.learned.length === 0 ? (
+                  <p className="empty-token">No learned domains yet.</p>
+                ) : filteredLearned.length === 0 ? (
+                  <p className="empty-token">No domains match &ldquo;{learnedSearch}&rdquo;.</p>
                 ) : (
-                  status.firewall.learned.map((entry) => (
-                    <li key={entry.domain}>
-                      <code>{entry.domain}</code>
-                      <span className="muted-copy">{entry.hitCount} hits</span>
-                    </li>
-                  ))
+                  learnedGroups.map((group) => {
+                    const isSingle = group.domains.length === 1;
+                    const isExpanded = isSingle || expandedGroups.has(group.registrableDomain);
+
+                    if (isSingle) {
+                      const entry = group.domains[0];
+                      return (
+                        <div key={group.registrableDomain} className="domain-group-flat">
+                          <div className="domain-group-entry">
+                            <div>
+                              <code>{entry.domain}</code>
+                              <DomainEvidence entry={entry} />
+                            </div>
+                            <span className="learned-actions">
+                              <button
+                                className="tiny-link learned-approve"
+                                disabled={busy}
+                                onClick={() => void approveSingleDomain(entry.domain)}
+                                title="Approve to allowlist"
+                              >
+                                approve
+                              </button>
+                              <button
+                                className="tiny-link"
+                                disabled={busy}
+                                onClick={() => void dismissSingleDomain(entry.domain)}
+                                title="Dismiss without approving"
+                              >
+                                dismiss
+                              </button>
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    }
+
+                    return (
+                      <div key={group.registrableDomain} className="domain-group">
+                        <div className="domain-group-header">
+                          <button
+                            type="button"
+                            className="domain-group-header-left"
+                            onClick={() => toggleGroup(group.registrableDomain)}
+                            aria-expanded={isExpanded}
+                          >
+                            <span
+                              className="domain-group-chevron"
+                              data-open={isExpanded}
+                            >
+                              &#9656;
+                            </span>
+                            <code>{group.registrableDomain}</code>
+                            <span className="domain-group-count">
+                              {group.domains.length}
+                            </span>
+                          </button>
+                          <button
+                            className="tiny-link learned-approve"
+                            disabled={busy}
+                            onClick={() => {
+                              void approveMultipleDomains(
+                                group.domains.map((d) => d.domain),
+                              );
+                            }}
+                            title={`Approve all ${group.domains.length} domains in ${group.registrableDomain}`}
+                          >
+                            approve all
+                          </button>
+                        </div>
+                        {isExpanded && (
+                          <ul className="domain-group-list">
+                            {group.domains.map((entry) => (
+                              <li key={entry.domain} className="domain-group-entry">
+                                <div>
+                                  <code>{entry.domain}</code>
+                                  <DomainEvidence entry={entry} />
+                                </div>
+                                <span className="learned-actions">
+                                  <button
+                                    className="tiny-link learned-approve"
+                                    disabled={busy}
+                                    onClick={() => void approveSingleDomain(entry.domain)}
+                                    title="Approve to allowlist"
+                                  >
+                                    approve
+                                  </button>
+                                  <button
+                                    className="tiny-link"
+                                    disabled={busy}
+                                    onClick={() => void dismissSingleDomain(entry.domain)}
+                                    title="Dismiss without approving"
+                                  >
+                                    dismiss
+                                  </button>
+                                </span>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+                    );
+                  })
                 )}
-              </ul>
+              </div>
             </div>
           </div>
+
+          {/* Known limitations */}
+          {report && report.limitations.length > 0 && (
+            <div className="limitations-section">
+              <button
+                type="button"
+                className="firewall-logs-toggle"
+                onClick={() => setLimitationsOpen((prev) => !prev)}
+                aria-expanded={limitationsOpen}
+              >
+                <span>
+                  Known limitations
+                  <span className="muted-copy" style={{ marginLeft: 8 }}>
+                    ({report.limitations.length})
+                  </span>
+                </span>
+                <span className="firewall-logs-chevron" data-open={limitationsOpen}>
+                  &#9656;
+                </span>
+              </button>
+              {limitationsOpen && (
+                <ul className="limitations-list">
+                  {report.limitations.map((limitation) => (
+                    <li key={limitation} className="muted-copy">
+                      {limitation}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
         </article>
 
         <article className="panel-card">
@@ -257,17 +724,51 @@ export function FirewallPanel({
             </button>
           </div>
 
+          {eventCategoryCounts.size > 0 && (
+            <div className="event-category-summary">
+              <button
+                className={`event-category-chip ${eventCategoryFilter === null ? "active" : ""}`}
+                onClick={() => { setEventCategoryFilter(null); setEventPage(0); }}
+              >
+                all ({fw.events.length})
+              </button>
+              {[...eventCategoryCounts.entries()]
+                .sort(([, a], [, b]) => b - a)
+                .map(([cat, count]) => (
+                  <button
+                    key={cat}
+                    className={`event-category-chip ${eventCategoryFilter === cat ? "active" : ""}`}
+                    onClick={() => { setEventCategoryFilter(eventCategoryFilter === cat ? null : cat); setEventPage(0); }}
+                  >
+                    {cat}: {count}
+                  </button>
+                ))}
+            </div>
+          )}
+
           <ul className="event-list">
-            {sortedEvents.length === 0 ? (
+            {isZeroMatchFilter(fw.events.length, eventCategoryFilter, filteredEvents.length) ? (
+              <li className="event-empty">
+                No events match the &ldquo;{eventCategoryFilter}&rdquo; filter.
+              </li>
+            ) : paginatedEvents.length === 0 ? (
               <li className="event-empty">No firewall events yet.</li>
             ) : (
-              sortedEvents.map((event) => (
+              paginatedEvents.map((event) => (
                 <li key={event.id} className="event-row">
                   <div>
                     <p className="event-title">
                       {event.action}
                       {event.domain ? ` \u00b7 ${event.domain}` : ""}
+                      {event.category && event.category !== "unknown" ? (
+                        <span className="category-tag">{event.category}</span>
+                      ) : null}
                     </p>
+                    {event.sourceCommand ? (
+                      <p className="event-command">
+                        <code>{event.sourceCommand}</code>
+                      </p>
+                    ) : null}
                     <p className="event-meta">
                       {formatTimestamp(event.timestamp)}
                       {event.source ? ` \u00b7 ${event.source}` : ""}
@@ -280,13 +781,156 @@ export function FirewallPanel({
               ))
             )}
           </ul>
+
+          {eventPageCount > 1 && (
+            <div className="event-pagination">
+              <button
+                className="button secondary"
+                disabled={clampedPage === 0}
+                onClick={() => setEventPage((p) => Math.max(0, p - 1))}
+              >
+                Prev
+              </button>
+              <span className="event-page-indicator">
+                {clampedPage + 1} / {eventPageCount}
+              </span>
+              <button
+                className="button secondary"
+                disabled={clampedPage >= eventPageCount - 1}
+                onClick={() => setEventPage((p) => Math.min(eventPageCount - 1, p + 1))}
+              >
+                Next
+              </button>
+            </div>
+          )}
         </article>
       </div>
 
+      <article className="panel-card" style={{ marginTop: 16 }}>
+        <button
+          type="button"
+          className="firewall-logs-toggle"
+          onClick={() => setLogsOpen((prev) => !prev)}
+          aria-expanded={logsOpen}
+        >
+          <span>
+            Firewall Logs
+            <span className="muted-copy" style={{ marginLeft: 8 }}>
+              ({firewallLogs.length})
+            </span>
+          </span>
+          <span className="firewall-logs-chevron" data-open={logsOpen}>
+            &#9656;
+          </span>
+        </button>
+
+        {logsOpen && (
+          <div className="firewall-logs-body">
+            {logsLoading && firewallLogs.length === 0 ? (
+              <p className="empty-token">Loading firewall logs...</p>
+            ) : firewallLogs.length === 0 ? (
+              <p className="empty-token">No firewall logs yet.</p>
+            ) : (
+              <div className="firewall-logs-scroll">
+                {firewallLogs.map((entry) => (
+                  <div
+                    key={entry.id}
+                    className={`log-row ${LEVEL_COLORS[entry.level]}`}
+                  >
+                    <span className="log-time">
+                      {new Date(entry.timestamp).toLocaleTimeString()}
+                    </span>
+                    <span className={`log-level ${LEVEL_COLORS[entry.level]}`}>
+                      {entry.level}
+                    </span>
+                    <span className="log-message">{entry.message}</span>
+                    {entry.data && Object.keys(entry.data).length > 0 ? (
+                      <span className="log-data">
+                        {formatLogData(entry.data)}
+                      </span>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </article>
+
       <ConfirmDialog {...promoteDialogProps} />
       <ConfirmDialog {...removeDialogProps} />
+      <ConfirmDialog {...dismissDialogProps} />
     </>
   );
+}
+
+// ---------------------------------------------------------------------------
+// Per-domain evidence component
+// ---------------------------------------------------------------------------
+
+function DomainEvidence({ entry }: { entry: LearnedDomain }) {
+  const categories = (entry.categories ?? []).filter((c) => c !== "unknown");
+  return (
+    <span className="muted-copy">
+      {entry.hitCount} hit{entry.hitCount === 1 ? "" : "s"}
+      {categories.length > 0 ? ` \u00b7 ${categories.join(", ")}` : ""}
+      {" \u00b7 "}first {formatRelativeTime(entry.firstSeenAt)}
+      {" \u00b7 "}last {formatRelativeTime(entry.lastSeenAt)}
+    </span>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Client-side eTLD+1 grouping fallback (for filtered results)
+// ---------------------------------------------------------------------------
+
+import { getRegistrableDomain } from "@/shared/domain-grouping";
+
+type DomainGroup = {
+  registrableDomain: string;
+  domains: LearnedDomain[];
+};
+
+function clientGroupByRegistrableDomain(domains: LearnedDomain[]): DomainGroup[] {
+  const groups = new Map<string, LearnedDomain[]>();
+  for (const entry of domains) {
+    const key = getRegistrableDomain(entry.domain);
+    const group = groups.get(key);
+    if (group) {
+      group.push(entry);
+    } else {
+      groups.set(key, [entry]);
+    }
+  }
+  for (const list of groups.values()) {
+    list.sort((a, b) => a.domain.localeCompare(b.domain));
+  }
+  return [...groups.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([registrableDomain, domains]) => ({ registrableDomain, domains }));
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+const LEVEL_COLORS: Record<LogLevel, string> = {
+  error: "log-error",
+  warn: "log-warn",
+  info: "log-info",
+  debug: "log-debug",
+};
+
+function formatLogData(data: Record<string, unknown>): string {
+  const parts: string[] = [];
+  for (const [key, value] of Object.entries(data)) {
+    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+      parts.push(`${key}=${String(value)}`);
+    } else if (value !== null && value !== undefined) {
+      parts.push(`${key}=${JSON.stringify(value)}`);
+    }
+  }
+  return parts.join(" ");
 }
 
 function formatTimestamp(timestamp: number): string {
@@ -296,4 +940,22 @@ function formatTimestamp(timestamp: number): string {
     hour: "numeric",
     minute: "2-digit",
   }).format(timestamp);
+}
+
+function formatDuration(ms: number): string {
+  if (ms < 60_000) return "< 1m";
+  const totalMinutes = Math.floor(ms / 60_000);
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (hours === 0) return `${minutes}m`;
+  return `${hours}h ${minutes}m`;
+}
+
+function formatRelativeTime(timestamp: number): string {
+  const delta = Date.now() - timestamp;
+  if (delta < 5_000) return "just now";
+  if (delta < 60_000) return `${Math.floor(delta / 1_000)}s ago`;
+  if (delta < 3_600_000) return `${Math.floor(delta / 60_000)}m ago`;
+  if (delta < 86_400_000) return `${Math.floor(delta / 3_600_000)}h ago`;
+  return formatTimestamp(timestamp);
 }

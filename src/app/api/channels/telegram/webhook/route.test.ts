@@ -16,7 +16,7 @@ import {
   callRoute,
   buildPostRequest,
   getTelegramWebhookRoute,
-  drainAfterCallbacks,
+  resetAfterCallbacks,
 } from "@/test-utils/route-caller";
 
 const TELEGRAM_WEBHOOK_SECRET = "test-telegram-webhook-secret-direct";
@@ -88,7 +88,7 @@ test("Telegram webhook: valid event enqueues job and returns 200", async () => {
     assert.equal(result.status, 200);
     const body = result.json as { ok: boolean };
     assert.equal(body.ok, true);
-    await drainAfterCallbacks();
+    resetAfterCallbacks();
   });
 });
 
@@ -115,7 +115,7 @@ test("Telegram webhook: duplicate update_id is deduplicated", async () => {
     const req1 = buildTelegramWebhook({ webhookSecret: TELEGRAM_WEBHOOK_SECRET, payload });
     const result1 = await callRoute(route.POST, req1);
     assert.equal(result1.status, 200);
-    await drainAfterCallbacks();
+    resetAfterCallbacks();
 
     const req2 = buildTelegramWebhook({ webhookSecret: TELEGRAM_WEBHOOK_SECRET, payload });
     const result2 = await callRoute(route.POST, req2);

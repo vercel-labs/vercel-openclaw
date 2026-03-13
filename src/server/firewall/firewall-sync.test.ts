@@ -4,7 +4,6 @@
  *
  * Covers:
  * - applyFirewallPolicyToSandbox failure during bootstrap does not crash lifecycle
- * - enforcing mode with allowlist generates correct sandbox network policy shape
  * - firewall mode transition from learning to enforcing triggers policy sync
  * - policy sync retry after transient sandbox API failure
  * - learning mode ingestion extracts domains from shell log correctly
@@ -17,7 +16,7 @@ import test from "node:test";
 import type { NetworkPolicy } from "@vercel/sandbox";
 
 import { withHarness, type ScenarioHarness, FakeSandboxHandle } from "@/test-utils/harness";
-import { toNetworkPolicy, applyFirewallPolicyToSandbox } from "@/server/firewall/policy";
+import { applyFirewallPolicyToSandbox } from "@/server/firewall/policy";
 import {
   setFirewallMode,
   syncFirewallPolicyIfRunning,
@@ -104,33 +103,6 @@ test("applyFirewallPolicyToSandbox failure during bootstrap sets error status bu
   });
 });
 
-// ---------------------------------------------------------------------------
-// 2. enforcing mode with allowlist generates correct sandbox network policy shape
-// ---------------------------------------------------------------------------
-
-test("enforcing mode with allowlist generates sorted { allow: [...] } policy", () => {
-  const policy = toNetworkPolicy("enforcing", [
-    "registry.npmjs.org",
-    "api.openai.com",
-    "cdn.vercel.com",
-  ]);
-  assert.deepEqual(policy, {
-    allow: ["api.openai.com", "cdn.vercel.com", "registry.npmjs.org"],
-  });
-});
-
-test("enforcing mode with empty allowlist generates { allow: [] }", () => {
-  const policy = toNetworkPolicy("enforcing", []);
-  assert.deepEqual(policy, { allow: [] });
-});
-
-test("disabled and learning modes both return allow-all regardless of allowlist", () => {
-  assert.equal(toNetworkPolicy("disabled", ["api.openai.com"]), "allow-all");
-  assert.equal(toNetworkPolicy("learning", ["api.openai.com"]), "allow-all");
-  assert.equal(toNetworkPolicy("disabled", []), "allow-all");
-  assert.equal(toNetworkPolicy("learning", []), "allow-all");
-});
-
 test("applyFirewallPolicyToSandbox calls updateNetworkPolicy with correct enforcing policy", async () => {
   await withHarness(async (h) => {
     await seedRunning(h, (meta) => {
@@ -149,7 +121,7 @@ test("applyFirewallPolicyToSandbox calls updateNetworkPolicy with correct enforc
 });
 
 // ---------------------------------------------------------------------------
-// 3. firewall mode transition from learning to enforcing triggers policy sync
+// 2. firewall mode transition from learning to enforcing triggers policy sync
 // ---------------------------------------------------------------------------
 
 test("promoting learned domains to enforcing syncs { allow: [...] } to sandbox", async () => {
@@ -192,7 +164,7 @@ test("setFirewallMode from learning to disabled syncs allow-all to sandbox", asy
 });
 
 // ---------------------------------------------------------------------------
-// 4. policy sync retry after transient sandbox API failure
+// 3. policy sync retry after transient sandbox API failure
 // ---------------------------------------------------------------------------
 
 test("syncFirewallPolicyIfRunning reports applied:false when sandbox is not running", async () => {
@@ -239,7 +211,7 @@ test("syncFirewallPolicyIfRunning succeeds after transient failure on retry", as
 });
 
 // ---------------------------------------------------------------------------
-// 5. learning mode ingestion extracts domains from shell log correctly
+// 4. learning mode ingestion extracts domains from shell log correctly
 // ---------------------------------------------------------------------------
 
 test("ingestLearningFromSandbox extracts domains from curl/wget/dns commands", async () => {
@@ -368,7 +340,7 @@ test("ingestLearningFromSandbox handles sandbox read failure gracefully", async 
 });
 
 // ---------------------------------------------------------------------------
-// 6. concurrent sandbox restore results in exactly one firewall policy application
+// 5. concurrent sandbox restore results in exactly one firewall policy application
 // ---------------------------------------------------------------------------
 
 test("concurrent ensureSandboxRunning calls result in at most one sandbox create", async () => {

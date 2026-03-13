@@ -112,3 +112,43 @@ test("firewall/allowlist DELETE: removes domains", async () => {
     assert.ok(body.firewall.allowlist.includes("keep.me"));
   });
 });
+
+// ===========================================================================
+// No double sync — response has no separate `policy` key
+// ===========================================================================
+
+test("firewall/allowlist POST: response has no separate policy key (no double sync)", async () => {
+  await withHarness(async () => {
+    const route = getFirewallAllowlistRoute();
+    const req = buildAuthPostRequest(
+      "/api/firewall/allowlist",
+      JSON.stringify({ domains: ["api.openai.com"] }),
+    );
+    const result = await callRoute(route.POST!, req);
+
+    assert.equal(result.status, 200);
+    const body = result.json as Record<string, unknown>;
+    assert.ok(body.firewall, "response should have firewall key");
+    assert.equal(body.policy, undefined, "response should NOT have separate policy key (no double sync)");
+  });
+});
+
+test("firewall/allowlist DELETE: response has no separate policy key (no double sync)", async () => {
+  await withHarness(async (h) => {
+    await h.mutateMeta((meta) => {
+      meta.firewall.allowlist = ["api.openai.com"];
+    });
+
+    const route = getFirewallAllowlistRoute();
+    const req = buildAuthDeleteRequest(
+      "/api/firewall/allowlist",
+      JSON.stringify({ domains: ["api.openai.com"] }),
+    );
+    const result = await callRoute(route.DELETE!, req);
+
+    assert.equal(result.status, 200);
+    const body = result.json as Record<string, unknown>;
+    assert.ok(body.firewall, "response should have firewall key");
+    assert.equal(body.policy, undefined, "response should NOT have separate policy key (no double sync)");
+  });
+});

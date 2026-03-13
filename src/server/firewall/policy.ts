@@ -22,7 +22,8 @@ export async function applyFirewallPolicyToSandbox(
   meta: SingleMeta,
 ): Promise<NetworkPolicy> {
   const policy = toNetworkPolicy(meta.firewall.mode, meta.firewall.allowlist);
-  logInfo("firewall.policy_applied", {
+  logInfo("firewall.sync_policy_applied", {
+    operation: "sync",
     mode: meta.firewall.mode,
     allowlistCount: meta.firewall.allowlist.length,
   });

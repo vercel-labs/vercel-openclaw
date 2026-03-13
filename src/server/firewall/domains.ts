@@ -1,5 +1,7 @@
 import { isIP } from "node:net";
 import { domainToASCII } from "node:url";
+import type { DomainCategory, LearnedDomain } from "@/shared/types";
+import { getRegistrableDomain } from "@/shared/domain-grouping";
 
 const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
 const UNICODE_DOTS = /[\u3002\uFF0E\uFF61]/g;
@@ -8,10 +10,14 @@ const URL_PATTERN = /\bhttps?:\/\/[^\s"'<>]+/gi;
 const HOST_PATTERN = /\bhost\s*[:=]\s*([^\s"'<>]+)/gi;
 const DNS_PATTERN =
   /\b(?:dns(?:\s+(?:query|lookup|resolve|request))?|lookup|resolve(?:d)?)\s*[:=]?\s*([^\s"'<>]+)/gi;
+const ENV_VAR_PATTERN =
+  /\b[A-Z][A-Z0-9_]*(?:URL|HOST|ENDPOINT|ORIGIN|DOMAIN|SERVER|REGISTRY|BASE)\s*=\s*["']?([^\s"']+)/g;
+const JS_NETWORK_PATTERN =
+  /\b(?:fetch|require|import|axios\.(?:get|post|put|delete|patch|request))\s*\(\s*["'`]([^"'`\s]+)["'`]/gi;
 const BARE_DOMAIN_PATTERN = /\b(?:[a-z0-9-]+\.)+[a-z0-9-]+\b/gi;
 const HOST_LABEL_PATTERN = /^[a-z0-9-]+$/;
 const TLD_PATTERN = /^([a-z]{2,}|xn--[a-z0-9-]{2,})$/;
-const AMBIGUOUS_TLDS = new Set(["js", "json", "log", "mov", "py", "rs", "ts", "zip"]);
+const AMBIGUOUS_TLDS = new Set(["get", "js", "json", "log", "mov", "py", "rs", "ts", "zip"]);
 
 export function normalizeDomain(input: string): string | null {
   if (!input || CONTROL_CHARS.test(input)) {
@@ -144,6 +150,20 @@ export function extractDomains(logText: string): string[] {
     add(match[1]);
   }
 
+  ENV_VAR_PATTERN.lastIndex = 0;
+  for (let match = ENV_VAR_PATTERN.exec(logText); match; match = ENV_VAR_PATTERN.exec(logText)) {
+    add(match[1]);
+  }
+
+  JS_NETWORK_PATTERN.lastIndex = 0;
+  for (
+    let match = JS_NETWORK_PATTERN.exec(logText);
+    match;
+    match = JS_NETWORK_PATTERN.exec(logText)
+  ) {
+    add(match[1]);
+  }
+
   BARE_DOMAIN_PATTERN.lastIndex = 0;
   for (
     let match = BARE_DOMAIN_PATTERN.exec(logText);
@@ -158,4 +178,96 @@ export function extractDomains(logText: string): string[] {
   }
 
   return [...matches].sort((left, right) => left.localeCompare(right));
+}
+
+const CATEGORY_PATTERNS: Array<{ pattern: RegExp; category: DomainCategory }> = [
+  { pattern: /\bnpm\b|npmjs\.org|\byarn\b|\bpnpm\b/i, category: "npm" },
+  { pattern: /\bcurl\b|\bwget\b/i, category: "curl" },
+  { pattern: /\bdns\b|\blookup\b|\bresolve[d]?\b|\bnslookup\b|\bdig\s/i, category: "dns" },
+  { pattern: /\bfetch\s*\(|\baxios\b|\brequire\s*\(|\bimport\s*\(/i, category: "fetch" },
+  { pattern: /\bgit\s|\bgit$|github\.com|gitlab\.com|bitbucket\.org/i, category: "git" },
+];
+
+export function inferCategory(line: string): DomainCategory {
+  for (const { pattern, category } of CATEGORY_PATTERNS) {
+    if (pattern.test(line)) {
+      return category;
+    }
+  }
+  return "unknown";
+}
+
+export type DomainWithContext = {
+  domain: string;
+  sourceCommand: string;
+  category: DomainCategory;
+};
+
+export function extractDomainsWithContext(logText: string): DomainWithContext[] {
+  if (!logText.trim()) {
+    return [];
+  }
+
+  const seen = new Map<string, DomainWithContext>();
+  const lines = logText.split("\n");
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+
+    const domains = extractDomains(trimmed);
+    if (domains.length === 0) continue;
+
+    const category = inferCategory(trimmed);
+    for (const domain of domains) {
+      if (!seen.has(domain)) {
+        seen.set(domain, { domain, sourceCommand: trimmed, category });
+      }
+    }
+  }
+
+  return [...seen.values()].sort((left, right) =>
+    left.domain.localeCompare(right.domain),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// eTLD+1 domain grouping — re-exported from shared module
+// ---------------------------------------------------------------------------
+
+export { getRegistrableDomain, MULTI_LABEL_SUFFIXES } from "@/shared/domain-grouping";
+
+export type DomainGroup = {
+  registrableDomain: string;
+  domains: LearnedDomain[];
+};
+
+/**
+ * Group learned domains by their registrable domain (eTLD+1).
+ * Groups are sorted alphabetically by registrable domain;
+ * domains within each group are sorted alphabetically.
+ */
+export function groupByRegistrableDomain(
+  domains: LearnedDomain[],
+): DomainGroup[] {
+  const groups = new Map<string, LearnedDomain[]>();
+
+  for (const entry of domains) {
+    const key = getRegistrableDomain(entry.domain);
+    const group = groups.get(key);
+    if (group) {
+      group.push(entry);
+    } else {
+      groups.set(key, [entry]);
+    }
+  }
+
+  // Sort domains within each group
+  for (const list of groups.values()) {
+    list.sort((a, b) => a.domain.localeCompare(b.domain));
+  }
+
+  return [...groups.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([registrableDomain, domains]) => ({ registrableDomain, domains }));
 }

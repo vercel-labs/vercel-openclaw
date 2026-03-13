@@ -1,8 +1,11 @@
+export type DomainCategory = "npm" | "curl" | "git" | "dns" | "fetch" | "unknown";
+
 export type LearnedDomain = {
   domain: string;
   firstSeenAt: number;
   lastSeenAt: number;
   hitCount: number;
+  categories?: DomainCategory[];
 };
 
 export type FirewallEvent = {
@@ -13,6 +16,8 @@ export type FirewallEvent = {
   domain?: string;
   reason?: string;
   source?: string;
+  sourceCommand?: string;
+  category?: DomainCategory;
 };
 
 export type StatusPayload = {
@@ -31,6 +36,10 @@ export type StatusPayload = {
     learned: LearnedDomain[];
     events: FirewallEvent[];
     updatedAt: number;
+    lastIngestedAt: number | null;
+    learningStartedAt: number | null;
+    commandsObserved: number;
+    wouldBlock: string[];
   };
   channels: {
     slack: {
@@ -100,6 +109,80 @@ export type TelegramPreviewPayload = {
     first_name: string;
     username?: string;
   };
+};
+
+export type DiagnosticsResponse = {
+  mode: "disabled" | "learning" | "enforcing";
+  learningHealth: {
+    durationMs: number | null;
+    commandsObserved: number;
+    uniqueDomains: number;
+    lastIngestedAt: number | null;
+    stalenessMs: number | null;
+  };
+  syncStatus: {
+    lastAppliedAt: number | null;
+    lastFailedAt: number | null;
+    lastReason: string | null;
+  };
+  ingestionStatus: {
+    lastSkipReason: string | null;
+    consecutiveSkips: number;
+  };
+  wouldBlockCount: number;
+};
+
+export type FirewallIngestOutcome = {
+  timestamp: number;
+  durationMs: number;
+  domainsSeenCount: number;
+  newCount: number;
+  updatedCount: number;
+  skipReason: string | null;
+};
+
+export type FirewallSyncOutcome = {
+  timestamp: number;
+  durationMs: number;
+  allowlistCount: number;
+  policyHash: string;
+  applied: boolean;
+  reason: string;
+};
+
+export type FirewallStatePayload = {
+  mode: "disabled" | "learning" | "enforcing";
+  allowlist: string[];
+  learned: LearnedDomain[];
+  events: FirewallEvent[];
+  updatedAt: number;
+  lastIngestedAt: number | null;
+  learningStartedAt: number | null;
+  commandsObserved: number;
+  wouldBlock: string[];
+  lastSyncAppliedAt: number | null;
+  lastSyncFailedAt: number | null;
+  lastSyncReason: string | null;
+  lastIngestionSkipReason: string | null;
+  ingestionSkipCount: number;
+  lastIngestOutcome: FirewallIngestOutcome | null;
+  lastSyncOutcome: FirewallSyncOutcome | null;
+};
+
+export type FirewallReportPayload = {
+  schemaVersion: 1;
+  generatedAt: number;
+  state: FirewallStatePayload;
+  diagnostics: DiagnosticsResponse;
+  groupedLearned: Array<{
+    registrableDomain: string;
+    domains: LearnedDomain[];
+  }>;
+  wouldBlock: string[];
+  lastIngest: FirewallIngestOutcome | null;
+  lastSync: FirewallSyncOutcome | null;
+  limitations: string[];
+  policyHash: string;
 };
 
 export type RunAction = (

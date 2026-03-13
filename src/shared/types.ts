@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import {
   createDefaultChannelConfigs,
   ensureChannelConfigs,
@@ -16,11 +18,14 @@ export type SingleStatus =
   | "error"
   | "booting";
 
+export type DomainCategory = "npm" | "curl" | "git" | "dns" | "fetch" | "unknown";
+
 export type LearnedDomain = {
   domain: string;
   firstSeenAt: number;
   lastSeenAt: number;
   hitCount: number;
+  categories?: DomainCategory[];
 };
 
 export type LogLevel = "error" | "warn" | "info" | "debug";
@@ -57,6 +62,26 @@ export type FirewallEvent = {
   domain?: string;
   reason?: string;
   source?: string;
+  sourceCommand?: string;
+  category?: DomainCategory;
+};
+
+export type FirewallIngestOutcome = {
+  timestamp: number;
+  durationMs: number;
+  domainsSeenCount: number;
+  newCount: number;
+  updatedCount: number;
+  skipReason: string | null;
+};
+
+export type FirewallSyncOutcome = {
+  timestamp: number;
+  durationMs: number;
+  allowlistCount: number;
+  policyHash: string;
+  applied: boolean;
+  reason: string;
 };
 
 export type FirewallState = {
@@ -66,6 +91,61 @@ export type FirewallState = {
   events: FirewallEvent[];
   updatedAt: number;
   lastIngestedAt: number | null;
+  /** Timestamp when learning mode was last activated, or null if never. */
+  learningStartedAt: number | null;
+  /** Total number of shell log lines processed since learning started. */
+  commandsObserved: number;
+  /** Learned domains that are NOT in the allowlist — only populated in learning mode. */
+  wouldBlock: string[];
+  /** Timestamp of last successful firewall policy sync to sandbox, or null. */
+  lastSyncAppliedAt: number | null;
+  /** Timestamp of last failed firewall policy sync to sandbox, or null. */
+  lastSyncFailedAt: number | null;
+  /** Reason string from the last sync attempt (e.g. "policy-applied", "sandbox-not-running"). */
+  lastSyncReason: string | null;
+  /** Reason the last ingestion was skipped (e.g. "throttled", "locked", "mode-not-learning"). */
+  lastIngestionSkipReason: string | null;
+  /** Number of consecutive ingestion skips since the last successful ingest. */
+  ingestionSkipCount: number;
+  /** Structured outcome of the last ingest operation, or null if none yet. */
+  lastIngestOutcome: FirewallIngestOutcome | null;
+  /** Structured outcome of the last sync operation, or null if none yet. */
+  lastSyncOutcome: FirewallSyncOutcome | null;
+};
+
+export type FirewallReport = {
+  schemaVersion: 1;
+  generatedAt: number;
+  state: FirewallState;
+  diagnostics: {
+    mode: FirewallMode;
+    learningHealth: {
+      durationMs: number | null;
+      commandsObserved: number;
+      uniqueDomains: number;
+      lastIngestedAt: number | null;
+      stalenessMs: number | null;
+    };
+    syncStatus: {
+      lastAppliedAt: number | null;
+      lastFailedAt: number | null;
+      lastReason: string | null;
+    };
+    ingestionStatus: {
+      lastSkipReason: string | null;
+      consecutiveSkips: number;
+    };
+    wouldBlockCount: number;
+  };
+  groupedLearned: Array<{
+    registrableDomain: string;
+    domains: LearnedDomain[];
+  }>;
+  wouldBlock: string[];
+  lastIngest: FirewallIngestOutcome | null;
+  lastSync: FirewallSyncOutcome | null;
+  limitations: string[];
+  policyHash: string;
 };
 
 export type SingleMeta = {
@@ -112,6 +192,16 @@ export function createDefaultMeta(now: number, gatewayToken: string): SingleMeta
       events: [],
       updatedAt: now,
       lastIngestedAt: null,
+      learningStartedAt: null,
+      commandsObserved: 0,
+      wouldBlock: [],
+      lastSyncAppliedAt: null,
+      lastSyncFailedAt: null,
+      lastSyncReason: null,
+      lastIngestionSkipReason: null,
+      ingestionSkipCount: 0,
+      lastIngestOutcome: null,
+      lastSyncOutcome: null,
     },
     lastTokenRefreshAt: null,
     channels: createDefaultChannelConfigs(),
@@ -173,6 +263,45 @@ export function ensureMetaShape(input: unknown): SingleMeta | null {
         typeof raw.firewall?.lastIngestedAt === "number"
           ? raw.firewall.lastIngestedAt
           : null,
+      learningStartedAt:
+        typeof (raw.firewall as Record<string, unknown>)?.learningStartedAt === "number"
+          ? (raw.firewall as Record<string, unknown>).learningStartedAt as number
+          : null,
+      commandsObserved:
+        typeof (raw.firewall as Record<string, unknown>)?.commandsObserved === "number"
+          ? (raw.firewall as Record<string, unknown>).commandsObserved as number
+          : 0,
+      wouldBlock: [],
+      lastSyncAppliedAt:
+        typeof (raw.firewall as Record<string, unknown>)?.lastSyncAppliedAt === "number"
+          ? (raw.firewall as Record<string, unknown>).lastSyncAppliedAt as number
+          : null,
+      lastSyncFailedAt:
+        typeof (raw.firewall as Record<string, unknown>)?.lastSyncFailedAt === "number"
+          ? (raw.firewall as Record<string, unknown>).lastSyncFailedAt as number
+          : null,
+      lastSyncReason:
+        typeof (raw.firewall as Record<string, unknown>)?.lastSyncReason === "string"
+          ? (raw.firewall as Record<string, unknown>).lastSyncReason as string
+          : null,
+      lastIngestionSkipReason:
+        typeof (raw.firewall as Record<string, unknown>)?.lastIngestionSkipReason === "string"
+          ? (raw.firewall as Record<string, unknown>).lastIngestionSkipReason as string
+          : null,
+      ingestionSkipCount:
+        typeof (raw.firewall as Record<string, unknown>)?.ingestionSkipCount === "number"
+          ? (raw.firewall as Record<string, unknown>).ingestionSkipCount as number
+          : 0,
+      lastIngestOutcome: isFirewallIngestOutcome(
+        (raw.firewall as Record<string, unknown>)?.lastIngestOutcome,
+      )
+        ? ((raw.firewall as Record<string, unknown>).lastIngestOutcome as FirewallIngestOutcome)
+        : null,
+      lastSyncOutcome: isFirewallSyncOutcome(
+        (raw.firewall as Record<string, unknown>)?.lastSyncOutcome,
+      )
+        ? ((raw.firewall as Record<string, unknown>).lastSyncOutcome as FirewallSyncOutcome)
+        : null,
     },
     lastTokenRefreshAt:
       typeof raw.lastTokenRefreshAt === "number" ? raw.lastTokenRefreshAt : null,
@@ -182,6 +311,44 @@ export function ensureMetaShape(input: unknown): SingleMeta | null {
       : [],
   };
 }
+
+export const DOMAIN_PRESETS: Record<string, { label: string; domains: string[] }> = {
+  npm: {
+    label: "npm",
+    domains: [
+      "registry.npmjs.org",
+      "npmjs.org",
+      "registry.yarnpkg.com",
+      "npm.pkg.github.com",
+    ],
+  },
+  openai: {
+    label: "OpenAI",
+    domains: [
+      "api.openai.com",
+      "cdn.openai.com",
+      "files.oaiusercontent.com",
+    ],
+  },
+  github: {
+    label: "GitHub",
+    domains: [
+      "github.com",
+      "api.github.com",
+      "raw.githubusercontent.com",
+      "objects.githubusercontent.com",
+    ],
+  },
+  vercel: {
+    label: "Vercel",
+    domains: [
+      "vercel.com",
+      "api.vercel.com",
+      "vercel.live",
+      "v0.dev",
+    ],
+  },
+};
 
 export function isFirewallMode(value: unknown): value is FirewallMode {
   return value === "disabled" || value === "learning" || value === "enforcing";
@@ -197,6 +364,32 @@ export function isSingleStatus(value: unknown): value is SingleStatus {
     value === "restoring" ||
     value === "error" ||
     value === "booting"
+  );
+}
+
+function isFirewallIngestOutcome(value: unknown): value is FirewallIngestOutcome {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const v = value as Record<string, unknown>;
+  return (
+    typeof v.timestamp === "number" &&
+    typeof v.durationMs === "number" &&
+    typeof v.domainsSeenCount === "number" &&
+    typeof v.newCount === "number" &&
+    typeof v.updatedCount === "number" &&
+    (v.skipReason === null || typeof v.skipReason === "string")
+  );
+}
+
+function isFirewallSyncOutcome(value: unknown): value is FirewallSyncOutcome {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const v = value as Record<string, unknown>;
+  return (
+    typeof v.timestamp === "number" &&
+    typeof v.durationMs === "number" &&
+    typeof v.allowlistCount === "number" &&
+    typeof v.policyHash === "string" &&
+    typeof v.applied === "boolean" &&
+    typeof v.reason === "string"
   );
 }
 
@@ -240,4 +433,14 @@ function isFirewallEvent(value: unknown): value is FirewallEvent {
     typeof raw.action === "string" &&
     typeof raw.decision === "string"
   );
+}
+
+/**
+ * Compute a deterministic SHA-256 hash of the firewall policy.
+ * Same allowlist + mode always produces the same hash.
+ */
+export function computePolicyHash(mode: FirewallMode, allowlist: string[]): string {
+  const sorted = [...allowlist].sort((a, b) => a.localeCompare(b));
+  const input = JSON.stringify({ mode, allowlist: sorted });
+  return createHash("sha256").update(input).digest("hex");
 }

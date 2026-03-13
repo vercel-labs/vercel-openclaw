@@ -98,6 +98,7 @@ test("GET /api/admin/snapshots: returns snapshot history", async () => {
     const body = result.json as { snapshots: SnapshotRecord[] };
     assert.equal(body.snapshots.length, 1);
     assert.equal(body.snapshots[0].snapshotId, "snap-history-1");
+    assert.equal(body.snapshots[0].reason, "manual");
   });
 });
 
@@ -146,5 +147,25 @@ test("POST /api/admin/snapshots: returns 409 when sandbox is not running", async
     assert.equal(result.status, 409);
     const body = result.json as { error: string };
     assert.equal(body.error, "SANDBOX_NOT_RUNNING");
+  });
+});
+
+test("POST /api/admin/snapshots: returns 500 when Sandbox.get fails", async () => {
+  await withTestEnv(async () => {
+    await mutateMeta((meta) => {
+      meta.status = "running";
+      meta.sandboxId = "sbx-running-snap";
+    });
+
+    const route = getAdminSnapshotsRoute();
+    const request = buildAuthPostRequest(
+      "/api/admin/snapshots",
+      JSON.stringify({ reason: "test-snapshot" }),
+    );
+    const result = await callRoute(route.POST!, request);
+
+    assert.equal(result.status, 500);
+    const body = result.json as { error: string };
+    assert.ok(body.error, "Should return a JSON error");
   });
 });
