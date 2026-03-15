@@ -67,6 +67,24 @@ test("unconfigured channels return configured: false", async () => {
   });
 });
 
+test("each channel includes a connectability field", async () => {
+  await withHarness(async (h) => {
+    const meta = await h.getMeta();
+    const state = await getPublicChannelState(makeRequest(), meta);
+
+    assert.ok(state.slack.connectability, "slack missing connectability");
+    assert.equal(state.slack.connectability.channel, "slack");
+    assert.ok(typeof state.slack.connectability.canConnect === "boolean");
+    assert.ok(Array.isArray(state.slack.connectability.issues));
+
+    assert.ok(state.telegram.connectability, "telegram missing connectability");
+    assert.equal(state.telegram.connectability.channel, "telegram");
+
+    assert.ok(state.discord.connectability, "discord missing connectability");
+    assert.equal(state.discord.connectability.channel, "discord");
+  });
+});
+
 test("configured slack returns correct public shape", async () => {
   await withHarness(async (h) => {
     await h.mutateMeta((meta) => {
@@ -326,4 +344,84 @@ test("[state] discord without optional fields -> returns null defaults", async (
     assert.equal(state.discord.commandId, null);
     assert.equal(state.discord.commandRegistered, false);
   });
+});
+
+// ---------------------------------------------------------------------------
+// Regression: Discord webhook URL bypass secret behavior
+// ---------------------------------------------------------------------------
+
+async function withEnv(
+  overrides: Record<string, string | undefined>,
+  fn: () => Promise<void> | void,
+): Promise<void> {
+  const previous = new Map<string, string | undefined>();
+  for (const [key, value] of Object.entries(overrides)) {
+    previous.set(key, process.env[key]);
+    if (value === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = value;
+    }
+  }
+  try {
+    await fn();
+  } finally {
+    for (const [key, value] of previous) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+}
+
+test("[regression] buildDiscordPublicWebhookUrl includes bypass secret in deployment-protection mode", async () => {
+  await withEnv(
+    {
+      VERCEL_AUTH_MODE: "deployment-protection",
+      VERCEL_AUTOMATION_BYPASS_SECRET: "bypass-secret",
+      NEXT_PUBLIC_APP_URL: "https://app.example.com",
+      NEXT_PUBLIC_BASE_DOMAIN: undefined,
+      BASE_DOMAIN: undefined,
+    },
+    () => {
+      const request = new Request("https://app.example.com/admin", {
+        headers: {
+          host: "app.example.com",
+          "x-forwarded-proto": "https",
+        },
+      });
+
+      assert.equal(
+        buildDiscordPublicWebhookUrl(request),
+        "https://app.example.com/api/channels/discord/webhook?x-vercel-protection-bypass=bypass-secret",
+      );
+    },
+  );
+});
+
+test("[regression] buildDiscordPublicWebhookUrl omits bypass secret in sign-in-with-vercel mode", async () => {
+  await withEnv(
+    {
+      VERCEL_AUTH_MODE: "sign-in-with-vercel",
+      VERCEL_AUTOMATION_BYPASS_SECRET: "bypass-secret",
+      NEXT_PUBLIC_APP_URL: "https://app.example.com",
+      NEXT_PUBLIC_BASE_DOMAIN: undefined,
+      BASE_DOMAIN: undefined,
+    },
+    () => {
+      const request = new Request("https://app.example.com/admin", {
+        headers: {
+          host: "app.example.com",
+          "x-forwarded-proto": "https",
+        },
+      });
+
+      assert.equal(
+        buildDiscordPublicWebhookUrl(request),
+        "https://app.example.com/api/channels/discord/webhook",
+      );
+    },
+  );
 });

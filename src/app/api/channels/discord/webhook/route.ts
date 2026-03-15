@@ -1,6 +1,6 @@
 import { after } from "next/server";
 
-import { getBaseOrigin } from "@/server/env";
+import { getPublicOrigin } from "@/server/public-url";
 import { enqueueChannelJob } from "@/server/channels/driver";
 import { verifyDiscordRequestSignature } from "@/server/channels/discord/adapter";
 import { channelDedupKey } from "@/server/channels/keys";
@@ -65,7 +65,7 @@ export async function POST(request: Request): Promise<Response> {
   await enqueueChannelJob("discord", {
     payload,
     receivedAt: Date.now(),
-    origin: getBaseOrigin(request),
+    origin: getPublicOrigin(request),
   });
 
   after(async () => {

@@ -1,6 +1,6 @@
 import { after } from "next/server";
 
-import { getBaseOrigin } from "@/server/env";
+import { getPublicOrigin } from "@/server/public-url";
 import { enqueueChannelJob } from "@/server/channels/driver";
 import { channelDedupKey } from "@/server/channels/keys";
 import {
@@ -92,7 +92,7 @@ export async function POST(request: Request): Promise<Response> {
   await enqueueChannelJob("slack", {
     payload,
     receivedAt: Date.now(),
-    origin: getBaseOrigin(request),
+    origin: getPublicOrigin(request),
   });
 
   after(async () => {

@@ -1,5 +1,9 @@
 import { ApiError } from "@/shared/http";
 import { authJsonError, authJsonOk, requireJsonRouteAuth } from "@/server/auth/route-auth";
+import {
+  buildChannelConnectability,
+  buildChannelConnectBlockedResponse,
+} from "@/server/channels/connectability";
 import { setSlackChannelConfig } from "@/server/channels/state";
 import { getPublicChannelState } from "@/server/channels/state";
 
@@ -98,6 +102,11 @@ export async function PUT(request: Request): Promise<Response> {
   const auth = await requireJsonRouteAuth(request);
   if (auth instanceof Response) {
     return auth;
+  }
+
+  const connectability = buildChannelConnectability("slack", request);
+  if (!connectability.canConnect) {
+    return buildChannelConnectBlockedResponse(auth, connectability);
   }
 
   try {

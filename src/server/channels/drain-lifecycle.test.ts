@@ -19,9 +19,14 @@ import {
 } from "@/test-utils/harness";
 import { assertQueuesDrained } from "@/test-utils/assertions";
 import { buildSlackWebhook, buildTelegramWebhook } from "@/test-utils/webhook-builders";
-import { enqueueChannelJob } from "@/server/channels/driver";
+import { enqueueChannelJob, drainChannelQueue } from "@/server/channels/driver";
+import { createSlackAdapter } from "@/server/channels/slack/adapter";
 import { drainSlackQueue } from "@/server/channels/slack/runtime";
 import { drainTelegramQueue } from "@/server/channels/telegram/runtime";
+import {
+  channelProcessingKey,
+  channelFailedKey,
+} from "@/server/channels/keys";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -341,6 +346,85 @@ test("Drain lifecycle: concurrent drains on different channels with stopped sand
       // Verify both channel queues are empty
       await assertQueuesDrained(store, "slack");
       await assertQueuesDrained(store, "telegram");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  } catch (err) {
+    await dumpDiagnostics(t, h);
+    throw err;
+  } finally {
+    h.teardown();
+  }
+});
+
+test("Drain lifecycle: sandbox create failure → job retried (not permanently failed)", async (t) => {
+  const h = createScenarioHarness();
+  try {
+    const { slackSigningSecret } = h.configureAllChannels();
+
+    // Start from uninitialized — no sandbox exists
+    const initialMeta = await h.getMeta();
+    assert.equal(initialMeta.status, "uninitialized");
+
+    // Make the sandbox controller throw on every create attempt
+    // so ensureSandboxReady times out quickly.
+    h.controller.setCreateFailure(new Error("sandbox_create_quota_exceeded"));
+
+    // Install gateway handler that returns not-ready (ensures timeout)
+    h.fakeFetch.onGet(/fake\.vercel\.run/, () =>
+      new Response("not ready", { status: 503 }),
+    );
+    h.fakeFetch.onGet(/slack\.com\/api\/conversations\.replies/, () =>
+      Response.json({ ok: true, messages: [] }),
+    );
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = h.fakeFetch.fetch;
+
+    try {
+      await enqueueChannelJob("slack", {
+        payload: makeSlackPayload(slackSigningSecret),
+        receivedAt: Date.now(),
+        origin: "https://test.example.com",
+      });
+
+      const store = h.getStore();
+      assert.equal(await store.getQueueLength("openclaw-single:channels:slack:queue"), 1);
+
+      // Drain with a very short sandbox readiness timeout (3s) so the test
+      // doesn't block for 5 minutes. The sandbox can't come up because
+      // create fails, so ensureSandboxReady will throw after the timeout.
+      await drainChannelQueue({
+        channel: "slack",
+        getConfig: (meta) => meta.channels.slack,
+        createAdapter: (config) => createSlackAdapter(config),
+        sandboxReadyTimeoutMs: 3_000,
+      });
+
+      // Job should NOT be permanently failed — sandbox lifecycle errors are retryable
+      assert.equal(
+        await store.getQueueLength(channelFailedKey("slack")),
+        0,
+        "Sandbox create failure should be retryable, not permanently failed",
+      );
+
+      // Job should be parked in processing queue for retry
+      assert.equal(
+        await store.getQueueLength(channelProcessingKey("slack")),
+        1,
+        "Job should be parked in processing queue for retry after sandbox failure",
+      );
+
+      // Verify the retry metadata mentions sandbox_not_ready
+      const processingEntry = await store.dequeue(channelProcessingKey("slack"));
+      assert.ok(processingEntry);
+      const envelope = JSON.parse(processingEntry);
+      const retryJob = JSON.parse(envelope.job);
+      assert.equal(retryJob.retryCount, 1);
+      assert.ok(
+        retryJob.lastError?.includes("sandbox_not_ready"),
+        `lastError should mention sandbox_not_ready, got: ${retryJob.lastError}`,
+      );
     } finally {
       globalThis.fetch = originalFetch;
     }

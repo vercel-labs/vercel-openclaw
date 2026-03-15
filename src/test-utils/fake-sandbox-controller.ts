@@ -161,12 +161,23 @@ export class FakeSandboxController implements SandboxController {
 
   private counter = 0;
   private delay: number;
+  private _createFailure: Error | null = null;
 
   constructor(options?: { delay?: number }) {
     this.delay = options?.delay ?? 0;
   }
 
+  /** Make the next `create()` call throw (one-shot: resets after firing). */
+  setCreateFailure(error: Error | null): void {
+    this._createFailure = error;
+  }
+
   async create(params: CreateParams): Promise<SandboxHandle> {
+    if (this._createFailure) {
+      const err = this._createFailure;
+      this._createFailure = null;
+      throw err;
+    }
     if (this.delay > 0) {
       await sleep(this.delay);
     }

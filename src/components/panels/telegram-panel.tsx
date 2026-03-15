@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { ConfirmDialog, useConfirm } from "@/components/ui/confirm-dialog";
+import { ConnectabilityNotice } from "@/components/panels/connectability-notice";
 import type {
   RunAction,
   RequestJson,
@@ -132,6 +133,7 @@ export function TelegramPanel({
 
       {panelError ? <p className="error-banner">{panelError}</p> : null}
       {tg.lastError ? <p className="error-banner">{tg.lastError}</p> : null}
+      <ConnectabilityNotice connectability={tg.connectability} />
 
       {tg.configured && !editing ? (
         <div className="channel-connected-view">
@@ -245,14 +247,14 @@ export function TelegramPanel({
           <div className="inline-actions">
             <button
               className="button secondary"
-              disabled={busy || !botToken.trim()}
+              disabled={busy || !tg.connectability.canConnect || !botToken.trim()}
               onClick={() => void handlePreview()}
             >
               Preview bot
             </button>
             <button
               className="button primary"
-              disabled={busy || !botToken.trim()}
+              disabled={busy || !tg.connectability.canConnect || !botToken.trim()}
               onClick={() => void handleConnect()}
             >
               {editing ? "Update" : "Save & Connect"}
@@ -272,6 +274,11 @@ export function TelegramPanel({
               </button>
             )}
           </div>
+          {!tg.connectability.canConnect ? (
+            <p className="muted-copy">
+              Resolve the deployment blockers above before saving the Telegram bot token.
+            </p>
+          ) : null}
         </div>
       )}
       <ConfirmDialog {...dialogProps} />

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { ChannelPill } from "@/components/ui/badge";
 import { ConfirmDialog, useConfirm } from "@/components/ui/confirm-dialog";
+import { ConnectabilityNotice } from "@/components/panels/connectability-notice";
 import type {
   StatusPayload,
   RunAction,
@@ -155,6 +156,7 @@ export function DiscordPanel({
       {dc.endpointError ? (
         <p className="error-banner">{dc.endpointError}</p>
       ) : null}
+      <ConnectabilityNotice connectability={dc.connectability} />
 
       {dc.configured && !editing ? (
         <div className="channel-connected-view">
@@ -417,7 +419,7 @@ export function DiscordPanel({
           <div className="inline-actions">
             <button
               className="button primary"
-              disabled={pending || !botToken.trim()}
+              disabled={pending || !dc.connectability.canConnect || !botToken.trim()}
               onClick={() => void handleConnect()}
             >
               {pending ? "Connecting..." : "Connect"}
@@ -435,6 +437,11 @@ export function DiscordPanel({
               </button>
             ) : null}
           </div>
+          {!dc.connectability.canConnect ? (
+            <p className="muted-copy">
+              Resolve the deployment blockers above before saving the Discord bot token.
+            </p>
+          ) : null}
         </div>
       )}
       <ConfirmDialog {...dialogProps} />

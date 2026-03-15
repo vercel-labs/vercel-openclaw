@@ -6,8 +6,6 @@ import { createFakeFetch } from "@/test-utils/fake-fetch";
 import {
   fetchDiscordApplicationIdentity,
   patchInteractionsEndpoint,
-  resolveBaseUrl,
-  buildWebhookUrl,
   isPublicUrl,
 } from "@/server/channels/discord/application";
 import {
@@ -185,76 +183,8 @@ test("patchInteractionsEndpoint: throws DISCORD_ENDPOINT_INVALID on 400", async 
 });
 
 // ---------------------------------------------------------------------------
-// application.ts – resolveBaseUrl
+// application.ts – isPublicUrl
 // ---------------------------------------------------------------------------
-
-test("resolveBaseUrl: uses configured BASE_DOMAIN env var", () => {
-  const original = process.env.NEXT_PUBLIC_BASE_DOMAIN;
-  try {
-    process.env.NEXT_PUBLIC_BASE_DOMAIN = "https://myapp.example.com";
-    const req = new Request("http://localhost/api/test");
-    assert.equal(resolveBaseUrl(req), "https://myapp.example.com");
-  } finally {
-    if (original === undefined) {
-      delete process.env.NEXT_PUBLIC_BASE_DOMAIN;
-    } else {
-      process.env.NEXT_PUBLIC_BASE_DOMAIN = original;
-    }
-  }
-});
-
-test("resolveBaseUrl: adds https:// if missing from BASE_DOMAIN", () => {
-  const original = process.env.NEXT_PUBLIC_BASE_DOMAIN;
-  try {
-    process.env.NEXT_PUBLIC_BASE_DOMAIN = "myapp.example.com";
-    const req = new Request("http://localhost/api/test");
-    assert.equal(resolveBaseUrl(req), "https://myapp.example.com");
-  } finally {
-    if (original === undefined) {
-      delete process.env.NEXT_PUBLIC_BASE_DOMAIN;
-    } else {
-      process.env.NEXT_PUBLIC_BASE_DOMAIN = original;
-    }
-  }
-});
-
-test("resolveBaseUrl: falls back to host header", () => {
-  const origPublic = process.env.NEXT_PUBLIC_BASE_DOMAIN;
-  const origBase = process.env.BASE_DOMAIN;
-  try {
-    delete process.env.NEXT_PUBLIC_BASE_DOMAIN;
-    delete process.env.BASE_DOMAIN;
-    const req = new Request("http://localhost/api/test", {
-      headers: { host: "myhost.example.com" },
-    });
-    assert.equal(resolveBaseUrl(req), "https://myhost.example.com");
-  } finally {
-    if (origPublic !== undefined) {
-      process.env.NEXT_PUBLIC_BASE_DOMAIN = origPublic;
-    }
-    if (origBase !== undefined) {
-      process.env.BASE_DOMAIN = origBase;
-    }
-  }
-});
-
-// ---------------------------------------------------------------------------
-// application.ts – buildWebhookUrl, isPublicUrl
-// ---------------------------------------------------------------------------
-
-test("buildWebhookUrl: appends discord webhook path", () => {
-  assert.equal(
-    buildWebhookUrl("https://example.com"),
-    "https://example.com/api/channels/discord/webhook",
-  );
-});
-
-test("buildWebhookUrl: strips trailing slashes", () => {
-  assert.equal(
-    buildWebhookUrl("https://example.com///"),
-    "https://example.com/api/channels/discord/webhook",
-  );
-});
 
 test("isPublicUrl: accepts valid https URLs", () => {
   assert.equal(isPublicUrl("https://example.com/webhook"), true);

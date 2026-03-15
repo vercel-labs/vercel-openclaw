@@ -5,14 +5,14 @@ import type {
   SlackChannelConfig,
   TelegramChannelConfig,
 } from "@/shared/channels";
+import type { ChannelConnectability } from "@/shared/channel-connectability";
 import type { SingleMeta } from "@/shared/types";
-import { getBaseOrigin } from "@/server/env";
 import { getChannelQueueDepth } from "@/server/channels/driver";
+import { buildChannelConnectability } from "@/server/channels/connectability";
 import {
-  buildWebhookUrl as buildDiscordWebhookUrl,
   isPublicUrl,
-  resolveBaseUrl,
 } from "@/server/channels/discord/application";
+import { buildPublicUrl } from "@/server/public-url";
 import { getInitializedMeta, mutateMeta } from "@/server/store/store";
 
 export type PublicSlackState = {
@@ -26,6 +26,7 @@ export type PublicSlackState = {
   hasSigningSecret: boolean;
   hasBotToken: boolean;
   lastError: string | null;
+  connectability: ChannelConnectability;
 };
 
 export type PublicTelegramState = {
@@ -36,6 +37,7 @@ export type PublicTelegramState = {
   configuredAt: number | null;
   lastError: string | null;
   status: "connected" | "disconnected" | "error";
+  connectability: ChannelConnectability;
 };
 
 export type PublicDiscordState = {
@@ -54,6 +56,7 @@ export type PublicDiscordState = {
   commandId: string | null;
   inviteUrl: string | null;
   isPublicUrl: boolean;
+  connectability: ChannelConnectability;
 };
 
 export type PublicChannelState = {
@@ -63,15 +66,15 @@ export type PublicChannelState = {
 };
 
 export function buildSlackWebhookUrl(request: Request): string {
-  return `${getBaseOrigin(request)}/api/channels/slack/webhook`;
+  return buildPublicUrl("/api/channels/slack/webhook", request);
 }
 
 export function buildTelegramWebhookUrl(request: Request): string {
-  return `${getBaseOrigin(request)}/api/channels/telegram/webhook`;
+  return buildPublicUrl("/api/channels/telegram/webhook", request);
 }
 
 export function buildDiscordPublicWebhookUrl(request: Request): string {
-  return buildDiscordWebhookUrl(resolveBaseUrl(request));
+  return buildPublicUrl("/api/channels/discord/webhook", request);
 }
 
 export function createTelegramWebhookSecret(): string {
@@ -95,18 +98,41 @@ export async function getPublicChannelState(
   const discordWebhookUrl = buildDiscordPublicWebhookUrl(request);
   const discordPublic = isPublicUrl(discordWebhookUrl);
 
+  const slackConnectability = buildChannelConnectability(
+    "slack",
+    request,
+    slackWebhookUrl,
+  );
+  const telegramConnectability = buildChannelConnectability(
+    "telegram",
+    request,
+    telegramWebhookUrl,
+  );
+  const discordConnectability = buildChannelConnectability(
+    "discord",
+    request,
+    discordWebhookUrl,
+  );
+
   return {
-    slack: toPublicSlackState(resolvedMeta.channels.slack, slackWebhookUrl, slackQueueDepth),
+    slack: toPublicSlackState(
+      resolvedMeta.channels.slack,
+      slackWebhookUrl,
+      slackQueueDepth,
+      slackConnectability,
+    ),
     telegram: toPublicTelegramState(
       resolvedMeta.channels.telegram,
       telegramWebhookUrl,
       telegramQueueDepth,
+      telegramConnectability,
     ),
     discord: toPublicDiscordState(
       resolvedMeta.channels.discord,
       discordWebhookUrl,
       discordQueueDepth,
       discordPublic,
+      discordConnectability,
     ),
   };
 }
@@ -139,6 +165,7 @@ function toPublicSlackState(
   config: SlackChannelConfig | null,
   webhookUrl: string,
   queueDepth: number,
+  connectability: ChannelConnectability,
 ): PublicSlackState {
   return {
     configured: config !== null,
@@ -151,6 +178,7 @@ function toPublicSlackState(
     hasSigningSecret: Boolean(config?.signingSecret),
     hasBotToken: Boolean(config?.botToken),
     lastError: config?.lastError ?? null,
+    connectability,
   };
 }
 
@@ -158,6 +186,7 @@ function toPublicTelegramState(
   config: TelegramChannelConfig | null,
   webhookUrl: string,
   queueDepth: number,
+  connectability: ChannelConnectability,
 ): PublicTelegramState {
   const status =
     config?.lastError ? "error" : config ? "connected" : "disconnected";
@@ -170,6 +199,7 @@ function toPublicTelegramState(
     configuredAt: config?.configuredAt ?? null,
     lastError: config?.lastError ?? null,
     status,
+    connectability,
   };
 }
 
@@ -178,6 +208,7 @@ function toPublicDiscordState(
   webhookUrl: string,
   queueDepth: number,
   publicUrl: boolean,
+  connectability: ChannelConnectability,
 ): PublicDiscordState {
   const inviteUrl =
     config?.applicationId
@@ -200,5 +231,6 @@ function toPublicDiscordState(
     commandId: config?.commandId ?? null,
     inviteUrl,
     isPublicUrl: publicUrl,
+    connectability,
   };
 }

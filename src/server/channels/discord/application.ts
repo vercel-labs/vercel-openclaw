@@ -81,10 +81,6 @@ function toOptionalString(value: unknown): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
-function trimTrailingSlashes(value: string): string {
-  return value.replace(/\/+$/, "");
-}
-
 export async function fetchDiscordApplicationIdentity(
   botToken: string,
   fetchFn?: typeof fetch,
@@ -170,37 +166,6 @@ export async function patchInteractionsEndpoint(
       )
     );
   }
-}
-
-export function resolveBaseUrl(request: Request): string {
-  const configuredDomain = process.env.NEXT_PUBLIC_BASE_DOMAIN ?? process.env.BASE_DOMAIN;
-  if (configuredDomain && configuredDomain.trim().length > 0) {
-    const trimmed = trimTrailingSlashes(configuredDomain.trim());
-    if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(trimmed)) {
-      return trimmed;
-    }
-
-    return `https://${trimmed}`;
-  }
-
-  const forwardedHost = request.headers.get("x-forwarded-host");
-  const hostHeader = request.headers.get("host");
-  const host = (forwardedHost ?? hostHeader ?? "").split(",")[0]?.trim();
-  if (!host) {
-    throw new ApiError(
-      500,
-      "MISSING_HOST",
-      "Cannot determine the external host for Discord webhook URL generation.",
-    );
-  }
-
-  const forwardedProto = request.headers.get("x-forwarded-proto");
-  const proto = (forwardedProto?.split(",")[0]?.trim() || "https").toLowerCase();
-  return `${proto || "https"}://${host}`;
-}
-
-export function buildWebhookUrl(baseUrl: string): string {
-  return `${trimTrailingSlashes(baseUrl)}/api/channels/discord/webhook`;
 }
 
 export function isPublicUrl(url: string): boolean {

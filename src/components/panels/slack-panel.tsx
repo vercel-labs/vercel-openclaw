@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { ChannelPill } from "@/components/ui/badge";
 import { ConfirmDialog, useConfirm } from "@/components/ui/confirm-dialog";
+import { ConnectabilityNotice } from "@/components/panels/connectability-notice";
 import type {
   StatusPayload,
   RunAction,
@@ -148,6 +149,7 @@ export function SlackPanel({
 
       {panelError ? <p className="error-banner">{panelError}</p> : null}
       {sl.lastError ? <p className="error-banner">{sl.lastError}</p> : null}
+      <ConnectabilityNotice connectability={sl.connectability} />
 
       {sl.configured && !editing ? (
         <div className="channel-connected-view">
@@ -344,7 +346,10 @@ export function SlackPanel({
             <button
               className="button primary"
               disabled={
-                busy || !signingSecret.trim() || !botToken.trim()
+                busy ||
+                !sl.connectability.canConnect ||
+                !signingSecret.trim() ||
+                !botToken.trim()
               }
               onClick={() => void handleConnect()}
             >
@@ -362,6 +367,11 @@ export function SlackPanel({
               </button>
             ) : null}
           </div>
+          {!sl.connectability.canConnect ? (
+            <p className="muted-copy">
+              Resolve the deployment blockers above before saving Slack credentials.
+            </p>
+          ) : null}
         </div>
       )}
       <ConfirmDialog {...dialogProps} />

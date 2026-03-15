@@ -69,7 +69,57 @@ Destructive phases (opt-in): `ensureRunning`, `chatCompletions`, `channelRoundTr
 
 Channel phases (`channelRoundTrip`, `channelWakeFromSleep`) read signing secrets from `/api/admin/channel-secrets`, construct properly-signed webhooks, and verify the full ingestion + drain + completions pipeline. They gracefully skip if no channels are configured.
 
+## Routes
+
+| Route | Purpose |
+| ----- | ------- |
+| `/api/admin/preflight` | Deploy-readiness report: public origin, webhook bypass, durable state, AI Gateway auth, queue replay wiring |
+| `/api/admin/ensure` | Trigger sandbox create or restore |
+| `/api/admin/stop` | Snapshot and stop the sandbox |
+| `/api/admin/snapshot` | Snapshot and stop (same as stop for now) |
+| `/api/admin/channel-secrets` | Expose signing secrets for smoke-test webhook construction |
+| `/api/cron/drain-channels` | Replay queued channel work when `CRON_SECRET` is configured |
+
 ## Architecture
+
+### `src/server/public-url.ts`
+
+Shared external URL resolution and webhook URL construction.
+
+Responsibilities:
+
+- resolve a canonical public origin from `NEXT_PUBLIC_APP_URL`, `NEXT_PUBLIC_BASE_DOMAIN`, `BASE_DOMAIN`, forwarded request headers, or Vercel system env vars (`VERCEL_PROJECT_PRODUCTION_URL`, `VERCEL_BRANCH_URL`, `VERCEL_URL`)
+- expose `getPublicOrigin(request?: Request): string`
+- expose `getProtectionBypassSecret(): string | null`
+- expose `buildPublicUrl(path: string, request?: Request): string`
+- append `x-vercel-protection-bypass=<VERCEL_AUTOMATION_BYPASS_SECRET>` when `VERCEL_AUTH_MODE=deployment-protection`
+
+All channel webhook URL builders (`buildSlackWebhookUrl`, `buildTelegramWebhookUrl`, `buildDiscordPublicWebhookUrl` in `src/server/channels/state.ts`) delegate to `buildPublicUrl`. This guarantees Slack, Telegram, and Discord webhook URLs include the protection bypass query parameter when needed.
+
+### `src/server/deploy-preflight.ts`
+
+Machine-checkable readiness report consumed by `/api/admin/preflight`.
+
+Checks: `public-origin`, `webhook-bypass`, `store`, `ai-gateway`, `drain-recovery`.
+
+`GET /api/admin/preflight` returns a `PreflightPayload`:
+
+```ts
+{
+  ok: boolean;
+  authMode: "deployment-protection" | "sign-in-with-vercel";
+  publicOrigin: string | null;
+  webhookBypassEnabled: boolean;
+  storeBackend: "upstash" | "memory";
+  aiGatewayAuth: "oidc" | "api-key" | "unavailable";
+  cronSecretConfigured: boolean;
+  publicOriginResolution: PublicOriginResolution | null;
+  webhookDiagnostics: { slack, telegram, discord };
+  channels: Record<"slack" | "telegram" | "discord", ChannelConnectability>;
+  actions: PreflightAction[];
+  checks: PreflightCheck[];
+}
+```
 
 ## Control plane
 
@@ -179,6 +229,7 @@ Main files:
 
 - `src/server/channels/driver.ts`
 - `src/server/channels/state.ts`
+- `src/server/channels/connectability.ts`
 - `src/server/channels/slack/adapter.ts`
 - `src/server/channels/telegram/adapter.ts`
 - `src/server/channels/telegram/bot-api.ts`
@@ -196,6 +247,60 @@ Behavior:
 - `/api/cron/drain-channels` can replay deferred queue work when `CRON_SECRET` is configured
 
 If you change queue semantics, keep the webhook acknowledgment path fast and preserve retry behavior.
+
+### Channel connectability and 409 guards
+
+`src/server/channels/connectability.ts` computes whether a channel can be connected before credentials are saved. All three channel config routes (Slack, Telegram, Discord) enforce this check at the top of their `PUT` handler.
+
+Hard blockers (cause `canConnect: false`):
+
+- canonical public HTTPS webhook URL cannot be resolved
+- `VERCEL_AUTOMATION_BYPASS_SECRET` is missing when running on Vercel with `VERCEL_AUTH_MODE=deployment-protection`
+
+Warnings only (do not block connect):
+
+- missing Upstash store (queue state won't survive cold starts)
+- missing `CRON_SECRET` (retries depend on future traffic)
+
+Guard pattern used in each channel route:
+
+```ts
+const connectability = buildChannelConnectability("<channel>", request);
+if (!connectability.canConnect) {
+  return buildChannelConnectBlockedResponse(auth, connectability);
+}
+```
+
+Shared blocked response (HTTP 409):
+
+```json
+{
+  "error": {
+    "code": "CHANNEL_CONNECT_BLOCKED",
+    "message": "Cannot connect <channel> until deployment blockers are resolved."
+  },
+  "connectability": {
+    "channel": "<channel>",
+    "canConnect": false,
+    "status": "fail",
+    "webhookUrl": null,
+    "issues": [...]
+  }
+}
+```
+
+Discord also has a separate 409 for endpoint conflicts:
+
+```json
+{
+  "error": {
+    "code": "DISCORD_ENDPOINT_CONFLICT",
+    "message": "Discord interactions endpoint is already set to a different URL. Set forceOverwriteEndpoint=true to replace it."
+  },
+  "currentUrl": "<currentUrl>",
+  "desiredUrl": "<desiredUrl>"
+}
+```
 
 ## Auth
 
@@ -245,7 +350,7 @@ pnpm build
 
 ## Current sharp edges
 
-- The first automatic bootstrap does not create a snapshot yet.
+- Initial bootstrap now creates a recovery snapshot automatically.
 - The memory store is not safe for production persistence.
 - Firewall learning is based on shell command observation, not full traffic inspection.
 - Channel webhook durability depends on the store backend. Use Upstash when channels matter.

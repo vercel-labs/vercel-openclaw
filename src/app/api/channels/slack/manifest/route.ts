@@ -1,5 +1,5 @@
-import { ApiError } from "@/shared/http";
 import { authJsonError, authJsonOk, requireJsonRouteAuth } from "@/server/auth/route-auth";
+import { buildPublicUrl } from "@/server/public-url";
 
 const SLACK_BOT_SCOPES = [
   "chat:write",
@@ -13,33 +13,6 @@ const SLACK_BOT_EVENTS = [
   "message.channels",
   "message.groups",
 ] as const;
-
-function normalizeBaseDomain(value: string): string {
-  const normalized = value
-    .trim()
-    .replace(/^https?:\/\//i, "")
-    .replace(/\/+$/, "");
-
-  if (!normalized) {
-    throw new ApiError(500, "INVALID_BASE_DOMAIN", "Unable to resolve base domain for Slack manifest");
-  }
-
-  return normalized;
-}
-
-function resolveBaseDomain(request: Request): string {
-  const configuredDomain = process.env.NEXT_PUBLIC_BASE_DOMAIN;
-  if (configuredDomain && configuredDomain.trim().length > 0) {
-    return normalizeBaseDomain(configuredDomain);
-  }
-
-  const hostHeader = request.headers.get("host");
-  if (hostHeader && hostHeader.trim().length > 0) {
-    return normalizeBaseDomain(hostHeader);
-  }
-
-  return normalizeBaseDomain(new URL(request.url).host);
-}
 
 function buildManifest(webhookUrl: string): Record<string, unknown> {
   return {
@@ -82,8 +55,7 @@ export async function GET(request: Request): Promise<Response> {
   }
 
   try {
-    const baseDomain = resolveBaseDomain(request);
-    const webhookUrl = `https://${baseDomain}/api/channels/slack/webhook`;
+    const webhookUrl = buildPublicUrl("/api/channels/slack/webhook", request);
     const manifest = buildManifest(webhookUrl);
     const manifestJson = JSON.stringify(manifest);
     const createAppUrl =

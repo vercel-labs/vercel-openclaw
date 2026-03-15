@@ -1,3 +1,5 @@
+import type { ChannelConnectability } from "@/shared/channel-connectability";
+
 export type DomainCategory = "npm" | "curl" | "git" | "dns" | "fetch" | "unknown";
 
 export type LearnedDomain = {
@@ -53,6 +55,7 @@ export type StatusPayload = {
       hasSigningSecret: boolean;
       hasBotToken: boolean;
       lastError: string | null;
+      connectability: ChannelConnectability;
     };
     telegram: {
       configured: boolean;
@@ -62,6 +65,7 @@ export type StatusPayload = {
       configuredAt: number | null;
       lastError: string | null;
       status: "connected" | "disconnected" | "error";
+      connectability: ChannelConnectability;
     };
     discord: {
       configured: boolean;
@@ -79,6 +83,7 @@ export type StatusPayload = {
       commandId: string | null;
       inviteUrl: string | null;
       isPublicUrl: boolean;
+      connectability: ChannelConnectability;
     };
   };
   user: {

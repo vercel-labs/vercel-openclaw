@@ -2,12 +2,18 @@ import type { DiscordChannelConfig } from "@/shared/channels";
 import { ApiError } from "@/shared/http";
 import { authJsonError, authJsonOk, requireJsonRouteAuth } from "@/server/auth/route-auth";
 import {
-  buildWebhookUrl,
+  buildChannelConnectability,
+  buildChannelConnectBlockedResponse,
+} from "@/server/channels/connectability";
+import {
   fetchDiscordApplicationIdentity,
   patchInteractionsEndpoint,
-  resolveBaseUrl,
 } from "@/server/channels/discord/application";
-import { getPublicChannelState, setDiscordChannelConfig } from "@/server/channels/state";
+import {
+  buildDiscordPublicWebhookUrl,
+  getPublicChannelState,
+  setDiscordChannelConfig,
+} from "@/server/channels/state";
 import { getInitializedMeta } from "@/server/store/store";
 
 const DISCORD_API_BASE = "https://discord.com/api/v10";
@@ -126,6 +132,11 @@ export async function PUT(request: Request): Promise<Response> {
     return auth;
   }
 
+  const connectability = buildChannelConnectability("discord", request);
+  if (!connectability.canConnect) {
+    return buildChannelConnectBlockedResponse(auth, connectability);
+  }
+
   try {
     const body = (await request.json()) as {
       botToken?: unknown;
@@ -148,7 +159,7 @@ export async function PUT(request: Request): Promise<Response> {
     );
 
     const identity = await fetchDiscordApplicationIdentity(normalizedBotToken);
-    const webhookUrl = buildWebhookUrl(resolveBaseUrl(request));
+    const webhookUrl = buildDiscordPublicWebhookUrl(request);
 
     let updatedConfig: DiscordChannelConfig = {
       applicationId: identity.applicationId,

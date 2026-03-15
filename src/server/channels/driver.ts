@@ -64,6 +64,8 @@ type DrainChannelQueueOptions<
   channel: ChannelName;
   getConfig(meta: SingleMeta): TConfig | null;
   createAdapter(config: TConfig): PlatformAdapter<TPayload, TMessage>;
+  /** Override sandbox readiness timeout (ms). Defaults to lifecycle's READY_WAIT_TIMEOUT_MS. */
+  sandboxReadyTimeoutMs?: number;
 };
 
 export async function enqueueChannelJob<TPayload>(
@@ -326,11 +328,26 @@ async function processChannelJob<
       }
     }
 
-    const readyMeta = await ensureSandboxReady({
-      origin: resolveAppOrigin(job.origin),
-      reason: `channel:${options.channel}`,
-    });
-    const gatewayUrl = await getSandboxDomain();
+    let readyMeta: Awaited<ReturnType<typeof ensureSandboxReady>>;
+    let gatewayUrl: string;
+    try {
+      readyMeta = await ensureSandboxReady({
+        origin: resolveAppOrigin(job.origin),
+        reason: `channel:${options.channel}`,
+        ...(options.sandboxReadyTimeoutMs != null
+          ? { timeoutMs: options.sandboxReadyTimeoutMs }
+          : {}),
+      });
+      gatewayUrl = await getSandboxDomain();
+    } catch (sandboxError) {
+      logWarn("channels.sandbox_not_ready", {
+        channel: options.channel,
+        error: formatError(sandboxError),
+      });
+      throw new RetryableChannelError(
+        `sandbox_not_ready: ${formatError(sandboxError)}`,
+      );
+    }
     await touchRunningSandbox();
 
     const messages = adapter.buildGatewayMessages

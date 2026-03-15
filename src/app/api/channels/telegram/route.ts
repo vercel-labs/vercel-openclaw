@@ -1,5 +1,9 @@
 import { ApiError } from "@/shared/http";
 import { authJsonError, authJsonOk, requireJsonRouteAuth } from "@/server/auth/route-auth";
+import {
+  buildChannelConnectability,
+  buildChannelConnectBlockedResponse,
+} from "@/server/channels/connectability";
 import { getMe, deleteWebhook, setWebhook } from "@/server/channels/telegram/bot-api";
 import {
   createTelegramWebhookSecret,
@@ -37,6 +41,11 @@ export async function PUT(request: Request): Promise<Response> {
   const auth = await requireJsonRouteAuth(request);
   if (auth instanceof Response) {
     return auth;
+  }
+
+  const connectability = buildChannelConnectability("telegram", request);
+  if (!connectability.canConnect) {
+    return buildChannelConnectBlockedResponse(auth, connectability);
   }
 
   try {
