@@ -30,16 +30,9 @@ type PreflightAction = {
   env: string[];
 };
 
-type PreflightNextStep = {
-  id: string;
-  label: string;
-  description: string;
-};
-
 type PreflightData = {
   ok: boolean;
   actions: PreflightAction[];
-  nextSteps: PreflightNextStep[];
 };
 
 type ChannelsPanelProps = {
@@ -146,16 +139,6 @@ export function ChannelsPanel({
                 {action.remediation}
               </p>
             ))}
-        </div>
-      ) : null}
-
-      {preflight?.nextSteps && preflight.nextSteps.length > 0 && preflight.ok ? (
-        <div className="connectability-warning-banner" style={{ marginBottom: 16 }}>
-          {preflight.nextSteps.map((step) => (
-            <p key={step.id} className="muted-copy" style={{ margin: "2px 0" }}>
-              <strong>{step.label}:</strong> {step.description}
-            </p>
-          ))}
         </div>
       ) : null}
 
