@@ -168,47 +168,16 @@ function buildInterceptorScript(context: WrapperContext): string {
   window.WebSocket.CLOSING = OriginalWebSocket.CLOSING;
   window.WebSocket.CLOSED = OriginalWebSocket.CLOSED;
 
-  // Inject token into URL for OpenClaw's own auth, then strip it.
-  // The OpenClaw React app reads the token from the URL asynchronously
-  // (in a useEffect after render), so we must wait until the app has
-  // consumed it before stripping.  We poll localStorage for the token
-  // and strip as soon as it appears, with a frame-budget cap.
-  // Referrer-Policy: no-referrer is set on the response headers, so the
-  // token cannot leak via the Referer header while it is in the URL.
+  // Pass the gateway token to the OpenClaw app via the URL hash fragment.
+  // The app reads token from the hash (not query params) and cleans it up
+  // itself after consuming it.  The hash fragment is never sent to servers,
+  // so there is no leakage risk.
   if (GATEWAY_TOKEN) {
     var u = new URL(location.href);
-    u.searchParams.set('token', GATEWAY_TOKEN);
+    var hashParams = new URLSearchParams(u.hash.startsWith('#') ? u.hash.slice(1) : u.hash);
+    hashParams.set('token', GATEWAY_TOKEN);
+    u.hash = '#' + hashParams.toString();
     history.replaceState(null, '', u.pathname + u.search + u.hash);
-
-    var stripToken = function() {
-      var cleaned = new URL(location.href);
-      if (!cleaned.searchParams.has('token')) return;
-      cleaned.searchParams.delete('token');
-      history.replaceState(null, '', cleaned.pathname + cleaned.search + cleaned.hash);
-    };
-
-    var TOKEN_CONSUMED_SETTINGS_KEY = 'openclaw.control.settings.v1';
-    var MAX_POLL_FRAMES = 150;
-    var pollCount = 0;
-
-    var tokenConsumed = function() {
-      try {
-        var s = JSON.parse(localStorage.getItem(TOKEN_CONSUMED_SETTINGS_KEY) || '{}');
-        return !!s.gatewayToken;
-      } catch (e) { return false; }
-    };
-
-    var pollAndStrip = function() {
-      if (tokenConsumed() || ++pollCount >= MAX_POLL_FRAMES) {
-        stripToken();
-        return;
-      }
-      requestAnimationFrame(pollAndStrip);
-    };
-
-    window.addEventListener('load', function() {
-      requestAnimationFrame(pollAndStrip);
-    }, { once: true });
   }
 })();
 </script>`;
