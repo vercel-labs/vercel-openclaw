@@ -297,6 +297,17 @@ a[href]:focus-visible {
   color: var(--foreground);
 }
 
+.button.success {
+  background: #0a7c42;
+  border-color: #0a7c42;
+  color: #fff;
+}
+
+.button.success:hover:not(:disabled) {
+  background: #0d9950;
+  border-color: #0d9950;
+}
+
 .button.secondary:hover:not(:disabled),
 .button.accent:hover:not(:disabled),
 .button.ghost:hover:not(:disabled) {
@@ -1537,6 +1548,16 @@ a[href]:focus-visible {
 
 .tab-trigger:hover {
   color: var(--foreground);
+}
+
+.tab-trigger:focus {
+  outline: none;
+}
+
+.tab-trigger:focus-visible {
+  outline: 2px solid var(--foreground-muted);
+  outline-offset: -2px;
+  border-radius: 4px;
 }
 
 .tab-trigger[data-active="true"] {

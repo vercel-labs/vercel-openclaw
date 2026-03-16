@@ -85,39 +85,27 @@ export function StatusPanel({ status, busy, runAction }: StatusPanelProps) {
       </dl>
 
       <div className="hero-actions">
-        <button
-          className="button primary"
-          disabled={busy}
-          onClick={() =>
-            void runAction("/api/admin/ensure", {
-              label: "Ensure sandbox",
-              method: "POST",
-            })
-          }
-        >
-          {status.status === "running" ? "Refresh ensure" : "Ensure running"}
-        </button>
         <a
-          className="button accent"
+          className="button success"
           href={status.gatewayUrl}
           target="_blank"
           rel="noreferrer"
         >
-          Open gateway
+          Open VClaw
         </a>
         <button
           className="button ghost"
           disabled={busy}
           onClick={() => void handleStop()}
         >
-          Snapshot and stop
+          Stop
         </button>
         <button
           className="button ghost"
           disabled={busy}
           onClick={() => void handleSnapshot()}
         >
-          Snapshot now
+          Save snapshot
         </button>
       </div>
 
