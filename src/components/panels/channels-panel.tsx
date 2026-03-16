@@ -117,7 +117,7 @@ export function ChannelsPanel({
       <div className="panel-head">
         <div>
           <p className="eyebrow">Channels</p>
-          <h2>External entry points.</h2>
+          <h2>External entry points</h2>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           {isReady && (

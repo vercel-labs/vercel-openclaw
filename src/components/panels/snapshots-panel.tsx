@@ -101,7 +101,7 @@ export function SnapshotsPanel({
       <div className="panel-head">
         <div>
           <p className="eyebrow">Snapshots</p>
-          <h2>Snapshot history.</h2>
+          <h2>Snapshot history</h2>
         </div>
         <button
           type="button"

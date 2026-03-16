@@ -1487,6 +1487,18 @@ a[href]:focus-visible {
   color: var(--warning);
 }
 
+.status-badge.creating::before,
+.status-badge.restoring::before,
+.status-badge.booting::before,
+.status-badge.setup::before {
+  animation: badge-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes badge-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.25; }
+}
+
 .status-badge.error {
   border-color: rgba(229, 72, 77, 0.2);
   background: var(--danger-surface);

@@ -49,7 +49,7 @@ export function StatusPanel({ status, busy, runAction }: StatusPanelProps) {
       <div className="panel-head">
         <div>
           <p className="eyebrow">Sandbox</p>
-          <h2>Sandbox status.</h2>
+          <h2>Sandbox status</h2>
         </div>
         <StatusBadge status={status.status} />
       </div>

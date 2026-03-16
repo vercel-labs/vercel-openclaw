@@ -139,7 +139,7 @@ export function LogsPanel({ status }: LogsPanelProps) {
       <div className="panel-head">
         <div>
           <p className="eyebrow">Logs</p>
-          <h2>Sandbox log viewer.</h2>
+          <h2>Sandbox log viewer</h2>
         </div>
         <button
           type="button"

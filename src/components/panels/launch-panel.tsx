@@ -132,7 +132,7 @@ export function LaunchPanel({ status, busy, requestJson, onReadinessChange }: La
       <div className="panel-head">
         <div>
           <p className="eyebrow">Launch Verification</p>
-          <h2>Prove this deployment works end-to-end.</h2>
+          <h2>Prove this deployment works end-to-end</h2>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           {displayReadiness && (
