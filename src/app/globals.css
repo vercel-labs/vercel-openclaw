@@ -1041,6 +1041,27 @@ a[href]:focus-visible {
 
 .launch-phase-running .launch-phase-icon {
   color: var(--warning);
+  animation: pulse-icon 1.2s ease-in-out infinite;
+}
+
+@keyframes pulse-icon {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.launch-progress-bar {
+  height: 4px;
+  background: var(--card-border);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.launch-progress-fill {
+  height: 100%;
+  background: var(--success);
+  border-radius: 2px;
+  transition: width 0.4s ease;
+  min-width: 2%;
 }
 
 .success-copy {

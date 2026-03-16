@@ -126,6 +126,9 @@ function normalizeReply(value: string): string {
   return value.trim().replace(/\s+/g, " ");
 }
 
+const COMPLETION_MAX_RETRIES = 2;
+const COMPLETION_RETRY_DELAY_MS = 3_000;
+
 export async function runLaunchVerifyCompletion(options: {
   gatewayUrl: string;
   gatewayToken: string;
@@ -138,46 +141,67 @@ export async function runLaunchVerifyCompletion(options: {
     prompt: options.prompt,
   });
 
-  const response = await fetch(
-    new URL("/v1/chat/completions", options.gatewayUrl),
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${options.gatewayToken}`,
-      },
-      body: JSON.stringify({
-        model: "default",
-        messages: [{ role: "user", content: options.prompt }],
-        stream: false,
-      }),
-      signal: AbortSignal.timeout(options.requestTimeoutMs ?? 90_000),
-    },
-  );
+  let lastError: Error | null = null;
 
-  if (!response.ok) {
-    const text = (await response.text().catch(() => "")).slice(0, 300);
-    throw new Error(`Gateway returned ${response.status}: ${text}`);
+  for (let attempt = 0; attempt <= COMPLETION_MAX_RETRIES; attempt++) {
+    if (attempt > 0) {
+      logInfo("launch_verify.completion_retry", { attempt, maxRetries: COMPLETION_MAX_RETRIES });
+      await new Promise((r) => setTimeout(r, COMPLETION_RETRY_DELAY_MS));
+    }
+
+    let response: Response;
+    try {
+      response = await fetch(
+        new URL("/v1/chat/completions", options.gatewayUrl),
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${options.gatewayToken}`,
+          },
+          body: JSON.stringify({
+            model: "default",
+            messages: [{ role: "user", content: options.prompt }],
+            stream: false,
+          }),
+          signal: AbortSignal.timeout(options.requestTimeoutMs ?? 90_000),
+        },
+      );
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+      continue;
+    }
+
+    if (!response.ok) {
+      const text = (await response.text().catch(() => "")).slice(0, 300);
+      lastError = new Error(`Gateway returned ${response.status}: ${text}`);
+      if (response.status >= 500 && attempt < COMPLETION_MAX_RETRIES) {
+        continue;
+      }
+      throw lastError;
+    }
+
+    const payload = (await response.json()) as unknown;
+    const reply = extractReply(payload);
+    if (!reply) {
+      throw new Error("Gateway response did not contain a reply.");
+    }
+
+    const replyText = toPlainText(reply);
+
+    logInfo("launch_verify.completion_done", {
+      replyText,
+      expectedText: options.expectedText,
+    });
+
+    if (normalizeReply(replyText) !== normalizeReply(options.expectedText)) {
+      throw new Error(
+        `Expected ${JSON.stringify(options.expectedText)} but got ${JSON.stringify(replyText)}`,
+      );
+    }
+
+    return replyText;
   }
 
-  const payload = (await response.json()) as unknown;
-  const reply = extractReply(payload);
-  if (!reply) {
-    throw new Error("Gateway response did not contain a reply.");
-  }
-
-  const replyText = toPlainText(reply);
-
-  logInfo("launch_verify.completion_done", {
-    replyText,
-    expectedText: options.expectedText,
-  });
-
-  if (normalizeReply(replyText) !== normalizeReply(options.expectedText)) {
-    throw new Error(
-      `Expected ${JSON.stringify(options.expectedText)} but got ${JSON.stringify(replyText)}`,
-    );
-  }
-
-  return replyText;
+  throw lastError ?? new Error("Gateway completions failed after retries.");
 }

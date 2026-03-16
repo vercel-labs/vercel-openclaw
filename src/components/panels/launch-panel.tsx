@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import type { StatusPayload, RequestJson } from "@/components/admin-types";
 import type {
@@ -68,10 +68,19 @@ async function loadPersistedReadiness(): Promise<ChannelReadiness | null> {
   }
 }
 
+type StreamPhaseEvent = { type: "phase"; phase: LaunchVerificationPhase };
+type StreamResultEvent = {
+  type: "result";
+  payload: LaunchVerificationPayload & { channelReadiness?: ChannelReadiness };
+};
+type StreamEvent = StreamPhaseEvent | StreamResultEvent;
+
 export function LaunchPanel({ status, busy, requestJson, onReadinessChange }: LaunchPanelProps) {
   const [result, setResult] = useState<LaunchVerificationPayload | null>(null);
   const [readiness, setReadiness] = useState<ChannelReadiness | null>(null);
   const [running, setRunning] = useState(false);
+  const [streamingPhases, setStreamingPhases] = useState<LaunchVerificationPhase[]>([]);
+  const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -87,45 +96,112 @@ export function LaunchPanel({ status, busy, requestJson, onReadinessChange }: La
 
   async function runVerification(mode: "safe" | "destructive"): Promise<void> {
     setRunning(true);
+    setStreamingPhases([]);
+    setResult(null);
+
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     try {
-      const payload = await requestJson<LaunchVerificationPayload & { channelReadiness?: ChannelReadiness }>(
-        "/api/admin/launch-verify",
-        {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ mode }),
-          label: "Verify deployment",
-          refreshAfter: false,
+      const response = await fetch("/api/admin/launch-verify", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          accept: "application/x-ndjson",
         },
-      );
-      if (payload) {
-        setResult(payload);
-        if (payload.channelReadiness) {
-          setReadiness(payload.channelReadiness);
-          onReadinessChange?.(payload.channelReadiness);
-        }
-        if (!payload.ok) {
-          const failing = payload.phases.find((p) => p.status === "fail");
-          if (failing) {
-            toast.error(`Verification failed at ${failing.id}: ${failing.error ?? failing.message}`);
+        body: JSON.stringify({ mode }),
+        signal: controller.signal,
+      });
+
+      if (response.status === 401) {
+        return;
+      }
+
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null) as { error?: { message?: string } } | null;
+        const msg = payload?.error?.message ?? `HTTP ${response.status}`;
+        toast.error(msg);
+        return;
+      }
+
+      const reader = response.body?.getReader();
+      if (!reader) {
+        toast.error("No response stream");
+        return;
+      }
+
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          try {
+            const event = JSON.parse(trimmed) as StreamEvent;
+            if (event.type === "phase") {
+              setStreamingPhases((prev) => {
+                const existing = prev.findIndex((p) => p.id === event.phase.id);
+                if (existing >= 0) {
+                  const next = [...prev];
+                  next[existing] = event.phase;
+                  return next;
+                }
+                return [...prev, event.phase];
+              });
+            } else if (event.type === "result") {
+              setResult(event.payload);
+              setStreamingPhases([]);
+              if (event.payload.channelReadiness) {
+                setReadiness(event.payload.channelReadiness);
+                onReadinessChange?.(event.payload.channelReadiness);
+              }
+              if (!event.payload.ok) {
+                const failing = event.payload.phases.find((p) => p.status === "fail");
+                if (failing) {
+                  toast.error(`Verification failed at ${failing.id}: ${failing.error ?? failing.message}`);
+                }
+              }
+            }
+          } catch {
+            // Skip malformed lines
           }
         }
       }
+    } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") return;
+      const msg = err instanceof Error ? err.message : String(err);
+      toast.error(msg);
     } finally {
+      abortRef.current = null;
       setRunning(false);
     }
   }
 
-  // Use persisted readiness phases when no fresh result exists
   const displayResult = result;
   const displayReadiness = readiness;
+  const isStreaming = running && streamingPhases.length > 0;
 
   const totalMs = displayResult
     ? new Date(displayResult.completedAt).getTime() - new Date(displayResult.startedAt).getTime()
     : 0;
 
-  // Show persisted readiness info even without a fresh run
-  const showPersistedPhases = !displayResult && displayReadiness && displayReadiness.phases.length > 0;
+  const showPersistedPhases = !displayResult && !isStreaming && displayReadiness && displayReadiness.phases.length > 0;
+
+  const completedStreamCount = streamingPhases.filter(
+    (p) => p.status !== "running",
+  ).length;
+  const totalPhaseCount = 5;
+  const progressPct = isStreaming
+    ? Math.round((completedStreamCount / totalPhaseCount) * 100)
+    : 0;
 
   return (
     <article className="panel-card full-span">
@@ -170,6 +246,36 @@ export function LaunchPanel({ status, busy, requestJson, onReadinessChange }: La
           Quick Check
         </button>
       </div>
+
+      {isStreaming && (
+        <div style={{ marginTop: 16 }}>
+          <div className="launch-progress-bar" style={{ marginBottom: 12 }}>
+            <div
+              className="launch-progress-fill"
+              style={{ width: `${progressPct}%` }}
+            />
+          </div>
+          <div className="launch-phases">
+            {streamingPhases.map((phase) => (
+              <div
+                key={phase.id}
+                className={`launch-phase-row ${phaseStatusClass(phase)}`}
+              >
+                <span className="launch-phase-icon">
+                  {phaseStatusIcon(phase)}
+                </span>
+                <span className="launch-phase-id">{phase.id}</span>
+                <span className="launch-phase-message">{phase.message}</span>
+                {phase.durationMs > 0 && (
+                  <span className="launch-phase-duration">
+                    {formatDuration(phase.durationMs)}
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {displayResult && (
         <div style={{ marginTop: 16 }}>
@@ -233,11 +339,11 @@ export function LaunchPanel({ status, busy, requestJson, onReadinessChange }: La
           >
             <div>
               <dt>Mode</dt>
-              <dd>{displayReadiness.mode ?? "—"}</dd>
+              <dd>{displayReadiness.mode ?? "\u2014"}</dd>
             </div>
             <div>
               <dt>Last verified</dt>
-              <dd>{displayReadiness.verifiedAt ? formatTimestamp(displayReadiness.verifiedAt) : "—"}</dd>
+              <dd>{displayReadiness.verifiedAt ? formatTimestamp(displayReadiness.verifiedAt) : "\u2014"}</dd>
             </div>
           </div>
 
