@@ -12,11 +12,12 @@ import {
   probeGatewayReady,
   stopSandbox,
 } from "@/server/sandbox/lifecycle";
-import { getAiGatewayBearerTokenOptional, getOpenclawPackageSpec } from "@/server/env";
+import { getOpenclawPackageSpec } from "@/server/env";
 import { detectDrift } from "@/server/openclaw/bootstrap";
 import { getInitializedMeta } from "@/server/store/store";
 import {
   publishLaunchVerifyQueueProbe,
+  runLaunchVerifyCompletion,
   waitForLaunchVerifyQueueResult,
 } from "@/server/launch-verify/queue-probe";
 import {
@@ -196,51 +197,23 @@ export async function POST(request: Request): Promise<Response> {
   });
   phases.push(ensurePhase);
 
-  // Phase 4: chatCompletions - verify gateway responds with AI Gateway auth
+  // Phase 4: chatCompletions - verify gateway responds with exact expected text.
+  // Uses the same runLaunchVerifyCompletion() as the destructive wake path so
+  // safe and destructive modes prove identical things.
   if (ensurePhase.status === "pass") {
     const chatPhase = await runPhase("chatCompletions", async () => {
       const gatewayUrl = await getSandboxDomain();
       const meta = await getInitializedMeta();
-      const aiGatewayToken = await getAiGatewayBearerTokenOptional();
-      if (!aiGatewayToken) {
-        throw new Error("No AI Gateway bearer token available.");
-      }
 
-      const headers: Record<string, string> = {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${meta.gatewayToken}`,
-        "X-AI-Gateway-Token": aiGatewayToken,
-      };
-
-      logInfo("launch_verify.chat_completions_auth", {
-        hasGatewayToken: Boolean(meta.gatewayToken),
-        hasAiGatewayToken: Boolean(aiGatewayToken),
+      const replyText = await runLaunchVerifyCompletion({
+        gatewayUrl,
+        gatewayToken: meta.gatewayToken,
+        prompt: "Reply with exactly: launch-verify-ok",
+        expectedText: "launch-verify-ok",
+        requestTimeoutMs: 30_000,
       });
 
-      const res = await fetch(`${gatewayUrl}/v1/chat/completions`, {
-        method: "POST",
-        headers,
-        body: JSON.stringify({
-          model: "default",
-          messages: [{ role: "user", content: "Reply with exactly: launch-verify-ok" }],
-          stream: false,
-        }),
-        signal: AbortSignal.timeout(30_000),
-      });
-
-      if (!res.ok) {
-        const text = await res.text().catch(() => "");
-        throw new Error(`Gateway returned ${res.status}: ${text.slice(0, 200)}`);
-      }
-
-      const data = (await res.json()) as {
-        choices?: Array<{ message?: { content?: string } }>;
-      };
-      const content = data.choices?.[0]?.message?.content ?? "";
-      if (!content) {
-        throw new Error("Gateway returned empty response.");
-      }
-      return `Gateway replied through OpenClaw (${content.length} chars).`;
+      return `Gateway replied with exact text: ${replyText}`;
     });
     phases.push(chatPhase);
   } else {
