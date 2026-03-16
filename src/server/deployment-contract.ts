@@ -5,7 +5,7 @@ import {
   getStoreEnv,
   isVercelDeployment,
 } from "@/server/env";
-import { resolvePublicOrigin, getProtectionBypassSecret } from "@/server/public-url";
+import { resolvePublicOrigin } from "@/server/public-url";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -33,9 +33,9 @@ export type DeploymentRequirement = {
 
 export type DeploymentContract = {
   ok: boolean;
-  authMode: "deployment-protection" | "sign-in-with-vercel";
+  authMode: "admin-secret" | "sign-in-with-vercel";
   storeBackend: "upstash" | "memory";
-  aiGatewayAuth: "oidc" | "api-key" | "unavailable";
+  aiGatewayAuth: "oidc" | "unavailable";
   openclawPackageSpec: string | null;
   requirements: DeploymentRequirement[];
 };
@@ -102,34 +102,12 @@ function checkPublicOrigin(
   }
 }
 
-function checkWebhookBypass(
-  authMode: "deployment-protection" | "sign-in-with-vercel",
-  onVercel: boolean,
-): DeploymentRequirement | null {
-  if (!onVercel || authMode !== "deployment-protection") {
-    return null;
-  }
-
-  const configured = Boolean(getProtectionBypassSecret());
-
-  return configured
-    ? {
-        id: "webhook-bypass",
-        status: "pass",
-        message:
-          "Webhook protection bypass is configured for deployment-protection mode.",
-        remediation: "",
-        env: ["VERCEL_AUTOMATION_BYPASS_SECRET"],
-      }
-    : {
-        id: "webhook-bypass",
-        status: "fail",
-        message:
-          "Deployment-protection mode requires VERCEL_AUTOMATION_BYPASS_SECRET for public webhooks.",
-        remediation:
-          "In your Vercel project, go to Settings > Deployment Protection > Protection Bypass for Automation and enable it. Copy the generated secret and add it as the VERCEL_AUTOMATION_BYPASS_SECRET environment variable.",
-        env: ["VERCEL_AUTOMATION_BYPASS_SECRET"],
-      };
+function checkWebhookBypass(): DeploymentRequirement | null {
+  // Webhook bypass is no longer a hard requirement. The app uses
+  // admin-secret auth so channel webhooks are not blocked by Vercel's
+  // deployment protection. If VERCEL_AUTOMATION_BYPASS_SECRET is set,
+  // it is applied opportunistically to webhook URLs (see public-url.ts).
+  return null;
 }
 
 function checkStore(onVercel: boolean): DeploymentRequirement {
@@ -159,37 +137,28 @@ function checkStore(onVercel: boolean): DeploymentRequirement {
 
 function checkAiGateway(
   onVercel: boolean,
-  aiGatewayAuth: "oidc" | "api-key" | "unavailable",
+  aiGatewayAuth: "oidc" | "unavailable",
 ): DeploymentRequirement {
-  if (onVercel && aiGatewayAuth !== "oidc") {
+  if (aiGatewayAuth === "unavailable") {
     return {
       id: "ai-gateway",
-      status: "fail",
-      message:
-        "Deployed Vercel environments must use OIDC for AI Gateway auth.",
-      remediation:
-        "Remove AI_GATEWAY_API_KEY from the deployment and rely on the Vercel OIDC token.",
-      env: ["AI_GATEWAY_API_KEY"],
-    };
-  }
-
-  if (!onVercel && aiGatewayAuth === "unavailable") {
-    return {
-      id: "ai-gateway",
-      status: "warn",
-      message: "AI Gateway auth is not configured in this environment.",
-      remediation:
-        "Set AI_GATEWAY_API_KEY for local development, or run on Vercel with OIDC enabled.",
-      env: ["AI_GATEWAY_API_KEY"],
+      status: onVercel ? "fail" : "warn",
+      message: onVercel
+        ? "OIDC token is not available on this Vercel deployment."
+        : "OIDC token is not available. Run `vercel link && vercel env pull` for local dev.",
+      remediation: onVercel
+        ? "Redeploy the project so the deployment receives its OIDC token."
+        : "Run `vercel link && vercel env pull` to pull OIDC credentials for local development.",
+      env: [],
     };
   }
 
   return {
     id: "ai-gateway",
     status: "pass",
-    message: `AI Gateway auth mode is ${aiGatewayAuth}.`,
+    message: "AI Gateway auth uses OIDC.",
     remediation: "",
-    env: ["AI_GATEWAY_API_KEY"],
+    env: [],
   };
 }
 
@@ -202,7 +171,7 @@ function checkOpenclawPackageSpec(
 }
 
 function checkOauthClientId(
-  authMode: "deployment-protection" | "sign-in-with-vercel",
+  authMode: "admin-secret" | "sign-in-with-vercel",
 ): DeploymentRequirement | null {
   if (authMode !== "sign-in-with-vercel") return null;
 
@@ -229,7 +198,7 @@ function checkOauthClientId(
 }
 
 function checkOauthClientSecret(
-  authMode: "deployment-protection" | "sign-in-with-vercel",
+  authMode: "admin-secret" | "sign-in-with-vercel",
 ): DeploymentRequirement | null {
   if (authMode !== "sign-in-with-vercel") return null;
 
@@ -256,7 +225,7 @@ function checkOauthClientSecret(
 }
 
 function checkSessionSecret(
-  authMode: "deployment-protection" | "sign-in-with-vercel",
+  authMode: "admin-secret" | "sign-in-with-vercel",
   onVercel: boolean,
 ): DeploymentRequirement | null {
   if (authMode !== "sign-in-with-vercel") return null;
@@ -300,7 +269,7 @@ export async function buildDeploymentContract(
 
   const requirements = [
     checkPublicOrigin(onVercel, options.request),
-    checkWebhookBypass(authMode, onVercel),
+    checkWebhookBypass(),
     checkStore(onVercel),
     checkAiGateway(onVercel, aiGatewayAuth),
     checkOpenclawPackageSpec(onVercel),

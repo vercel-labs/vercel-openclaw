@@ -41,12 +41,12 @@ test("bypass is not required in sign-in-with-vercel mode", () => {
   });
   assert.equal(
     getWebhookBypassStatusMessage(requirement),
-    "Webhook bypass is not required in sign-in-with-vercel mode.",
+    "Webhook bypass is not required — the app handles auth via admin secret.",
   );
 });
 
-test("bypass is not required off Vercel even in deployment-protection mode", () => {
-  process.env.VERCEL_AUTH_MODE = "deployment-protection";
+test("bypass is not required in admin-secret mode", () => {
+  delete process.env.VERCEL_AUTH_MODE;
   delete process.env.VERCEL;
   delete process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
 
@@ -54,44 +54,44 @@ test("bypass is not required off Vercel even in deployment-protection mode", () 
   assert.deepEqual(requirement, {
     required: false,
     configured: false,
-    reason: "local-or-non-vercel",
+    reason: "admin-secret",
   });
   assert.equal(
     getWebhookBypassStatusMessage(requirement),
-    "Webhook bypass is only required for protected Vercel deployments.",
+    "Webhook bypass is not required — the app handles auth via admin secret.",
   );
 });
 
-test("bypass is required on protected Vercel deployments", () => {
-  process.env.VERCEL_AUTH_MODE = "deployment-protection";
+test("bypass is not required on Vercel in admin-secret mode", () => {
+  delete process.env.VERCEL_AUTH_MODE;
   process.env.VERCEL = "1";
   delete process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
 
   const requirement = getWebhookBypassRequirement();
   assert.deepEqual(requirement, {
-    required: true,
+    required: false,
     configured: false,
-    reason: "protected-vercel",
+    reason: "admin-secret",
   });
   assert.equal(
     getWebhookBypassStatusMessage(requirement),
-    "Deployment Protection is enabled on Vercel but VERCEL_AUTOMATION_BYPASS_SECRET is missing. Slack, Telegram, and Discord webhooks will be blocked.",
+    "Webhook bypass is not required — the app handles auth via admin secret.",
   );
 });
 
-test("bypass is required and configured when secret is present", () => {
-  process.env.VERCEL_AUTH_MODE = "deployment-protection";
+test("bypass is not required but configured when secret is present", () => {
+  delete process.env.VERCEL_AUTH_MODE;
   process.env.VERCEL = "1";
   process.env.VERCEL_AUTOMATION_BYPASS_SECRET = "secret";
 
   const requirement = getWebhookBypassRequirement();
   assert.deepEqual(requirement, {
-    required: true,
+    required: false,
     configured: true,
-    reason: "protected-vercel",
+    reason: "admin-secret",
   });
   assert.equal(
     getWebhookBypassStatusMessage(requirement),
-    "Webhook URLs will include x-vercel-protection-bypass.",
+    "Webhook URLs will include x-vercel-protection-bypass (opportunistic).",
   );
 });

@@ -23,7 +23,7 @@ export type FirewallEvent = {
 };
 
 export type StatusPayload = {
-  authMode: "deployment-protection" | "sign-in-with-vercel";
+  authMode: "admin-secret" | "sign-in-with-vercel";
   storeBackend: string;
   persistentStore: boolean;
   status: string;

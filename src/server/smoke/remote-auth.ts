@@ -3,7 +3,8 @@
  *
  * - In `sign-in-with-vercel` mode: reads SMOKE_AUTH_COOKIE from env
  *   (or accepts a CLI override) and attaches it as a Cookie header.
- * - In `deployment-protection` mode: reads VERCEL_AUTOMATION_BYPASS_SECRET
+ * - In `admin-secret` mode: uses bearer token auth. If the deployment also
+ *   has Vercel deployment protection, reads VERCEL_AUTOMATION_BYPASS_SECRET
  *   from env (or accepts a CLI override via --protection-bypass) and sends
  *   the `x-vercel-protection-bypass` header.
  */

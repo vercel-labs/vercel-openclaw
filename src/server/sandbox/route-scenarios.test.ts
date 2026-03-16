@@ -105,10 +105,10 @@ test("Auth gate: unauthenticated GET /gateway returns 401 when no bearer token",
   }
 });
 
-test("Auth gate: deployment-protection mode passes auth transparently", async () => {
+test("Auth gate: admin-secret mode passes auth transparently", async () => {
   const h = createScenarioHarness();
   try {
-    // deployment-protection is the default — auth always succeeds.
+    // admin-secret is the default — auth always succeeds.
     // Sandbox is uninitialized so we expect a waiting page, not an auth error.
     const result = await callGatewayGet("/", { accept: "text/html" });
 

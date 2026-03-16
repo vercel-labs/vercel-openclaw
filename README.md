@@ -32,16 +32,10 @@ Clicking the button will prompt you for the recommended environment variables:
 
 ### After deploying
 
-- **`deployment-protection` (default)**: no extra setup needed — Vercel's built-in Deployment Protection handles auth. Ensure Deployment Protection is enabled in your project's Security settings (it is on by default).
-- **`sign-in-with-vercel` (optional upgrade)**: create a Vercel OAuth application at [vercel.com/account/oauth-apps](https://vercel.com/account/oauth-apps) and set `NEXT_PUBLIC_VERCEL_APP_CLIENT_ID` and `VERCEL_APP_CLIENT_SECRET` as additional environment variables. Set the callback URL to `https://<your-domain>/api/auth/callback`.
+- **Admin secret auth (default)**: visit your deployment and go to `/api/setup` to reveal the auto-generated admin secret. Use it to log in from the admin UI. No extra environment variables are needed.
+- **`sign-in-with-vercel` (optional)**: create a Vercel OAuth application at [vercel.com/account/oauth-apps](https://vercel.com/account/oauth-apps) and set `NEXT_PUBLIC_VERCEL_APP_CLIENT_ID` and `VERCEL_APP_CLIENT_SECRET` as additional environment variables. Set the callback URL to `https://<your-domain>/api/auth/callback`.
 - **Upstash Redis is required for production**. Without it, the app falls back to in-memory state that is lost on every function cold start. You can provision Upstash directly from the [Vercel Marketplace](https://vercel.com/marketplace/upstash-redis) for integrated billing.
-- **AI Gateway on Vercel uses OIDC by default.** You do not need `AI_GATEWAY_API_KEY` on Vercel unless you explicitly want to override that behavior.
-
-### Deployment Protection + channel webhooks
-
-If you keep `VERCEL_AUTH_MODE=deployment-protection`, enable **Protection Bypass for Automation** in Vercel.
-
-When `VERCEL_AUTOMATION_BYPASS_SECRET` is available, vercel-openclaw will automatically append `x-vercel-protection-bypass` to the generated Slack, Telegram, and Discord webhook URLs so those platforms can reach your protected deployment.
+- **AI Gateway uses OIDC everywhere.** Both deployed and local environments authenticate via OIDC. For local dev, run `vercel link && vercel env pull` to get OIDC credentials.
 
 ## Production launch contract
 
@@ -66,21 +60,12 @@ OPENCLAW_BASE_URL="https://your-project.vercel.app" \
   node scripts/check-deploy-readiness.mjs --json-only
 ```
 
-For `deployment-protection` mode, also supply the bypass secret:
-
-```bash
-OPENCLAW_BASE_URL="https://your-project.vercel.app" \
-  VERCEL_AUTOMATION_BYPASS_SECRET="$VERCEL_AUTOMATION_BYPASS_SECRET" \
-  node scripts/check-deploy-readiness.mjs --json-only
-```
-
 The script POSTs to `/api/admin/launch-verify`, validates the launch contract, and exits 0 only when all phases pass. Use `--preflight-only` for a lightweight config-only check via `GET /api/admin/preflight`. Secrets are redacted in all output.
 
 ### Requirements for channel-capable deployments
 
 - **Upstash Redis** — in-memory state loses queue data, credentials, and sandbox metadata on cold starts. Channels require durable state.
-- **AI Gateway OIDC** — `AI_GATEWAY_API_KEY` is for local development only. Do not set it in Vercel project environment variables. Deployed environments authenticate to AI Gateway through OIDC automatically.
-- **Protection Bypass for Automation** — if `VERCEL_AUTH_MODE=deployment-protection`, enable Protection Bypass in your Vercel project settings before connecting channels. Without it, Slack, Telegram, and Discord webhooks will be blocked.
+- **AI Gateway OIDC** — all environments authenticate to AI Gateway through OIDC. For local dev, run `vercel link && vercel env pull`.
 
 ## Quickstart
 
@@ -89,12 +74,8 @@ The script POSTs to `/api/admin/launch-verify`, validates the launch contract, a
 - Node.js 20 or newer
 - npm
 - access to Vercel Sandboxes
-- an auth strategy
 
-Use one of these auth strategies:
-
-- **Deployment Protection**: Set `VERCEL_AUTH_MODE=deployment-protection` and protect the deployment with Vercel Authentication.
-- **Sign in with Vercel**: Set `VERCEL_AUTH_MODE=sign-in-with-vercel` and provide OAuth credentials.
+Auth is handled by the app itself using an auto-generated admin secret (stored in Upstash). No auth-related environment variables are required for the default mode. Optionally set `VERCEL_AUTH_MODE=sign-in-with-vercel` and provide OAuth credentials for Vercel OAuth login.
 
 ## Install dependencies
 
@@ -109,10 +90,9 @@ Create a local `.env.local` from `.env.example`.
 Minimum production setup with persistent state:
 
 ```bash
-VERCEL_AUTH_MODE=deployment-protection
 UPSTASH_REDIS_REST_URL=your_upstash_rest_url_here
 UPSTASH_REDIS_REST_TOKEN=your_upstash_rest_token_here
-# AI_GATEWAY_API_KEY is optional — on Vercel, OIDC is used automatically.
+# AI Gateway uses OIDC. Run `vercel link && vercel env pull` for local dev.
 ```
 
 If you use `VERCEL_AUTH_MODE=sign-in-with-vercel`, also set:
@@ -229,11 +209,13 @@ This writes the OIDC credentials that `@vercel/queue` needs for local `send` and
 
 ## Auth modes
 
-## `deployment-protection`
+## `admin-secret` (default)
 
 This is the default mode if `VERCEL_AUTH_MODE` is unset.
 
-Use Vercel Deployment Protection and Vercel Authentication to protect the app externally. The app does not maintain its own human session in this mode.
+The app generates an admin secret on first deploy and stores it in Upstash. Visit `/api/setup` to reveal the secret once, then use it to log in from the admin UI or as a `Bearer` token for API calls.
+
+Deployment-protection was considered and rejected: Vercel's deployment protection blocks incoming webhooks from Slack, Telegram, and Discord, and is unavailable on Hobby plans.
 
 ## `sign-in-with-vercel`
 
@@ -254,17 +236,17 @@ Session details:
 
 | Variable                           | Required | Purpose |
 | ---------------------------------- | -------- | ------- |
-| `VERCEL_AUTH_MODE`                 | No       | `deployment-protection` or `sign-in-with-vercel`. Defaults to `deployment-protection`. |
+| `VERCEL_AUTH_MODE`                 | No       | `admin-secret` or `sign-in-with-vercel`. Defaults to `admin-secret`. |
 | `UPSTASH_REDIS_REST_URL`           | Required    | Primary persistent store endpoint. Required for channel-capable deployments. |
 | `UPSTASH_REDIS_REST_TOKEN`         | Required    | Primary persistent store token. Required for channel-capable deployments. |
 | `KV_REST_API_URL`                  | Optional | Alias for REST store URL. |
 | `KV_REST_API_TOKEN`                | Optional | Alias for REST store token. |
-| `AI_GATEWAY_API_KEY`               | Local dev only | Static AI Gateway credential for local development. Do not set on deployed Vercel environments — OIDC is used automatically. |
+| ~~`AI_GATEWAY_API_KEY`~~           | Removed | Not used. AI Gateway authenticates via OIDC in all environments. For local dev, run `vercel link && vercel env pull`. |
 | `NEXT_PUBLIC_VERCEL_APP_CLIENT_ID` | Sign-in mode | OAuth client ID. |
 | `VERCEL_APP_CLIENT_SECRET`         | Sign-in mode | OAuth client secret. |
 | `SESSION_SECRET`                   | Sign-in mode | Cookie encryption secret. Must be explicitly set on deployed Vercel environments — do not rely on silent derivation from the Upstash token. |
 | `OPENCLAW_PACKAGE_SPEC`            | Vercel   | Pinned OpenClaw version (e.g. `openclaw@1.2.3`). Required on Vercel for deterministic builds. Local dev falls back to `openclaw@latest`. |
-| `VERCEL_AUTOMATION_BYPASS_SECRET`  | Conditional | Required when `VERCEL_AUTH_MODE=deployment-protection` and channel webhooks are used. Enable Protection Bypass for Automation in Vercel. |
+| `VERCEL_AUTOMATION_BYPASS_SECRET`  | Optional | If set, appended to webhook URLs so they pass through Vercel Deployment Protection (useful if you have it enabled at the project level). |
 | `CRON_SECRET`                      | Optional | Enables `/api/cron/drain-channels` as a diagnostic backstop. Not required for production — Vercel Queues is the primary delivery path. |
 | `NEXT_PUBLIC_APP_URL`              | Optional | Base origin for OAuth callback generation. Useful behind custom domains. |
 | `NEXT_PUBLIC_BASE_DOMAIN`          | Optional | Preferred external host for Discord endpoint generation and manifest links. |

@@ -43,7 +43,7 @@ function withEnv(
 // GET /api/auth/authorize
 // ---------------------------------------------------------------------------
 
-test("authorize: redirects to /admin in deployment-protection mode", async () => {
+test("authorize: redirects to /admin in admin-secret mode", async () => {
   await withEnv(
     { VERCEL_AUTH_MODE: undefined, NODE_ENV: "production" },
     async () => {
@@ -159,7 +159,7 @@ test("callback: rejects invalid state parameter", async () => {
   );
 });
 
-test("callback: redirects to /admin in deployment-protection mode", async () => {
+test("callback: redirects to /admin in admin-secret mode", async () => {
   await withEnv(
     { VERCEL_AUTH_MODE: undefined, NODE_ENV: "production" },
     async () => {

@@ -226,12 +226,10 @@ function buildPublicUrlResult(
   const url = new URL(path, `${resolution.origin}/`);
 
   let bypassApplied = false;
-  if (resolution.authMode === "deployment-protection") {
-    const secret = getProtectionBypassSecret();
-    if (secret) {
-      url.searchParams.set("x-vercel-protection-bypass", secret);
-      bypassApplied = true;
-    }
+  const secret = getProtectionBypassSecret();
+  if (secret) {
+    url.searchParams.set("x-vercel-protection-bypass", secret);
+    bypassApplied = true;
   }
 
   const diagnostics: BuiltPublicUrlDiagnostics = {

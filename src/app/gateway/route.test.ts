@@ -1099,11 +1099,11 @@ test("Gateway: upstream request includes Bearer token in Authorization header", 
 });
 
 // ===========================================================================
-// 22. deployment-protection mode: no redirect, proxy works
+// 22. admin-secret mode: no redirect, proxy works
 // ===========================================================================
 
-test("Gateway: deployment-protection mode allows access without session cookie", async () => {
-  const h = createScenarioHarness(); // default is deployment-protection
+test("Gateway: admin-secret mode allows access without session cookie", async () => {
+  const h = createScenarioHarness(); // default is admin-secret
   try {
     await driveToRunning(h);
 
@@ -1117,7 +1117,7 @@ test("Gateway: deployment-protection mode allows access without session cookie",
     const originalFetch = globalThis.fetch;
     globalThis.fetch = h.fakeFetch.fetch;
     try {
-      // No auth headers, no cookies — deployment-protection trusts Vercel edge
+      // No auth headers, no cookies — admin-secret trusts Vercel edge
       const result = await callGatewayGet("/api/data");
       assert.equal(result.status, 200);
       assert.deepEqual(result.json, { ok: true });

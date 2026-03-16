@@ -89,7 +89,7 @@ export function setCookieToCookieHeader(setCookie: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// deployment-protection helpers (legacy, for backward compat in tests)
+// Admin-secret helpers (default auth mode)
 // ---------------------------------------------------------------------------
 
 export function buildDeploymentProtectionHeaders(): Record<string, string> {
@@ -113,10 +113,13 @@ export const SIGN_IN_ENV: Record<string, string> = {
 };
 
 /** Env overrides for the default admin-secret auth mode. */
-export const DEPLOYMENT_PROTECTION_ENV: Record<string, string | undefined> = {
+export const ADMIN_SECRET_ENV: Record<string, string | undefined> = {
   VERCEL_AUTH_MODE: undefined,
   SESSION_SECRET: TEST_SESSION_SECRET,
   NEXT_PUBLIC_VERCEL_APP_CLIENT_ID: undefined,
   VERCEL_APP_CLIENT_SECRET: undefined,
   ADMIN_SECRET: TEST_ADMIN_SECRET,
 };
+
+/** @deprecated Use ADMIN_SECRET_ENV instead. */
+export const DEPLOYMENT_PROTECTION_ENV = ADMIN_SECRET_ENV;

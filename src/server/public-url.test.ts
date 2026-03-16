@@ -116,10 +116,10 @@ test("getPublicOrigin handles bare hostname in BASE_DOMAIN", () => {
   );
 });
 
-test("buildPublicUrl appends protection bypass secret in deployment-protection mode", () => {
+test("buildPublicUrl appends protection bypass secret in admin-secret mode", () => {
   withEnv(
     {
-      VERCEL_AUTH_MODE: "deployment-protection",
+      VERCEL_AUTH_MODE: "admin-secret",
       VERCEL_AUTOMATION_BYPASS_SECRET: "bypass-secret",
       NEXT_PUBLIC_APP_URL: "https://openclaw.example.com",
     },
@@ -132,7 +132,7 @@ test("buildPublicUrl appends protection bypass secret in deployment-protection m
   );
 });
 
-test("buildPublicUrl leaves webhook URL unchanged in sign-in-with-vercel mode", () => {
+test("buildPublicUrl includes bypass secret in sign-in-with-vercel mode when secret is set", () => {
   withEnv(
     {
       VERCEL_AUTH_MODE: "sign-in-with-vercel",
@@ -142,7 +142,7 @@ test("buildPublicUrl leaves webhook URL unchanged in sign-in-with-vercel mode", 
     () => {
       assert.equal(
         buildPublicUrl("/api/channels/telegram/webhook"),
-        "https://openclaw.example.com/api/channels/telegram/webhook",
+        "https://openclaw.example.com/api/channels/telegram/webhook?x-vercel-protection-bypass=bypass-secret",
       );
     },
   );
@@ -151,7 +151,7 @@ test("buildPublicUrl leaves webhook URL unchanged in sign-in-with-vercel mode", 
 test("buildPublicUrl does not append bypass when secret is missing", () => {
   withEnv(
     {
-      VERCEL_AUTH_MODE: "deployment-protection",
+      VERCEL_AUTH_MODE: "admin-secret",
       VERCEL_AUTOMATION_BYPASS_SECRET: undefined,
       NEXT_PUBLIC_APP_URL: "https://openclaw.example.com",
     },

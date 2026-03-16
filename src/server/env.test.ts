@@ -53,13 +53,13 @@ test("getAiGatewayAuthMode returns unavailable when no token source exists", asy
   );
 });
 
-test("getAiGatewayAuthMode returns api-key when resolved token matches AI_GATEWAY_API_KEY", async () => {
+test("getAiGatewayAuthMode returns oidc when token is available even if AI_GATEWAY_API_KEY is set", async () => {
   await withEnv(
     { AI_GATEWAY_API_KEY: "local-dev-key" },
     async () => {
       _setAiGatewayTokenOverrideForTesting("local-dev-key");
       const mode = await getAiGatewayAuthMode();
-      assert.equal(mode, "api-key");
+      assert.equal(mode, "oidc");
     },
   );
 });
@@ -187,11 +187,11 @@ test("deployed sign-in-with-vercel with upstash token still throws without SESSI
   );
 });
 
-test("deployment-protection mode on Vercel can derive from upstash token", () => {
+test("admin-secret mode on Vercel can derive from upstash token", () => {
   withEnv(
     {
       VERCEL: "1",
-      VERCEL_AUTH_MODE: "deployment-protection",
+      VERCEL_AUTH_MODE: "admin-secret",
       SESSION_SECRET: undefined,
       UPSTASH_REDIS_REST_TOKEN: "upstash-token-value",
     },

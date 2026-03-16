@@ -2,7 +2,7 @@
  * Tests for route-level auth: requireRouteAuth and sanitizeNextPath.
  *
  * Tests both auth modes:
- *   - deployment-protection: always returns a synthetic session
+ *   - admin-secret: always returns a synthetic session
  *   - sign-in-with-vercel: requires valid encrypted session cookie
  */
 
@@ -12,7 +12,7 @@ import test from "node:test";
 import { requireRouteAuth, sanitizeNextPath } from "@/server/auth/vercel-auth";
 
 // ---------------------------------------------------------------------------
-// Set env for deployment-protection mode (default)
+// Set env for admin-secret mode (default)
 // ---------------------------------------------------------------------------
 
 const originalAuthMode = process.env.VERCEL_AUTH_MODE;
@@ -26,10 +26,10 @@ function setAuthMode(mode: string | undefined) {
 }
 
 // ---------------------------------------------------------------------------
-// requireRouteAuth — deployment-protection mode
+// requireRouteAuth — admin-secret mode
 // ---------------------------------------------------------------------------
 
-test("route-auth: deployment-protection returns synthetic session", async () => {
+test("route-auth: admin-secret returns synthetic session", async () => {
   setAuthMode(undefined);
   try {
     const req = new Request("http://localhost:3000/admin");
@@ -38,21 +38,21 @@ test("route-auth: deployment-protection returns synthetic session", async () => 
     assert.ok(!("status" in result && typeof (result as Response).status === "number" && (result as Response).headers !== undefined && result instanceof Response),
       "should return AuthCheckResult, not Response");
     const authResult = result as { session: { user: { sub: string } }; setCookieHeader: string | null };
-    assert.equal(authResult.session.user.sub, "deployment-protection");
+    assert.equal(authResult.session.user.sub, "admin-secret");
     assert.equal(authResult.setCookieHeader, null);
   } finally {
     setAuthMode(originalAuthMode);
   }
 });
 
-test("route-auth: deployment-protection ignores json mode option", async () => {
+test("route-auth: admin-secret ignores json mode option", async () => {
   setAuthMode(undefined);
   try {
     const req = new Request("http://localhost:3000/api/status");
     const result = await requireRouteAuth(req, { mode: "json" });
     assert.ok(!(result instanceof Response));
     const authResult = result as { session: { user: { sub: string } } };
-    assert.equal(authResult.session.user.sub, "deployment-protection");
+    assert.equal(authResult.session.user.sub, "admin-secret");
   } finally {
     setAuthMode(originalAuthMode);
   }

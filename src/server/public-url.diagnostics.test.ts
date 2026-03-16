@@ -46,7 +46,7 @@ afterEach(() => {
 });
 
 test("getPublicUrlDiagnostics reports explicit source and redacts bypass secret", () => {
-  process.env.VERCEL_AUTH_MODE = "deployment-protection";
+  process.env.VERCEL_AUTH_MODE = "admin-secret";
   process.env.NEXT_PUBLIC_APP_URL = "https://openclaw.example.com";
   process.env.VERCEL_AUTOMATION_BYPASS_SECRET = "super-secret";
 
@@ -58,7 +58,7 @@ test("getPublicUrlDiagnostics reports explicit source and redacts bypass secret"
     path: "/api/channels/discord/webhook?foo=bar",
     url: "https://openclaw.example.com/api/channels/discord/webhook?foo=bar&x-vercel-protection-bypass=%5Bredacted%5D",
     source: "NEXT_PUBLIC_APP_URL",
-    authMode: "deployment-protection",
+    authMode: "admin-secret",
     bypassEnabled: true,
     bypassApplied: true,
   });
@@ -97,7 +97,7 @@ test("getPublicUrlDiagnostics falls back to Vercel system env without a Request"
     diagnostics.url,
     "https://branch-openclaw.vercel.app/api/channels/slack/webhook",
   );
-  assert.equal(diagnostics.authMode, "deployment-protection");
+  assert.equal(diagnostics.authMode, "admin-secret");
   assert.equal(diagnostics.bypassEnabled, false);
   assert.equal(diagnostics.bypassApplied, false);
 });

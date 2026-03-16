@@ -1,15 +1,13 @@
-import { useMemo, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { ChannelPill } from "@/components/ui/badge";
 import type {
   StatusPayload,
   RunAction,
   RequestJson,
 } from "@/components/admin-types";
-import type { ChannelConnectability } from "@/shared/channel-connectability";
 import { TelegramPanel } from "@/components/panels/telegram-panel";
 import { SlackPanel } from "@/components/panels/slack-panel";
 import { DiscordPanel } from "@/components/panels/discord-panel";
-import type { ChannelReadiness } from "@/shared/launch-verification";
 
 type ChannelSummaryEntry = {
   connected: boolean;
@@ -50,7 +48,6 @@ type ChannelsPanelProps = {
   runAction: RunAction;
   requestJson: RequestJson;
   refresh: () => Promise<void>;
-  channelReadiness?: ChannelReadiness | null;
 };
 
 async function loadChannelSummary(): Promise<ChannelSummary | null> {
@@ -75,7 +72,6 @@ export function ChannelsPanel({
   runAction,
   requestJson,
   refresh,
-  channelReadiness,
 }: ChannelsPanelProps) {
   const [summary, setSummary] = useState<ChannelSummary | null>(null);
   const [preflight, setPreflight] = useState<PreflightData | null>(null);
@@ -111,38 +107,6 @@ export function ChannelsPanel({
     (summary?.telegram.failedCount ?? 0) +
     (summary?.discord.failedCount ?? 0);
 
-  const isReady = channelReadiness?.ready === true;
-
-  // The status API independently recomputes connectability every poll cycle
-  // via readChannelReadiness(). When the LaunchPanel's authoritative
-  // channelReadiness already says ready, strip the redundant
-  // "launch-verification" issue so channel cards don't flash stale warnings.
-  const effectiveStatus = useMemo(() => {
-    if (!isReady) return status;
-    const strip = (c: ChannelConnectability): ChannelConnectability => {
-      const filtered = c.issues.filter((i) => i.id !== "launch-verification");
-      return {
-        ...c,
-        issues: filtered,
-        canConnect: !filtered.some((i) => i.status === "fail"),
-        status: filtered.some((i) => i.status === "fail")
-          ? "fail"
-          : filtered.some((i) => i.status === "warn")
-            ? "warn"
-            : "pass",
-      };
-    };
-    return {
-      ...status,
-      channels: {
-        ...status.channels,
-        slack: { ...status.channels.slack, connectability: strip(status.channels.slack.connectability) },
-        telegram: { ...status.channels.telegram, connectability: strip(status.channels.telegram.connectability) },
-        discord: { ...status.channels.discord, connectability: strip(status.channels.discord.connectability) },
-      },
-    };
-  }, [isReady, status]);
-
   return (
     <article className="panel-card full-span">
       <div className="panel-head">
@@ -151,9 +115,6 @@ export function ChannelsPanel({
           <h2>External entry points</h2>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          {isReady && (
-            <ChannelPill variant="good">Verified</ChannelPill>
-          )}
           {totalQueue > 0 && (
             <ChannelPill variant="good">{totalQueue} queued</ChannelPill>
           )}
@@ -172,20 +133,6 @@ export function ChannelsPanel({
           </button>
         </div>
       </div>
-
-      {!isReady && (
-        <div className="connectability-warning-banner" style={{ marginBottom: 16 }}>
-          <p style={{ margin: 0, fontWeight: 500 }}>
-            Launch verification required before connecting channels.
-          </p>
-          <p className="muted-copy" style={{ margin: "4px 0 0" }}>
-            {channelReadiness?.failingPhaseId
-              ? `Last attempt failed at "${channelReadiness.failingPhaseId}". `
-              : ""}
-            Run <strong>Verify &amp; Unlock Channels</strong> above to prove the full queue, wake, and reply path works.
-          </p>
-        </div>
-      )}
 
       {preflight && !preflight.ok ? (
         <div className="error-banner" style={{ marginBottom: 16 }}>
@@ -212,55 +159,29 @@ export function ChannelsPanel({
         </div>
       ) : null}
 
-      {isReady ? (
-        <div className="channel-grid">
-          <SlackPanel
-            status={effectiveStatus}
-            busy={busy}
-            runAction={runAction}
-            requestJson={requestJson}
-            refresh={refresh}
-          />
-          <TelegramPanel
-            status={effectiveStatus}
-            busy={busy}
-            runAction={runAction}
-            requestJson={requestJson}
-            refresh={refresh}
-          />
-          <DiscordPanel
-            status={effectiveStatus}
-            busy={busy}
-            runAction={runAction}
-            requestJson={requestJson}
-            refresh={refresh}
-          />
-        </div>
-      ) : (
-        <div className="channel-grid" style={{ opacity: 0.5, pointerEvents: "none" }}>
-          <SlackPanel
-            status={effectiveStatus}
-            busy={busy}
-            runAction={runAction}
-            requestJson={requestJson}
-            refresh={refresh}
-          />
-          <TelegramPanel
-            status={effectiveStatus}
-            busy={busy}
-            runAction={runAction}
-            requestJson={requestJson}
-            refresh={refresh}
-          />
-          <DiscordPanel
-            status={effectiveStatus}
-            busy={busy}
-            runAction={runAction}
-            requestJson={requestJson}
-            refresh={refresh}
-          />
-        </div>
-      )}
+      <div className="channel-grid">
+        <SlackPanel
+          status={status}
+          busy={busy}
+          runAction={runAction}
+          requestJson={requestJson}
+          refresh={refresh}
+        />
+        <TelegramPanel
+          status={status}
+          busy={busy}
+          runAction={runAction}
+          requestJson={requestJson}
+          refresh={refresh}
+        />
+        <DiscordPanel
+          status={status}
+          busy={busy}
+          runAction={runAction}
+          requestJson={requestJson}
+          refresh={refresh}
+        />
+      </div>
     </article>
   );
 }

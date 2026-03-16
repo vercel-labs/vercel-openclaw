@@ -8,7 +8,7 @@
  * - Mutations with valid bearer token succeed (CSRF not needed)
  * - GET with valid bearer token succeeds
  * - Gateway proxy blocks unauthenticated requests (no token leak)
- * - deployment-protection mode: GET with bearer token works without CSRF
+ * - admin-secret mode: GET with bearer token works without CSRF
  *
  * Run: npm test src/app/api/auth/auth-enforcement.test.ts
  */

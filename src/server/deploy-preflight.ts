@@ -75,7 +75,7 @@ export type PreflightPayload = {
   webhookBypassEnabled: boolean;
   webhookBypassRequired: boolean;
   storeBackend: "upstash" | "memory";
-  aiGatewayAuth: "oidc" | "api-key" | "unavailable";
+  aiGatewayAuth: "oidc" | "unavailable";
   cronSecretConfigured: boolean;
   publicOriginResolution: PublicOriginResolution | null;
   webhookDiagnostics: PreflightWebhookDiagnostics;
@@ -192,22 +192,11 @@ function buildActions(input: {
       id: "configure-ai-gateway-auth",
       status: "required",
       message:
-        "AI Gateway auth is unavailable. On Vercel this should come from OIDC; for local development provide AI_GATEWAY_API_KEY.",
-      remediation:
-        "On Vercel, OIDC tokens are provided automatically. If you see this on a Vercel deployment, redeploy the project. For local development, set AI_GATEWAY_API_KEY in your .env.local file.",
-      env: ["AI_GATEWAY_API_KEY"],
-    });
-  }
-
-  if (isVercelDeployment() && input.aiGatewayAuth === "api-key") {
-    actions.push({
-      id: "configure-ai-gateway-auth",
-      status: "required",
-      message:
-        "This repo must authenticate to Vercel AI Gateway with OIDC on deployed Vercel environments.",
-      remediation:
-        "Remove AI_GATEWAY_API_KEY from the Vercel project settings and redeploy so the deployment uses its automatically-issued OIDC token.",
-      env: ["AI_GATEWAY_API_KEY"],
+        "AI Gateway OIDC token is not available.",
+      remediation: isVercelDeployment()
+        ? "Redeploy the project so the deployment receives its OIDC token."
+        : "Run `vercel link && vercel env pull` to pull OIDC credentials for local development.",
+      env: [],
     });
   }
 
@@ -362,17 +351,11 @@ export async function buildDeployPreflight(
     },
     {
       id: "ai-gateway",
-      status:
-        aiGatewayAuth === "unavailable" ||
-        (isVercelDeployment() && aiGatewayAuth !== "oidc")
-          ? "fail"
-          : "pass",
+      status: aiGatewayAuth === "oidc" ? "pass" : "fail",
       message:
         aiGatewayAuth === "oidc"
           ? "AI Gateway will use a Vercel OIDC token."
-          : aiGatewayAuth === "api-key"
-            ? "AI Gateway is using AI_GATEWAY_API_KEY. This repo requires OIDC on Vercel deployments."
-            : "No AI Gateway credential is available.",
+          : "OIDC token is not available. Run `vercel link && vercel env pull` for local dev.",
     },
     {
       id: "drain-recovery",

@@ -32,7 +32,7 @@ test("Slack manifest: GET without session in sign-in-with-vercel mode returns 40
 });
 
 // ===========================================================================
-// Happy path (deployment-protection mode — no auth needed)
+// Happy path (admin-secret mode — no auth needed)
 // ===========================================================================
 
 test("Slack manifest: GET returns manifest and createAppUrl", async () => {

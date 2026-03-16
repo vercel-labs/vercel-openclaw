@@ -32,7 +32,7 @@ import {
 } from "@/test-utils/fake-fetch";
 import {
   SIGN_IN_ENV,
-  DEPLOYMENT_PROTECTION_ENV,
+  ADMIN_SECRET_ENV,
 } from "@/test-utils/auth-fixtures";
 import { resetAfterCallbacks } from "@/test-utils/route-caller";
 import {
@@ -253,7 +253,7 @@ export function createScenarioHarness(options?: {
   /**
    * Auth mode to configure for this scenario.
    *
-   * - `'deployment-protection'` (default) — clears OAuth env vars
+   * - `'admin-secret'` (default) — clears OAuth env vars
    * - `'sign-in-with-vercel'` — sets SESSION_SECRET, OAuth client vars
    * - `'none'` — does not touch auth env vars at all
    */
@@ -265,7 +265,7 @@ export function createScenarioHarness(options?: {
       ? SIGN_IN_ENV
       : options?.authMode === "none"
         ? {}
-        : DEPLOYMENT_PROTECTION_ENV;
+        : ADMIN_SECRET_ENV;
 
   const mergedOverrides = { ...ENV_OVERRIDES, ...authOverrides };
 

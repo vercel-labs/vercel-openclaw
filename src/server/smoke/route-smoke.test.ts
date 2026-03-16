@@ -97,7 +97,7 @@ test("route-smoke: GET /api/health returns 200 with ok true", async (t) => {
 });
 
 // ===========================================================================
-// 2. Status (authenticated, deployment-protection mode)
+// 2. Status (authenticated, admin-secret mode)
 // ===========================================================================
 
 test("route-smoke: GET /api/status returns metadata", async (t) => {
@@ -112,7 +112,7 @@ test("route-smoke: GET /api/status returns metadata", async (t) => {
     assert.equal(result.status, 200);
     const body = result.json as { status: string; authMode: string; storeBackend: string };
     assert.equal(body.status, "uninitialized");
-    assert.equal(body.authMode, "deployment-protection");
+    assert.equal(body.authMode, "admin-secret");
     assert.equal(body.storeBackend, "memory");
   } catch (err) {
     await dumpDiagnostics(t, h);
@@ -162,7 +162,7 @@ test("route-smoke: POST /api/status heartbeat with CSRF succeeds", async (t) => 
 });
 
 // ===========================================================================
-// 3. Admin routes (deployment-protection mode)
+// 3. Admin routes (admin-secret mode)
 // ===========================================================================
 
 test("route-smoke: POST /api/admin/ensure schedules sandbox creation", async (t) => {

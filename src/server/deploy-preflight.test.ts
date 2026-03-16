@@ -37,11 +37,11 @@ function withEnv<T>(
   return fn().finally(restore);
 }
 
-test("preflight fails when deployment protection would block channel webhooks", async () => {
+test("preflight passes when bypass secret is absent in admin-secret mode", async () => {
   await withEnv(
     {
       VERCEL: "1",
-      VERCEL_AUTH_MODE: "deployment-protection",
+      VERCEL_AUTH_MODE: "admin-secret",
       NEXT_PUBLIC_APP_URL: "https://openclaw.example.com",
       VERCEL_AUTOMATION_BYPASS_SECRET: undefined,
       UPSTASH_REDIS_REST_URL: "https://example.upstash.io",
@@ -55,12 +55,12 @@ test("preflight fails when deployment protection would block channel webhooks", 
         new Request("https://openclaw.example.com/api/admin/preflight"),
       );
 
-      assert.equal(payload.ok, false);
+      assert.equal(payload.ok, true);
       assert.equal(payload.aiGatewayAuth, "oidc");
       assert.equal(payload.storeBackend, "upstash");
       assert.equal(
         payload.checks.find((check) => check.id === "webhook-bypass")?.status,
-        "fail",
+        "pass",
       );
     },
   );
@@ -69,7 +69,7 @@ test("preflight fails when deployment protection would block channel webhooks", 
 test("preflight passes when bypass secret is configured", async () => {
   await withEnv(
     {
-      VERCEL_AUTH_MODE: "deployment-protection",
+      VERCEL_AUTH_MODE: "admin-secret",
       NEXT_PUBLIC_APP_URL: "https://openclaw.example.com",
       VERCEL_AUTOMATION_BYPASS_SECRET: "bypass-secret",
       UPSTASH_REDIS_REST_URL: "https://example.upstash.io",
@@ -118,11 +118,11 @@ test("preflight passes bypass check in sign-in-with-vercel mode without secret",
   );
 });
 
-test("preflight fails when both webhook bypass and AI Gateway auth are missing", async () => {
+test("preflight fails when AI Gateway auth and store are missing", async () => {
   await withEnv(
     {
       VERCEL: "1",
-      VERCEL_AUTH_MODE: "deployment-protection",
+      VERCEL_AUTH_MODE: "admin-secret",
       VERCEL_AUTOMATION_BYPASS_SECRET: undefined,
       UPSTASH_REDIS_REST_URL: undefined,
       UPSTASH_REDIS_REST_TOKEN: undefined,
@@ -140,7 +140,7 @@ test("preflight fails when both webhook bypass and AI Gateway auth are missing",
       );
 
       assert.equal(payload.ok, false);
-      assert.equal(payload.authMode, "deployment-protection");
+      assert.equal(payload.authMode, "admin-secret");
       assert.equal(payload.publicOrigin, "https://app.example.com");
       assert.equal(payload.webhookBypassEnabled, false);
       assert.equal(payload.storeBackend, "memory");
@@ -149,7 +149,7 @@ test("preflight fails when both webhook bypass and AI Gateway auth are missing",
 
       assert.equal(
         payload.checks.find((check) => check.id === "webhook-bypass")?.status,
-        "fail",
+        "pass",
       );
       assert.equal(
         payload.checks.find((check) => check.id === "ai-gateway")?.status,
@@ -163,10 +163,10 @@ test("preflight fails when both webhook bypass and AI Gateway auth are missing",
   );
 });
 
-test("preflight reports api-key auth when static AI_GATEWAY_API_KEY is used", async () => {
+test("preflight reports oidc when token is available even if AI_GATEWAY_API_KEY is set", async () => {
   await withEnv(
     {
-      VERCEL_AUTH_MODE: "deployment-protection",
+      VERCEL_AUTH_MODE: "admin-secret",
       VERCEL_AUTOMATION_BYPASS_SECRET: "bypass-secret",
       AI_GATEWAY_API_KEY: "static-key",
       NEXT_PUBLIC_APP_URL: "https://app.example.com",
@@ -181,7 +181,7 @@ test("preflight reports api-key auth when static AI_GATEWAY_API_KEY is used", as
         new Request("https://app.example.com/api/admin/preflight"),
       );
 
-      assert.equal(payload.aiGatewayAuth, "api-key");
+      assert.equal(payload.aiGatewayAuth, "oidc");
       assert.equal(payload.ok, true);
     },
   );
@@ -190,7 +190,7 @@ test("preflight reports api-key auth when static AI_GATEWAY_API_KEY is used", as
 test("preflight includes channels with discord connectability", async () => {
   await withEnv(
     {
-      VERCEL_AUTH_MODE: "deployment-protection",
+      VERCEL_AUTH_MODE: "admin-secret",
       NEXT_PUBLIC_APP_URL: "https://app.example.com",
       VERCEL_AUTOMATION_BYPASS_SECRET: undefined,
       UPSTASH_REDIS_REST_URL: undefined,
@@ -216,11 +216,11 @@ test("preflight includes channels with discord connectability", async () => {
   );
 });
 
-test("preflight ok is false when channel connectability has failures", async () => {
+test("preflight ok is true when Upstash and OIDC are configured without bypass secret", async () => {
   await withEnv(
     {
       VERCEL: "1",
-      VERCEL_AUTH_MODE: "deployment-protection",
+      VERCEL_AUTH_MODE: "admin-secret",
       NEXT_PUBLIC_APP_URL: "https://app.example.com",
       VERCEL_AUTOMATION_BYPASS_SECRET: undefined,
       UPSTASH_REDIS_REST_URL: "https://example.upstash.io",
@@ -234,11 +234,8 @@ test("preflight ok is false when channel connectability has failures", async () 
         new Request("https://app.example.com/api/admin/preflight"),
       );
 
-      // Channel connectability fails because VERCEL=1 + deployment-protection
-      // without bypass secret
-      assert.equal(payload.channels.discord.status, "fail");
-      assert.equal(payload.channels.discord.canConnect, false);
-      assert.equal(payload.ok, false);
+      assert.equal(payload.channels.discord.canConnect, true);
+      assert.equal(payload.ok, true);
     },
   );
 });
@@ -246,7 +243,7 @@ test("preflight ok is false when channel connectability has failures", async () 
 test("preflight passes all checks with Upstash, bypass, OIDC, and cron secret", async () => {
   await withEnv(
     {
-      VERCEL_AUTH_MODE: "deployment-protection",
+      VERCEL_AUTH_MODE: "admin-secret",
       VERCEL_AUTOMATION_BYPASS_SECRET: "bypass-secret",
       UPSTASH_REDIS_REST_URL: "https://example.upstash.io",
       UPSTASH_REDIS_REST_TOKEN: "token",
@@ -262,7 +259,7 @@ test("preflight passes all checks with Upstash, bypass, OIDC, and cron secret", 
       );
 
       assert.equal(payload.ok, true);
-      assert.equal(payload.authMode, "deployment-protection");
+      assert.equal(payload.authMode, "admin-secret");
       assert.equal(payload.publicOrigin, "https://app.example.com");
       assert.equal(payload.webhookBypassEnabled, true);
       assert.equal(payload.storeBackend, "upstash");
@@ -294,7 +291,7 @@ test("preflight nextSteps includes resolve-blockers when not ok", async () => {
   await withEnv(
     {
       VERCEL: "1",
-      VERCEL_AUTH_MODE: "deployment-protection",
+      VERCEL_AUTH_MODE: "admin-secret",
       NEXT_PUBLIC_APP_URL: "https://app.example.com",
       VERCEL_AUTOMATION_BYPASS_SECRET: undefined,
       UPSTASH_REDIS_REST_URL: undefined,
@@ -357,7 +354,7 @@ test("preflight fails when durable store is missing", async () => {
   );
 });
 
-test("preflight fails when a Vercel deployment uses API key auth instead of OIDC", async () => {
+test("preflight fails when a Vercel deployment has OIDC unavailable", async () => {
   await withEnv(
     {
       NEXT_PUBLIC_APP_URL: "https://app.invalid",
@@ -366,10 +363,10 @@ test("preflight fails when a Vercel deployment uses API key auth instead of OIDC
       VERCEL_AUTOMATION_BYPASS_SECRET: "bypass-secret",
       UPSTASH_REDIS_REST_URL: "redis-url",
       UPSTASH_REDIS_REST_TOKEN: "redis-token",
-      AI_GATEWAY_API_KEY: "static-key",
+      AI_GATEWAY_API_KEY: undefined,
     },
     async () => {
-      _setAiGatewayTokenOverrideForTesting("static-key");
+      _setAiGatewayTokenOverrideForTesting(undefined);
 
       const payload = await buildDeployPreflight(
         new Request("https://app.invalid/api/admin/preflight"),
@@ -377,7 +374,7 @@ test("preflight fails when a Vercel deployment uses API key auth instead of OIDC
 
       assert.equal(payload.ok, false);
       assert.equal(payload.storeBackend, "upstash");
-      assert.equal(payload.aiGatewayAuth, "api-key");
+      assert.equal(payload.aiGatewayAuth, "unavailable");
       assert.equal(
         payload.checks.find((c) => c.id === "ai-gateway")?.status,
         "fail",
@@ -430,7 +427,7 @@ test("preflight actions include remediation text", async () => {
   await withEnv(
     {
       VERCEL: "1",
-      VERCEL_AUTH_MODE: "deployment-protection",
+      VERCEL_AUTH_MODE: "admin-secret",
       NEXT_PUBLIC_APP_URL: "https://app.example.com",
       VERCEL_AUTOMATION_BYPASS_SECRET: undefined,
       UPSTASH_REDIS_REST_URL: undefined,
@@ -459,7 +456,7 @@ test("preflight actions do not contain launch-verification remediation items", a
   await withEnv(
     {
       VERCEL: "1",
-      VERCEL_AUTH_MODE: "deployment-protection",
+      VERCEL_AUTH_MODE: "admin-secret",
       NEXT_PUBLIC_APP_URL: "https://app.example.com",
       VERCEL_AUTOMATION_BYPASS_SECRET: undefined,
       UPSTASH_REDIS_REST_URL: undefined,
@@ -501,7 +498,7 @@ test("preflight actions do not contain launch-verification remediation items", a
 test("preflight checks do not include launch-verification (config-only guarantee for launch-verify POST)", async () => {
   await withEnv(
     {
-      VERCEL_AUTH_MODE: "deployment-protection",
+      VERCEL_AUTH_MODE: "admin-secret",
       VERCEL_AUTOMATION_BYPASS_SECRET: "bypass-secret",
       UPSTASH_REDIS_REST_URL: "https://example.upstash.io",
       UPSTASH_REDIS_REST_TOKEN: "token",
@@ -540,7 +537,7 @@ test("preflight checks do not include launch-verification (config-only guarantee
 test("preflight is config-only: passes on a fresh deployment before launch-verify has ever run", async () => {
   await withEnv(
     {
-      VERCEL_AUTH_MODE: "deployment-protection",
+      VERCEL_AUTH_MODE: "admin-secret",
       VERCEL_AUTOMATION_BYPASS_SECRET: "bypass-secret",
       UPSTASH_REDIS_REST_URL: "https://example.upstash.io",
       UPSTASH_REDIS_REST_TOKEN: "token",

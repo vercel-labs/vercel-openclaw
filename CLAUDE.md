@@ -56,7 +56,7 @@ Flags:
 
 Environment:
 
-- `SMOKE_AUTH_COOKIE` — encrypted session cookie for `sign-in-with-vercel` mode. Not needed for `deployment-protection` mode where Vercel handles auth upstream. Overridden by `--auth-cookie` if both are set.
+- `SMOKE_AUTH_COOKIE` — encrypted session cookie for `sign-in-with-vercel` mode. Not needed for the default `admin-secret` mode. Overridden by `--auth-cookie` if both are set.
 
 Output:
 
@@ -97,9 +97,9 @@ Responsibilities:
 - expose `getPublicOrigin(request?: Request): string`
 - expose `getProtectionBypassSecret(): string | null`
 - expose `buildPublicUrl(path: string, request?: Request): string`
-- append `x-vercel-protection-bypass=<VERCEL_AUTOMATION_BYPASS_SECRET>` when `VERCEL_AUTH_MODE=deployment-protection`
+- append `x-vercel-protection-bypass=<VERCEL_AUTOMATION_BYPASS_SECRET>` when the bypass secret is available (regardless of auth mode)
 
-All channel webhook URL builders (`buildSlackWebhookUrl`, `buildTelegramWebhookUrl`, `buildDiscordPublicWebhookUrl` in `src/server/channels/state.ts`) delegate to `buildPublicUrl`. This guarantees Slack, Telegram, and Discord webhook URLs include the protection bypass query parameter when needed.
+All channel webhook URL builders (`buildSlackWebhookUrl`, `buildTelegramWebhookUrl`, `buildDiscordPublicWebhookUrl` in `src/server/channels/state.ts`) delegate to `buildPublicUrl`. This guarantees Slack, Telegram, and Discord webhook URLs include the protection bypass query parameter when the secret is configured.
 
 ### `src/server/deploy-preflight.ts`
 
@@ -116,7 +116,7 @@ Store requirement policy: missing Upstash is a hard fail (`status: "fail"`) on V
 ```ts
 {
   ok: boolean;
-  authMode: "deployment-protection" | "sign-in-with-vercel";
+  authMode: "admin-secret" | "sign-in-with-vercel";
   publicOrigin: string | null;
   webhookBypassEnabled: boolean;
   storeBackend: "upstash" | "memory";
@@ -282,7 +282,6 @@ This writes the OIDC credentials that `@vercel/queue` needs for local `send` and
 Hard blockers (cause `canConnect: false`):
 
 - canonical public HTTPS webhook URL cannot be resolved
-- `VERCEL_AUTOMATION_BYPASS_SECRET` is missing when running on Vercel with `VERCEL_AUTH_MODE=deployment-protection`
 - AI Gateway auth is not OIDC on a Vercel deployment (falls back to `api-key` or `unavailable`)
 - missing Upstash store on a Vercel deployment (durable state required for channel reliability)
 
@@ -336,17 +335,24 @@ Discord also has a separate 409 for endpoint conflicts:
 
 Main files:
 
+- `src/server/auth/admin-auth.ts`
+- `src/server/auth/admin-secret.ts`
 - `src/server/auth/session.ts`
 - `src/server/auth/vercel-auth.ts`
 
 Supported modes:
 
-- `deployment-protection`
-- `sign-in-with-vercel`
+- `admin-secret` (default)
+- `sign-in-with-vercel` (optional)
+
+The app uses admin-secret auth by default. An admin secret is auto-generated and stored in Upstash (zero-config). The secret is revealed once via `/api/setup` and exchanged for an encrypted session cookie via `/api/auth/login`.
 
 Notes:
 
-- `deployment-protection` is the default if `VERCEL_AUTH_MODE` is unset
+- `admin-secret` is the default if `VERCEL_AUTH_MODE` is unset
+- admin auth accepts either `Authorization: Bearer <admin-secret>` or the encrypted `openclaw_admin` session cookie
+- CSRF is enforced on cookie-based mutation requests but not bearer token requests
+- deployment-protection was attempted and abandoned — Vercel's deployment protection blocks channel webhooks from Slack, Telegram, and Discord, and is unavailable on Hobby plans
 - `sign-in-with-vercel` uses encrypted cookie sessions and verifies the ID token against Vercel's JWKS
 - access tokens are refreshed before expiry
 - refresh failure should clear the session and force a new login
@@ -390,9 +396,9 @@ node scripts/verify.mjs --steps=test,typecheck
 
 - `isVercelDeployment(): boolean` — returns `true` when any of `VERCEL`, `VERCEL_ENV`, `VERCEL_URL`, or `VERCEL_PROJECT_PRODUCTION_URL` is set. Use this when behavior must differ between deployed Vercel runtimes and local/non-Vercel execution.
 
-- `getAiGatewayBearerTokenOptional(): Promise<string | undefined>` — OIDC-first bearer-token resolver. Resolution order: (1) Vercel OIDC token via `@vercel/oidc`, (2) `AI_GATEWAY_API_KEY` fallback for local dev. Use `_setAiGatewayTokenOverrideForTesting()` in tests instead of mocking `@vercel/oidc`.
+- `getAiGatewayBearerTokenOptional(): Promise<string | undefined>` — resolves an OIDC token via `@vercel/oidc`. Returns `undefined` when OIDC is unavailable. For local dev, run `vercel link && vercel env pull` to get OIDC credentials. Use `_setAiGatewayTokenOverrideForTesting()` in tests instead of mocking `@vercel/oidc`.
 
-- `getAiGatewayAuthMode(): Promise<"oidc" | "api-key" | "unavailable">` — returns `"oidc"` when the resolved token differs from the static `AI_GATEWAY_API_KEY`, `"api-key"` when they match, `"unavailable"` when no token resolves. Used by preflight and channel connectability to hard-fail non-OIDC auth on Vercel deployments.
+- `getAiGatewayAuthMode(): Promise<"oidc" | "unavailable">` — returns `"oidc"` when the OIDC token resolves, `"unavailable"` otherwise. Used by preflight and channel connectability.
 
 ## Environment variables relevant to deployment contract
 

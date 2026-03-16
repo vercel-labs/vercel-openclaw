@@ -60,15 +60,15 @@ export async function requireRouteAuth(
 ): Promise<AuthCheckResult | Response> {
   logInfo("auth.check", { mode: getAuthMode(), responseMode: options?.mode ?? "redirect" });
 
-  if (getAuthMode() === "deployment-protection") {
+  if (getAuthMode() === "admin-secret") {
     return {
       session: {
         accessToken: "",
         refreshToken: null,
         expiresAt: Date.now() + 60_000,
         user: {
-          sub: "deployment-protection",
-          name: "Protected by Vercel Authentication",
+          sub: "admin-secret",
+          name: "Admin Secret Auth",
         },
       },
       setCookieHeader: null,

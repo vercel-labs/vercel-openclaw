@@ -13,7 +13,6 @@ type LaunchPanelProps = {
   status: StatusPayload;
   busy: boolean;
   requestJson: RequestJson;
-  onReadinessChange?: (readiness: ChannelReadiness | null) => void;
 };
 
 function phaseStatusIcon(phase: LaunchVerificationPhase): string {
@@ -75,7 +74,7 @@ type StreamResultEvent = {
 };
 type StreamEvent = StreamPhaseEvent | StreamResultEvent;
 
-export function LaunchPanel({ status, busy, requestJson, onReadinessChange }: LaunchPanelProps) {
+export function LaunchPanel({ status, busy, requestJson }: LaunchPanelProps) {
   const [result, setResult] = useState<LaunchVerificationPayload | null>(null);
   const [readiness, setReadiness] = useState<ChannelReadiness | null>(null);
   const [running, setRunning] = useState(false);
@@ -88,11 +87,9 @@ export function LaunchPanel({ status, busy, requestJson, onReadinessChange }: La
     void loadPersistedReadiness().then((data) => {
       if (!cancelled && data) {
         setReadiness(data);
-        onReadinessChange?.(data);
       }
     });
     return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function runVerification(mode: "safe" | "destructive"): Promise<void> {
@@ -163,7 +160,6 @@ export function LaunchPanel({ status, busy, requestJson, onReadinessChange }: La
               setStreamingPhases([]);
               if (event.payload.channelReadiness) {
                 setReadiness(event.payload.channelReadiness);
-                onReadinessChange?.(event.payload.channelReadiness);
               }
               if (!event.payload.ok) {
                 setExpanded(true);
@@ -215,8 +211,8 @@ export function LaunchPanel({ status, busy, requestJson, onReadinessChange }: La
       <div className="panel-head">
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           <div>
-            <p className="eyebrow">Launch Verification</p>
-            {!isVerified && <h2>Prove this deployment works end-to-end</h2>}
+            <p className="eyebrow">Deployment Diagnostics</p>
+            {!isVerified && <h2>Verify end-to-end connectivity</h2>}
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -224,7 +220,7 @@ export function LaunchPanel({ status, busy, requestJson, onReadinessChange }: La
             <span
               className={`status-badge ${displayReadiness.ready ? "running" : "error"}`}
             >
-              {displayReadiness.ready ? "Channels Ready" : "Not Ready"}
+              {displayReadiness.ready ? "Passed" : "Not Verified"}
             </span>
           )}
           {displayResult && (
@@ -270,7 +266,7 @@ export function LaunchPanel({ status, busy, requestJson, onReadinessChange }: La
             onClick={() => void runVerification("destructive")}
             title="Runs full verification including stop/restore cycle"
           >
-            {running ? "Verifying\u2026" : "Verify & Unlock Channels"}
+            {running ? "Verifying\u2026" : "Run Verification"}
           </button>
           <button
             className="button ghost"

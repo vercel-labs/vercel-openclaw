@@ -376,10 +376,10 @@ async function withEnv(
   }
 }
 
-test("[regression] buildDiscordPublicWebhookUrl includes bypass secret in deployment-protection mode", async () => {
+test("[regression] buildDiscordPublicWebhookUrl includes bypass secret in admin-secret mode", async () => {
   await withEnv(
     {
-      VERCEL_AUTH_MODE: "deployment-protection",
+      VERCEL_AUTH_MODE: "admin-secret",
       VERCEL_AUTOMATION_BYPASS_SECRET: "bypass-secret",
       NEXT_PUBLIC_APP_URL: "https://app.example.com",
       NEXT_PUBLIC_BASE_DOMAIN: undefined,
@@ -401,7 +401,7 @@ test("[regression] buildDiscordPublicWebhookUrl includes bypass secret in deploy
   );
 });
 
-test("[regression] buildDiscordPublicWebhookUrl omits bypass secret in sign-in-with-vercel mode", async () => {
+test("[regression] buildDiscordPublicWebhookUrl includes bypass secret when available regardless of auth mode", async () => {
   await withEnv(
     {
       VERCEL_AUTH_MODE: "sign-in-with-vercel",
@@ -420,7 +420,7 @@ test("[regression] buildDiscordPublicWebhookUrl omits bypass secret in sign-in-w
 
       assert.equal(
         buildDiscordPublicWebhookUrl(request),
-        "https://app.example.com/api/channels/discord/webhook",
+        "https://app.example.com/api/channels/discord/webhook?x-vercel-protection-bypass=bypass-secret",
       );
     },
   );

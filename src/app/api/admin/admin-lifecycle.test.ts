@@ -493,7 +493,7 @@ test("GET /api/status: returns metadata including sandbox status and firewall mo
       assert.equal(body.firewall.mode, "learning");
       assert.deepEqual(body.firewall.allowlist, ["api.openai.com"]);
       assert.equal(body.storeBackend, "memory");
-      assert.equal(body.authMode, "deployment-protection");
+      assert.equal(body.authMode, "admin-secret");
       assert.ok(body.user, "Should include user info");
     } finally {
       globalThis.fetch = originalFetch;

@@ -213,7 +213,7 @@ test("ok is false when any requirement has status fail", async () => {
 });
 
 test("ok is true when all requirements pass", async () => {
-  // Non-Vercel, deployment-protection mode — minimal requirements
+  // Non-Vercel, admin-secret mode — minimal requirements
   delete process.env.VERCEL;
   delete process.env.VERCEL_ENV;
   delete process.env.VERCEL_URL;
@@ -226,16 +226,16 @@ test("ok is true when all requirements pass", async () => {
 });
 
 // ---------------------------------------------------------------------------
-// buildDeploymentContract — deployment-protection without bypass secret
+// buildDeploymentContract — admin-secret without bypass secret
 // does NOT fail here (that is a connectability/preflight concern)
 // ---------------------------------------------------------------------------
 
-test("deployment-protection mode does not emit oauth requirements", async () => {
+test("admin-secret mode does not emit oauth requirements", async () => {
   delete process.env.VERCEL_AUTH_MODE;
   _setAiGatewayTokenOverrideForTesting("test-token");
 
   const contract = await buildDeploymentContract();
-  assert.equal(contract.authMode, "deployment-protection");
+  assert.equal(contract.authMode, "admin-secret");
 
   const oauthReqs = contract.requirements.filter(
     (r) =>
@@ -258,13 +258,13 @@ test("contract exposes expected metadata fields", async () => {
   const contract = await buildDeploymentContract();
   assert.equal(typeof contract.ok, "boolean");
   assert.ok(
-    ["deployment-protection", "sign-in-with-vercel"].includes(
+    ["admin-secret", "sign-in-with-vercel"].includes(
       contract.authMode,
     ),
   );
   assert.ok(["upstash", "memory"].includes(contract.storeBackend));
   assert.ok(
-    ["oidc", "api-key", "unavailable"].includes(contract.aiGatewayAuth),
+    ["oidc", "unavailable"].includes(contract.aiGatewayAuth),
   );
   assert.equal(contract.openclawPackageSpec, "openclaw@3.1.0");
   assert.ok(Array.isArray(contract.requirements));
@@ -276,7 +276,7 @@ test("contract exposes expected metadata fields", async () => {
 
 test("deployed protected env fails store and webhook bypass when missing", async () => {
   process.env.VERCEL = "1";
-  process.env.VERCEL_AUTH_MODE = "deployment-protection";
+  process.env.VERCEL_AUTH_MODE = "admin-secret";
   process.env.NEXT_PUBLIC_APP_URL = "https://public-host.test";
   process.env.OPENCLAW_PACKAGE_SPEC = "openclaw@1.2.3";
   delete process.env.UPSTASH_REDIS_REST_URL;
@@ -293,7 +293,7 @@ test("deployed protected env fails store and webhook bypass when missing", async
     .map((r) => r.id)
     .sort();
 
-  assert.deepEqual(failedIds, ["store", "webhook-bypass"]);
+  assert.deepEqual(failedIds, ["store"]);
   assert.equal(contract.ok, false);
 });
 
@@ -375,10 +375,10 @@ test("store fails on Vercel when missing", async () => {
   assert.equal(storeReq.status, "fail");
 });
 
-test("ai-gateway fails on Vercel with api-key auth", async () => {
+test("ai-gateway fails on Vercel when OIDC is unavailable", async () => {
   process.env.VERCEL = "1";
-  process.env.AI_GATEWAY_API_KEY = "static-key";
-  _setAiGatewayTokenOverrideForTesting("static-key");
+  delete process.env.AI_GATEWAY_API_KEY;
+  _setAiGatewayTokenOverrideForTesting(undefined);
 
   const contract = await buildDeploymentContract();
   const gwReq = contract.requirements.find((r) => r.id === "ai-gateway");
@@ -423,7 +423,7 @@ test("webhook-bypass not emitted for non-Vercel environments", async () => {
   assert.equal(bypassReq, undefined);
 });
 
-test("webhook-bypass passes when configured on protected Vercel", async () => {
+test("webhook-bypass requirement is not emitted on protected Vercel", async () => {
   process.env.VERCEL = "1";
   delete process.env.VERCEL_AUTH_MODE;
   process.env.VERCEL_AUTOMATION_BYPASS_SECRET = "bypass-secret-value";
@@ -431,6 +431,5 @@ test("webhook-bypass passes when configured on protected Vercel", async () => {
 
   const contract = await buildDeploymentContract();
   const bypassReq = contract.requirements.find((r) => r.id === "webhook-bypass");
-  assert.ok(bypassReq, "expected webhook-bypass requirement");
-  assert.equal(bypassReq.status, "pass");
+  assert.equal(bypassReq, undefined);
 });

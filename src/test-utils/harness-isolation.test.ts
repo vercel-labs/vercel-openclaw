@@ -356,7 +356,7 @@ test("harness isolation: auth mode env vars switch correctly between instances",
   assert.ok(process.env.SESSION_SECRET);
   h1.teardown();
 
-  // deployment-protection mode (default) — SESSION_SECRET is set for admin cookie encryption
+  // admin-secret mode (default) — SESSION_SECRET is set for admin cookie encryption
   const h2 = createScenarioHarness();
   assert.equal(process.env.VERCEL_AUTH_MODE, undefined);
   assert.ok(process.env.SESSION_SECRET, "SESSION_SECRET should be set for admin auth");

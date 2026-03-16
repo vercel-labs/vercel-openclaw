@@ -3,7 +3,7 @@
  *
  * Covers:
  * - sanitizeNextPath: open redirect prevention (all vectors)
- * - requireRouteAuth: deployment-protection mode defaults
+ * - requireRouteAuth: admin-secret mode defaults
  * - requireRouteAuth: sign-in-with-vercel mode with valid/expired/missing sessions
  * - requireRouteAuth: refresh token success returns updated session + Set-Cookie
  * - requireRouteAuth: refresh failure clears session (401 + Max-Age=0)
@@ -188,32 +188,32 @@ test("sanitizeNextPath: rejects malformed percent encoding", () => {
 });
 
 // ---------------------------------------------------------------------------
-// requireRouteAuth – deployment-protection mode
+// requireRouteAuth – admin-secret mode
 // ---------------------------------------------------------------------------
 
-test("requireRouteAuth: returns deployment-protection session by default", async () => {
+test("requireRouteAuth: returns admin-secret session by default", async () => {
   await withDeploymentProtectionEnv(async () => {
     const req = new Request("http://localhost/admin");
     const result = await requireRouteAuth(req);
     assert.ok(!("status" in result), "Expected AuthCheckResult, not Response");
-    assert.equal(result.session.user.sub, "deployment-protection");
+    assert.equal(result.session.user.sub, "admin-secret");
     assert.equal(result.setCookieHeader, null, "No cookie for dp mode");
   });
 });
 
-test("requireRouteAuth: returns deployment-protection session in development", async () => {
+test("requireRouteAuth: returns admin-secret session in development", async () => {
   await withEnv(
     { NODE_ENV: "development", VERCEL_AUTH_MODE: undefined },
     async () => {
       const req = new Request("http://localhost/admin");
       const result = await requireRouteAuth(req);
       assert.ok(!("status" in result), "Expected AuthCheckResult, not Response");
-      assert.equal(result.session.user.sub, "deployment-protection");
+      assert.equal(result.session.user.sub, "admin-secret");
     },
   );
 });
 
-test("requireRouteAuth: deployment-protection session has non-expired expiresAt", async () => {
+test("requireRouteAuth: admin-secret session has non-expired expiresAt", async () => {
   await withDeploymentProtectionEnv(async () => {
     const req = new Request("http://localhost/admin");
     const result = await requireRouteAuth(req);
@@ -491,7 +491,7 @@ test("buildAuthorizeResponse: redirects to Vercel OAuth with PKCE params", async
   });
 });
 
-test("buildAuthorizeResponse: in deployment-protection mode, redirects to /admin", async () => {
+test("buildAuthorizeResponse: in admin-secret mode, redirects to /admin", async () => {
   await withDeploymentProtectionEnv(async () => {
     await withMutableRedirect(async () => {
       const req = new Request("http://localhost:3000/api/auth/authorize");

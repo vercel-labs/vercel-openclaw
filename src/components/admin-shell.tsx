@@ -20,7 +20,6 @@ import {
 import type {
   StatusPayload,
 } from "@/components/admin-types";
-import type { ChannelReadiness } from "@/shared/launch-verification";
 
 const TABS = [
   { id: "status", label: "Status" },
@@ -38,7 +37,6 @@ export function AdminShell({
 }) {
   const [status, setStatus] = useState<StatusPayload | null>(initialStatus);
   const [pendingAction, setPendingAction] = useState<string | null>(null);
-  const [channelReadiness, setChannelReadiness] = useState<ChannelReadiness | null>(null);
   const [loginSecret, setLoginSecret] = useState("");
   const [loginError, setLoginError] = useState<string | null>(null);
   const [loginBusy, setLoginBusy] = useState(false);
@@ -291,21 +289,19 @@ export function AdminShell({
               )}
               {activeTab === "channels" && (
                 <>
-                  <LaunchPanel
-                    status={status}
-                    busy={busy}
-                    requestJson={requestJson}
-                    onReadinessChange={setChannelReadiness}
-                  />
                   <ChannelsPanel
                     status={status}
                     busy={busy}
                     runAction={runAction}
                     requestJson={requestJson}
                     refresh={refresh}
-                    channelReadiness={channelReadiness}
                   />
                   <ChannelQueueHealthCard />
+                  <LaunchPanel
+                    status={status}
+                    busy={busy}
+                    requestJson={requestJson}
+                  />
                 </>
               )}
               {activeTab === "terminal" && (

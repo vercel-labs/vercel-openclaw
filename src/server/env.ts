@@ -1,11 +1,11 @@
 import { getVercelOidcToken } from "@vercel/oidc";
 
-export type AuthMode = "deployment-protection" | "sign-in-with-vercel";
+export type AuthMode = "admin-secret" | "sign-in-with-vercel";
 
 export function getAuthMode(): AuthMode {
   return process.env.VERCEL_AUTH_MODE === "sign-in-with-vercel"
     ? "sign-in-with-vercel"
-    : "deployment-protection";
+    : "admin-secret";
 }
 
 export function isProduction(): boolean {
@@ -33,7 +33,7 @@ export function getSessionSecret(): string {
     );
   }
 
-  // Derive from the Upstash token for deployment-protection mode or local dev.
+  // Derive from the Upstash token for admin-secret mode or local dev.
   const upstashToken =
     process.env.UPSTASH_REDIS_REST_TOKEN?.trim() ??
     process.env.KV_REST_API_TOKEN?.trim();
@@ -97,15 +97,12 @@ export function _setAiGatewayTokenOverrideForTesting(value: string | undefined |
 }
 
 /**
- * Resolve an AI Gateway bearer token using the OIDC-first strategy:
+ * Resolve an AI Gateway bearer token via OIDC.
  *
- * 1. `VERCEL_OIDC_TOKEN` — automatically provided by Vercel at runtime when
- *    the project has OIDC federation enabled. Retrieved via `@vercel/oidc`.
- *    This is the preferred path on Vercel deployments.
- * 2. `AI_GATEWAY_API_KEY` — explicit static key fallback for local development
- *    or environments where OIDC is unavailable.
+ * The token comes from `@vercel/oidc` — automatically provided on Vercel
+ * deployments and available locally after `vercel link && vercel env pull`.
  *
- * Returns `undefined` when neither source yields a token.
+ * Returns `undefined` when OIDC is unavailable.
  */
 export async function getAiGatewayBearerTokenOptional(): Promise<string | undefined> {
   if (_aiGatewayTokenOverride !== null) {
@@ -118,11 +115,10 @@ export async function getAiGatewayBearerTokenOptional(): Promise<string | undefi
       return oidcToken;
     }
   } catch {
-    // Fall through to explicit override/local-dev key.
+    // OIDC unavailable in this environment.
   }
 
-  const staticKey = process.env.AI_GATEWAY_API_KEY?.trim();
-  return staticKey || undefined;
+  return undefined;
 }
 
 export function isVercelDeployment(): boolean {
@@ -162,13 +158,7 @@ export function getOpenclawPackageSpec(): string | null {
   return "openclaw@latest";
 }
 
-export async function getAiGatewayAuthMode(): Promise<"oidc" | "api-key" | "unavailable"> {
-  const staticKey = process.env.AI_GATEWAY_API_KEY?.trim() || "";
+export async function getAiGatewayAuthMode(): Promise<"oidc" | "unavailable"> {
   const resolvedGatewayToken = await getAiGatewayBearerTokenOptional();
-
-  if (!resolvedGatewayToken) {
-    return "unavailable";
-  }
-
-  return staticKey && resolvedGatewayToken === staticKey ? "api-key" : "oidc";
+  return resolvedGatewayToken ? "oidc" : "unavailable";
 }

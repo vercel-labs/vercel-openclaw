@@ -567,7 +567,7 @@ test("full-smoke: complete lifecycle with channels, firewall, and proxy", async 
         `Expected 0 error logs, got ${errorLogs.length}: ${errorLogs.map((e) => e.message).join(", ")}`,
       );
 
-      // --- No browser auth traffic (deployment-protection mode) ---
+      // --- No browser auth traffic (admin-secret mode) ---
       assertNoBrowserAuthTraffic(h.fakeFetch.requests());
 
       // --- Snapshot history has at least one entry ---

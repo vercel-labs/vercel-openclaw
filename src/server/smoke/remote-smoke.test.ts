@@ -101,7 +101,7 @@ test("health phase: passes on { ok: true }", async () => {
     {
       pattern: /\/api\/health/,
       response: () =>
-        Response.json({ ok: true, authMode: "deployment-protection", storeBackend: "memory", status: "running", hasSnapshot: false }),
+        Response.json({ ok: true, authMode: "admin-secret", storeBackend: "memory", status: "running", hasSnapshot: false }),
     },
   ]);
   try {
@@ -154,7 +154,7 @@ test("status phase: passes with expected fields", async () => {
     {
       pattern: /\/api\/status/,
       response: () =>
-        Response.json({ status: "running", authMode: "deployment-protection", storeBackend: "memory" }),
+        Response.json({ status: "running", authMode: "admin-secret", storeBackend: "memory" }),
     },
   ]);
   try {
@@ -473,9 +473,9 @@ test("CLI: all-pass report has passed=true and exit 0", async () => {
   const server = createServer((req, res) => {
     res.setHeader("Content-Type", "application/json");
     if (req.url === "/api/health") {
-      res.end(JSON.stringify({ ok: true, authMode: "deployment-protection", storeBackend: "memory", status: "running", hasSnapshot: false }));
+      res.end(JSON.stringify({ ok: true, authMode: "admin-secret", storeBackend: "memory", status: "running", hasSnapshot: false }));
     } else if (req.url === "/api/status") {
-      res.end(JSON.stringify({ status: "running", authMode: "deployment-protection", storeBackend: "memory" }));
+      res.end(JSON.stringify({ status: "running", authMode: "admin-secret", storeBackend: "memory" }));
     } else if (req.url === "/gateway" || req.url?.startsWith("/gateway/")) {
       res.end("<html>openclaw-app</html>");
     } else if (req.url === "/api/firewall") {
@@ -541,7 +541,7 @@ test("CLI: any-fail report has passed=false and exit 1", async () => {
       res.statusCode = 500;
       res.end(JSON.stringify({ ok: false }));
     } else if (req.url === "/api/status") {
-      res.end(JSON.stringify({ status: "running", authMode: "deployment-protection", storeBackend: "memory" }));
+      res.end(JSON.stringify({ status: "running", authMode: "admin-secret", storeBackend: "memory" }));
     } else if (req.url === "/gateway" || req.url?.startsWith("/gateway/")) {
       res.end("<html>openclaw-app</html>");
     } else if (req.url === "/api/firewall") {
@@ -682,9 +682,9 @@ test("destructive flow: channelWakeFromSleep skips gracefully when no channels c
     fetchedUrls.push(req.url ?? "");
     res.setHeader("Content-Type", "application/json");
     if (req.url === "/api/health") {
-      res.end(JSON.stringify({ ok: true, authMode: "deployment-protection", storeBackend: "memory", status: "running", hasSnapshot: false }));
+      res.end(JSON.stringify({ ok: true, authMode: "admin-secret", storeBackend: "memory", status: "running", hasSnapshot: false }));
     } else if (req.url === "/api/status") {
-      res.end(JSON.stringify({ status: "running", authMode: "deployment-protection", storeBackend: "memory", snapshotId: "should-not-use-this" }));
+      res.end(JSON.stringify({ status: "running", authMode: "admin-secret", storeBackend: "memory", snapshotId: "should-not-use-this" }));
     } else if (req.url === "/gateway" || req.url?.startsWith("/gateway/")) {
       res.end("<html>openclaw-app</html>");
     } else if (req.url === "/api/firewall") {
@@ -749,9 +749,9 @@ test("CLI: safe-only mode runs 8 phases, --destructive runs 13", async () => {
   const server = createServer((req, res) => {
     res.setHeader("Content-Type", "application/json");
     if (req.url === "/api/health") {
-      res.end(JSON.stringify({ ok: true, authMode: "deployment-protection", storeBackend: "memory", status: "running", hasSnapshot: false }));
+      res.end(JSON.stringify({ ok: true, authMode: "admin-secret", storeBackend: "memory", status: "running", hasSnapshot: false }));
     } else if (req.url === "/api/status") {
-      res.end(JSON.stringify({ status: "running", authMode: "deployment-protection", storeBackend: "memory", snapshotId: "snap-test" }));
+      res.end(JSON.stringify({ status: "running", authMode: "admin-secret", storeBackend: "memory", snapshotId: "snap-test" }));
     } else if (req.url === "/gateway/v1/chat/completions") {
       res.end(JSON.stringify({ choices: [{ message: { content: "smoke-ok" } }] }));
     } else if (req.url === "/gateway" || req.url?.startsWith("/gateway/")) {
@@ -831,7 +831,7 @@ test("health success: includes endpoint, no errorCode", async () => {
     {
       pattern: /\/api\/health/,
       response: () =>
-        Response.json({ ok: true, authMode: "deployment-protection", storeBackend: "memory", status: "running", hasSnapshot: false }),
+        Response.json({ ok: true, authMode: "admin-secret", storeBackend: "memory", status: "running", hasSnapshot: false }),
     },
   ]);
   try {
@@ -1260,9 +1260,9 @@ test("CLI all-pass report: every phase has endpoint field", async () => {
   const server = createServer((req, res) => {
     res.setHeader("Content-Type", "application/json");
     if (req.url === "/api/health") {
-      res.end(JSON.stringify({ ok: true, authMode: "deployment-protection", storeBackend: "memory", status: "running", hasSnapshot: false }));
+      res.end(JSON.stringify({ ok: true, authMode: "admin-secret", storeBackend: "memory", status: "running", hasSnapshot: false }));
     } else if (req.url === "/api/status") {
-      res.end(JSON.stringify({ status: "running", authMode: "deployment-protection", storeBackend: "memory" }));
+      res.end(JSON.stringify({ status: "running", authMode: "admin-secret", storeBackend: "memory" }));
     } else if (req.url === "/gateway" || req.url?.startsWith("/gateway/")) {
       res.end("<html>openclaw-app</html>");
     } else if (req.url === "/api/firewall") {
@@ -1316,7 +1316,7 @@ test("CLI: --request-timeout accepts a positive number", async () => {
     if (req.url === "/api/health") {
       res.end(JSON.stringify({ ok: true }));
     } else if (req.url === "/api/status") {
-      res.end(JSON.stringify({ status: "running", authMode: "deployment-protection", storeBackend: "memory" }));
+      res.end(JSON.stringify({ status: "running", authMode: "admin-secret", storeBackend: "memory" }));
     } else if (req.url === "/gateway" || req.url?.startsWith("/gateway/")) {
       res.end("<html>openclaw-app</html>");
     } else if (req.url === "/api/firewall") {
@@ -1364,7 +1364,7 @@ test("CLI: --json-only suppresses stderr, emits only JSON to stdout", async () =
     if (req.url === "/api/health") {
       res.end(JSON.stringify({ ok: true }));
     } else if (req.url === "/api/status") {
-      res.end(JSON.stringify({ status: "running", authMode: "deployment-protection", storeBackend: "memory" }));
+      res.end(JSON.stringify({ status: "running", authMode: "admin-secret", storeBackend: "memory" }));
     } else if (req.url === "/gateway" || req.url?.startsWith("/gateway/")) {
       res.end("<html>openclaw-app</html>");
     } else if (req.url === "/api/firewall") {
@@ -1452,7 +1452,7 @@ test("CLI: --auth-cookie value is never logged to stderr or stdout", async () =>
     if (req.url === "/api/health") {
       res.end(JSON.stringify({ ok: true }));
     } else if (req.url === "/api/status") {
-      res.end(JSON.stringify({ status: "running", authMode: "deployment-protection", storeBackend: "memory" }));
+      res.end(JSON.stringify({ status: "running", authMode: "admin-secret", storeBackend: "memory" }));
     } else if (req.url === "/gateway" || req.url?.startsWith("/gateway/")) {
       res.end("<html>openclaw-app</html>");
     } else if (req.url === "/api/firewall") {
@@ -1528,9 +1528,9 @@ test("event stream: --json-only emits smoke-start, phase-end, and smoke-finish e
   const server = createServer((req, res) => {
     res.setHeader("Content-Type", "application/json");
     if (req.url === "/api/health") {
-      res.end(JSON.stringify({ ok: true, authMode: "deployment-protection", storeBackend: "memory", status: "running", hasSnapshot: false }));
+      res.end(JSON.stringify({ ok: true, authMode: "admin-secret", storeBackend: "memory", status: "running", hasSnapshot: false }));
     } else if (req.url === "/api/status") {
-      res.end(JSON.stringify({ status: "running", authMode: "deployment-protection", storeBackend: "memory" }));
+      res.end(JSON.stringify({ status: "running", authMode: "admin-secret", storeBackend: "memory" }));
     } else if (req.url === "/gateway/v1/chat/completions") {
       res.end(JSON.stringify({ choices: [{ message: { content: "smoke-ok" } }] }));
     } else if (req.url === "/gateway" || req.url?.startsWith("/gateway/")) {
@@ -1617,9 +1617,9 @@ test("event stream: non-json-only mode emits events AND human-readable text", as
   const server = createServer((req, res) => {
     res.setHeader("Content-Type", "application/json");
     if (req.url === "/api/health") {
-      res.end(JSON.stringify({ ok: true, authMode: "deployment-protection", storeBackend: "memory", status: "running", hasSnapshot: false }));
+      res.end(JSON.stringify({ ok: true, authMode: "admin-secret", storeBackend: "memory", status: "running", hasSnapshot: false }));
     } else if (req.url === "/api/status") {
-      res.end(JSON.stringify({ status: "running", authMode: "deployment-protection", storeBackend: "memory" }));
+      res.end(JSON.stringify({ status: "running", authMode: "admin-secret", storeBackend: "memory" }));
     } else if (req.url === "/gateway" || req.url?.startsWith("/gateway/")) {
       res.end("<html>openclaw-app</html>");
     } else if (req.url === "/api/firewall") {
@@ -1667,7 +1667,7 @@ test("event stream: each event line is independently parseable", async () => {
       // Return a failure to test failure events
       res.end(JSON.stringify({ ok: false }));
     } else if (req.url === "/api/status") {
-      res.end(JSON.stringify({ status: "running", authMode: "deployment-protection", storeBackend: "memory" }));
+      res.end(JSON.stringify({ status: "running", authMode: "admin-secret", storeBackend: "memory" }));
     } else if (req.url === "/gateway" || req.url?.startsWith("/gateway/")) {
       res.end("<html>openclaw-app</html>");
     } else if (req.url === "/api/firewall") {
@@ -1716,9 +1716,9 @@ test("event stream: phase-end events have correct phase order", async () => {
   const server = createServer((req, res) => {
     res.setHeader("Content-Type", "application/json");
     if (req.url === "/api/health") {
-      res.end(JSON.stringify({ ok: true, authMode: "deployment-protection", storeBackend: "memory", status: "running", hasSnapshot: false }));
+      res.end(JSON.stringify({ ok: true, authMode: "admin-secret", storeBackend: "memory", status: "running", hasSnapshot: false }));
     } else if (req.url === "/api/status") {
-      res.end(JSON.stringify({ status: "running", authMode: "deployment-protection", storeBackend: "memory" }));
+      res.end(JSON.stringify({ status: "running", authMode: "admin-secret", storeBackend: "memory" }));
     } else if (req.url === "/gateway" || req.url?.startsWith("/gateway/")) {
       res.end("<html>openclaw-app</html>");
     } else if (req.url === "/api/firewall") {

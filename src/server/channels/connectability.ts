@@ -9,11 +9,6 @@ import {
   type DeploymentContract,
   type DeploymentRequirement,
 } from "@/server/deployment-contract";
-import type { ChannelReadiness } from "@/shared/launch-verification";
-import {
-  readChannelReadiness,
-  getCurrentDeploymentId,
-} from "@/server/launch-verify/state";
 import { logInfo } from "@/server/log";
 import { buildPublicUrl } from "@/server/public-url";
 
@@ -129,8 +124,6 @@ function collectContractIssues(
  */
 export type SharedConnectabilityInputs = {
   contract?: DeploymentContract;
-  readiness?: ChannelReadiness;
-  currentDeploymentId?: string;
 };
 
 /**
@@ -219,8 +212,9 @@ export async function buildChannelPrerequisiteReport(
 }
 
 /**
- * Full connectability check for a channel: config prerequisites + launch-verification.
- * Used by channel PUT routes to gate credential saves.
+ * Full connectability check for a channel.
+ * Delegates to buildChannelPrerequisite for config-level checks.
+ * Used by channel PUT routes to gate credential saves and by the status API.
  */
 export async function buildChannelConnectability(
   channel: ChannelName,
@@ -228,44 +222,7 @@ export async function buildChannelConnectability(
   webhookUrlOverride?: string,
   shared: SharedConnectabilityInputs = {},
 ): Promise<ChannelConnectability> {
-  const prerequisite = await buildChannelPrerequisite(
-    channel,
-    request,
-    webhookUrlOverride,
-    shared,
-  );
-
-  // Start with all config-level issues
-  const issues: ChannelConnectabilityIssue[] = [...prerequisite.issues];
-  const label = CHANNEL_LABELS[channel];
-
-  // Add runtime launch-verification check
-  const readiness = shared.readiness ?? await readChannelReadiness();
-  const currentDeploymentId = shared.currentDeploymentId ?? getCurrentDeploymentId();
-  if (!readiness.ready || readiness.deploymentId !== currentDeploymentId) {
-    const reason = readiness.deploymentId !== currentDeploymentId
-      ? "Launch verification has not been run for the current deployment."
-      : readiness.failingPhaseId
-        ? `Launch verification failed at phase "${readiness.failingPhaseId}".`
-        : "Launch verification has not passed yet.";
-    addIssue(issues, {
-      id: "launch-verification",
-      status: "fail",
-      message: `${label} cannot be connected until destructive launch verification passes. ${reason}`,
-      remediation:
-        'Run destructive launch verification from the admin panel or POST /api/admin/launch-verify with {"mode":"destructive"} (or ?mode=destructive) to prove the full queue → wake → reply path works.',
-      env: [],
-    });
-  }
-
-  logInfo("channel_connectability.built", {
-    channel,
-    status: summarizeStatus(issues),
-    issueCount: issues.length,
-    issueIds: issues.map((i) => i.id),
-  });
-
-  return buildResult(channel, prerequisite.webhookUrl, issues);
+  return buildChannelPrerequisite(channel, request, webhookUrlOverride, shared);
 }
 
 export async function buildChannelConnectabilityReport(
@@ -273,9 +230,7 @@ export async function buildChannelConnectabilityReport(
   shared: SharedConnectabilityInputs = {},
 ): Promise<Record<ChannelName, ChannelConnectability>> {
   const contract = shared.contract ?? await buildDeploymentContract({ request });
-  const readiness = shared.readiness ?? await readChannelReadiness();
-  const currentDeploymentId = shared.currentDeploymentId ?? getCurrentDeploymentId();
-  const nextShared = { ...shared, contract, readiness, currentDeploymentId };
+  const nextShared = { ...shared, contract };
 
   const [slack, telegram, discord] = await Promise.all([
     buildChannelConnectability("slack", request, undefined, nextShared),

@@ -611,7 +611,7 @@ export function buildAuthDeleteRequest(
 
 /**
  * Call the gateway GET handler with the given sub-path.
- * Auth mode should already be configured (e.g. deployment-protection).
+ * Auth mode should already be configured (e.g. admin-secret).
  */
 export async function callGatewayGet(
   subPath = "/",
@@ -634,7 +634,7 @@ export async function callGatewayGet(
 
 /**
  * Call any gateway method handler with the given sub-path.
- * Auth mode should already be configured (e.g. deployment-protection).
+ * Auth mode should already be configured (e.g. admin-secret).
  */
 export async function callGatewayMethod(
   method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD" | "OPTIONS",
