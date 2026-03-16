@@ -18,7 +18,7 @@ import { getWaitingPageHtml } from "@/server/proxy/waitingPage";
 import {
   ensureSandboxRunning,
   getSandboxDomain,
-  markSandboxUnavailable,
+  reconcileSandboxHealth,
   touchRunningSandbox,
 } from "@/server/sandbox/lifecycle";
 
@@ -122,8 +122,7 @@ async function handleProxy(request: Request, path: string): Promise<Response> {
   }
   if (upstream.status === 410) {
     logWarn("gateway.upstream_410", reqCtx);
-    await markSandboxUnavailable("Sandbox VM was reclaimed.");
-    await ensureSandboxRunning({
+    await reconcileSandboxHealth({
       origin: getPublicOrigin(request),
       reason: "gateway.410",
       schedule: after,

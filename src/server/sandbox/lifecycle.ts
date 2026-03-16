@@ -6,7 +6,7 @@ import { getAiGatewayBearerTokenOptional } from "@/server/env";
 import { syncFirewallPolicyIfRunning } from "@/server/firewall/state";
 import { applyFirewallPolicyToSandbox } from "@/server/firewall/policy";
 import { logError, logInfo, logWarn } from "@/server/log";
-import { setupOpenClaw } from "@/server/openclaw/bootstrap";
+import { setupOpenClaw, CommandFailedError } from "@/server/openclaw/bootstrap";
 import {
   buildForcePairScript,
   buildGatewayConfig,
@@ -46,7 +46,7 @@ const STALE_OPERATION_MS = 5 * 60 * 1000;
 const READY_WAIT_TIMEOUT_MS = 5 * 60 * 1000;
 const READY_WAIT_POLL_MS = 1_000;
 
-type BackgroundScheduler = (callback: () => Promise<void> | void) => void;
+export type BackgroundScheduler = (callback: () => Promise<void> | void) => void;
 
 type AutoRenewedLockOptions = {
   key: string;
@@ -252,7 +252,11 @@ async function refreshAiGatewayToken(sandbox: SandboxHandle, sandboxId: string):
   ]);
   if (writeResult.exitCode !== 0) {
     const output = await writeResult.output("both");
-    throw new Error(`Failed to write AI Gateway token: ${output.slice(0, 300)}`);
+    throw new CommandFailedError({
+      command: "write-ai-gateway-token",
+      exitCode: writeResult.exitCode,
+      output,
+    });
   }
 
   const restartResult = await sandbox.runCommand("bash", [
@@ -261,7 +265,11 @@ async function refreshAiGatewayToken(sandbox: SandboxHandle, sandboxId: string):
   ]);
   if (restartResult.exitCode !== 0) {
     const output = await restartResult.output("both");
-    throw new Error(`Failed to restart OpenClaw gateway: ${output.slice(0, 300)}`);
+    throw new CommandFailedError({
+      command: "restart-openclaw-gateway",
+      exitCode: restartResult.exitCode,
+      output,
+    });
   }
 
   await mutateMeta((next) => {
@@ -312,6 +320,71 @@ export async function probeGatewayReady(): Promise<ProbeResult> {
     logWarn("sandbox.probe_failed", { error: message });
     return { ready: false, error: message };
   }
+}
+
+export type SandboxHealthStatus = "ready" | "recovering" | "unreachable";
+
+export type SandboxHealthResult = {
+  status: SandboxHealthStatus;
+  meta: SingleMeta;
+  repaired: boolean;
+  error?: string;
+};
+
+/**
+ * Single authority for sandbox health reconciliation.
+ *
+ * When metadata says "running", probes the actual gateway.  If the probe
+ * fails the sandbox is marked unavailable and recovery is scheduled — the
+ * same repair path used everywhere else.  Non-running states delegate to
+ * `ensureSandboxRunning` so callers never have to choose between "check"
+ * and "ensure".
+ */
+export async function reconcileSandboxHealth(options: {
+  origin: string;
+  reason: string;
+  schedule?: BackgroundScheduler;
+}): Promise<SandboxHealthResult> {
+  const meta = await getInitializedMeta();
+
+  // Not supposed to be running — just ensure.
+  if (meta.status !== "running" || !meta.sandboxId) {
+    const result = await ensureSandboxRunning(options);
+    return {
+      status: result.state === "running" ? "ready" : "recovering",
+      meta: result.meta,
+      repaired: false,
+    };
+  }
+
+  // Metadata says running — verify with a real probe.
+  const probe = await probeGatewayReady();
+  if (probe.ready) {
+    return { status: "ready", meta, repaired: false };
+  }
+
+  // Stale running state detected — repair.
+  logWarn("sandbox.health_reconcile", {
+    reason: options.reason,
+    probeError: probe.error,
+    statusCode: probe.statusCode,
+    sandboxId: meta.sandboxId,
+  });
+  await markSandboxUnavailable(
+    `Health reconciliation: gateway unreachable (${options.reason})`,
+  );
+  const ensureResult = await ensureSandboxRunning(options);
+  logInfo("sandbox.health_reconcile_recovery_scheduled", {
+    reason: options.reason,
+    newStatus: ensureResult.meta.status,
+    repaired: true,
+  });
+
+  return {
+    status: "recovering",
+    meta: ensureResult.meta,
+    repaired: true,
+  };
 }
 
 async function scheduleLifecycleWork(options: {
@@ -491,12 +564,20 @@ async function restoreSandboxFromSnapshot(origin: string): Promise<SingleMeta> {
     // baked-in key file contains a stale OIDC token.
     const freshApiKey = await getAiGatewayBearerTokenOptional();
     if (freshApiKey) {
-      await sandbox.runCommand("sh", [
+      const writeTokenResult = await sandbox.runCommand("sh", [
         "-c",
         WRITE_AI_GATEWAY_TOKEN_SCRIPT,
         "--",
         freshApiKey,
       ]);
+      if (writeTokenResult.exitCode !== 0) {
+        const output = await writeTokenResult.output("both");
+        throw new CommandFailedError({
+          command: "write-ai-gateway-token",
+          exitCode: writeTokenResult.exitCode,
+          output,
+        });
+      }
     }
 
     // Re-write config, skill files, and force-pair script so snapshots
@@ -533,7 +614,11 @@ async function restoreSandboxFromSnapshot(origin: string): Promise<SingleMeta> {
     ]);
     if (restoreResult.exitCode !== 0) {
       const output = await restoreResult.output("both");
-      throw new Error(`Restore startup script failed: ${output.slice(0, 500)}`);
+      throw new CommandFailedError({
+        command: "restore-startup-script",
+        exitCode: restoreResult.exitCode,
+        output,
+      });
     }
 
     // Force-pair the device identity so the gateway doesn't require

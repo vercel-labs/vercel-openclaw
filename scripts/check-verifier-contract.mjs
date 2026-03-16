@@ -78,10 +78,57 @@ for (const relPath of docFiles) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Deployment contract env surface check
+// Extract env names from deployment-contract.ts and verify they appear in docs.
+// ---------------------------------------------------------------------------
+
+const contractPath = path.join(rootDir, "src", "server", "deployment-contract.ts");
+const contractSource = readFileSync(contractPath, "utf8");
+
+// Match all `env: ["VAR_NAME"]` or `env: ["VAR_NAME", "OTHER"]` patterns
+const envPattern = /env:\s*\[([^\]]+)\]/g;
+const contractEnvNames = new Set();
+
+let envMatch;
+while ((envMatch = envPattern.exec(contractSource)) !== null) {
+  const inner = envMatch[1];
+  // Extract quoted strings
+  const namePattern = /"([^"]+)"/g;
+  let nameMatch;
+  while ((nameMatch = namePattern.exec(inner)) !== null) {
+    contractEnvNames.add(nameMatch[1]);
+  }
+}
+
+if (contractEnvNames.size === 0) {
+  failures.push("deployment-contract.ts: could not extract any env names from env: [...] arrays");
+}
+
+const envDocFiles = {
+  "README.md": path.join(rootDir, "README.md"),
+  "CLAUDE.md": path.join(rootDir, "CLAUDE.md"),
+  ".env.example": path.join(rootDir, ".env.example"),
+};
+
+for (const envName of contractEnvNames) {
+  for (const [label, filePath] of Object.entries(envDocFiles)) {
+    if (!existsSync(filePath)) {
+      failures.push(`${label}: file missing (needed for env surface check)`);
+      continue;
+    }
+    const content = readFileSync(filePath, "utf8");
+    if (!content.includes(envName)) {
+      failures.push(`${label}: missing deployment-contract env "${envName}"`);
+    }
+  }
+}
+
 const payload = {
   event: "verifier_contract.checked",
   ok: failures.length === 0,
   failures,
+  contractEnvNames: [...contractEnvNames].sort(),
   packageManager: pkg.packageManager ?? null,
   hasPackageLock: existsSync(packageLockPath),
   hasPnpmLock: existsSync(pnpmLockPath),

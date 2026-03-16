@@ -394,6 +394,19 @@ node scripts/verify.mjs --steps=test,typecheck
 
 - `getAiGatewayAuthMode(): Promise<"oidc" | "api-key" | "unavailable">` — returns `"oidc"` when the resolved token differs from the static `AI_GATEWAY_API_KEY`, `"api-key"` when they match, `"unavailable"` when no token resolves. Used by preflight and channel connectability to hard-fail non-OIDC auth on Vercel deployments.
 
+## Environment variables relevant to deployment contract
+
+These variables are checked by `buildDeploymentContract()` in `src/server/deployment-contract.ts`:
+
+| Variable | Context | Policy |
+| -------- | ------- | ------ |
+| `OPENCLAW_PACKAGE_SPEC` | Vercel deployments | Required. Must be a pinned version like `openclaw@1.2.3`. Local dev falls back to `openclaw@latest` when unset. |
+| `NEXT_PUBLIC_VERCEL_APP_CLIENT_ID` | `sign-in-with-vercel` mode | Required for OAuth flow. |
+| `VERCEL_APP_CLIENT_SECRET` | `sign-in-with-vercel` mode | Required for OAuth flow. |
+| `SESSION_SECRET` | `sign-in-with-vercel` on Vercel | Required. Must be explicitly set — do not rely on silent derivation from the Upstash token. |
+
+`scripts/check-verifier-contract.mjs` enforces that every env name in the deployment contract also appears in `README.md`, `CLAUDE.md`, and `.env.example`.
+
 ## Current sharp edges
 
 - Initial bootstrap now creates a recovery snapshot automatically.

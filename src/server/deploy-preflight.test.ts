@@ -402,6 +402,7 @@ test("preflight passes when Upstash is configured and AI Gateway auth resolves t
       UPSTASH_REDIS_REST_URL: "redis-url",
       UPSTASH_REDIS_REST_TOKEN: "redis-token",
       AI_GATEWAY_API_KEY: undefined,
+      OPENCLAW_PACKAGE_SPEC: "openclaw@1.0.0",
     },
     async () => {
       _setAiGatewayTokenOverrideForTesting("oidc-token");

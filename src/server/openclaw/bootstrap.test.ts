@@ -14,7 +14,7 @@ import {
   OPENCLAW_STARTUP_SCRIPT_PATH,
   OPENCLAW_STATE_DIR,
 } from "@/server/openclaw/config";
-import { setupOpenClaw, waitForGatewayReady } from "@/server/openclaw/bootstrap";
+import { setupOpenClaw, waitForGatewayReady, detectDrift, CommandFailedError } from "@/server/openclaw/bootstrap";
 import {
   createScenarioHarness,
   type CommandResponder,
@@ -55,7 +55,7 @@ test("setupOpenClaw executes commands in correct order", async () => {
     assert.equal(cmds[3], "curl", "fourth command should be gateway probe");
     assert.equal(cmds[4], "node", "fifth command should be force-pair");
 
-    // Verify npm install args
+    // Verify npm install uses the resolved package spec (openclaw@latest in non-Vercel env)
     assert.deepEqual(handle.commands[0].args, [
       "install", "-g", "openclaw@latest", "--ignore-scripts",
     ]);
@@ -697,10 +697,10 @@ test("setupOpenClaw can be re-run after writeFiles failure", async () => {
 });
 
 // ---------------------------------------------------------------------------
-// Failure-path: npm install non-zero exit code (not thrown)
+// Failure-path: npm install non-zero exit code throws CommandFailedError
 // ---------------------------------------------------------------------------
 
-test("setupOpenClaw does not throw on npm install non-zero exit code", async () => {
+test("setupOpenClaw throws CommandFailedError on npm install non-zero exit code", async () => {
   const h = createScenarioHarness();
   try {
     const handle = await createHandle(h);
@@ -715,16 +715,23 @@ test("setupOpenClaw does not throw on npm install non-zero exit code", async () 
       return undefined;
     });
 
-    // bootstrap.ts does not check the exit code of npm install,
-    // so the call proceeds even when npm returns non-zero
-    const result = await setupOpenClaw(handle, {
-      gatewayToken: "tok",
-      proxyOrigin: "https://proxy.test",
-    });
-
-    assert.ok(
-      result.startupScript,
-      "setupOpenClaw should complete despite npm exit code 1",
+    await assert.rejects(
+      () =>
+        setupOpenClaw(handle, {
+          gatewayToken: "tok",
+          proxyOrigin: "https://proxy.test",
+        }),
+      (err: unknown) => {
+        assert.ok(err instanceof CommandFailedError, `Expected CommandFailedError, got ${(err as Error).name}`);
+        assert.equal(err.command, "npm install");
+        assert.equal(err.exitCode, 1);
+        assert.ok(err.trimmedOutput.includes("EACCES"));
+        // Verify toJSON produces structured data
+        const json = err.toJSON();
+        assert.equal(json.command, "npm install");
+        assert.equal(json.exitCode, 1);
+        return true;
+      },
     );
   } finally {
     h.teardown();
@@ -732,10 +739,10 @@ test("setupOpenClaw does not throw on npm install non-zero exit code", async () 
 });
 
 // ---------------------------------------------------------------------------
-// Failure-path: startup script non-zero exit code (not thrown)
+// Failure-path: startup script non-zero exit code throws CommandFailedError
 // ---------------------------------------------------------------------------
 
-test("setupOpenClaw does not throw on startup script non-zero exit code", async () => {
+test("setupOpenClaw throws CommandFailedError on startup script non-zero exit code", async () => {
   const h = createScenarioHarness();
   try {
     const handle = await createHandle(h);
@@ -750,18 +757,184 @@ test("setupOpenClaw does not throw on startup script non-zero exit code", async 
       return undefined;
     });
 
-    // bootstrap.ts does not check the exit code of the startup script,
-    // so the call proceeds even when bash returns 127
+    await assert.rejects(
+      () =>
+        setupOpenClaw(handle, {
+          gatewayToken: "tok",
+          proxyOrigin: "https://proxy.test",
+        }),
+      (err: unknown) => {
+        assert.ok(err instanceof CommandFailedError, `Expected CommandFailedError, got ${(err as Error).name}`);
+        assert.equal(err.command, "bash startup-script");
+        assert.equal(err.exitCode, 127);
+        assert.ok(err.trimmedOutput.includes("command not found"));
+        return true;
+      },
+    );
+  } finally {
+    h.teardown();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Failure-path: version check non-zero exit code throws CommandFailedError
+// ---------------------------------------------------------------------------
+
+test("setupOpenClaw throws CommandFailedError on openclaw --version non-zero exit code", async () => {
+  const h = createScenarioHarness();
+  try {
+    const handle = await createHandle(h);
+
+    handle.responders.push((cmd) => {
+      if (cmd === OPENCLAW_BIN) {
+        return {
+          exitCode: 1,
+          output: async () => "openclaw: error loading binary",
+        };
+      }
+      return undefined;
+    });
+
+    await assert.rejects(
+      () =>
+        setupOpenClaw(handle, {
+          gatewayToken: "tok",
+          proxyOrigin: "https://proxy.test",
+        }),
+      (err: unknown) => {
+        assert.ok(err instanceof CommandFailedError, `Expected CommandFailedError, got ${(err as Error).name}`);
+        assert.equal(err.command, "openclaw --version");
+        assert.equal(err.exitCode, 1);
+        assert.ok(err.trimmedOutput.includes("error loading binary"));
+        return true;
+      },
+    );
+  } finally {
+    h.teardown();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// setupOpenClaw — runtime info in return value
+// ---------------------------------------------------------------------------
+
+test("setupOpenClaw returns runtime with packageSpec and installedVersion", async () => {
+  const h = createScenarioHarness();
+  try {
+    const handle = await createHandle(h);
+
     const result = await setupOpenClaw(handle, {
       gatewayToken: "tok",
       proxyOrigin: "https://proxy.test",
     });
 
-    assert.ok(
-      result.startupScript,
-      "setupOpenClaw should complete despite startup script exit code 127",
-    );
+    assert.ok(result.runtime, "runtime should be present");
+    assert.equal(result.runtime.packageSpec, "openclaw@latest");
+    // Default harness returns empty string for --version, normalized to null
+    assert.equal(result.runtime.installedVersion, null);
+    // "latest" is always drifty
+    assert.equal(result.runtime.drift, true);
   } finally {
     h.teardown();
   }
+});
+
+test("setupOpenClaw uses OPENCLAW_PACKAGE_SPEC when set", async () => {
+  const h = createScenarioHarness();
+  const original = process.env.OPENCLAW_PACKAGE_SPEC;
+  try {
+    process.env.OPENCLAW_PACKAGE_SPEC = "openclaw@2.0.0";
+    const handle = await createHandle(h);
+
+    handle.responders.push((cmd) => {
+      if (cmd === OPENCLAW_BIN) {
+        return { exitCode: 0, output: async () => "2.0.0" };
+      }
+      return undefined;
+    });
+
+    const result = await setupOpenClaw(handle, {
+      gatewayToken: "tok",
+      proxyOrigin: "https://proxy.test",
+    });
+
+    // npm install should use the pinned spec
+    assert.deepEqual(handle.commands[0].args, [
+      "install", "-g", "openclaw@2.0.0", "--ignore-scripts",
+    ]);
+
+    assert.equal(result.runtime.packageSpec, "openclaw@2.0.0");
+    assert.equal(result.runtime.installedVersion, "2.0.0");
+    assert.equal(result.runtime.drift, false, "pinned version should not drift");
+  } finally {
+    if (original === undefined) {
+      delete process.env.OPENCLAW_PACKAGE_SPEC;
+    } else {
+      process.env.OPENCLAW_PACKAGE_SPEC = original;
+    }
+    h.teardown();
+  }
+});
+
+test("setupOpenClaw throws when OPENCLAW_PACKAGE_SPEC is missing on Vercel", async () => {
+  const h = createScenarioHarness();
+  const origSpec = process.env.OPENCLAW_PACKAGE_SPEC;
+  const origVercel = process.env.VERCEL;
+  try {
+    delete process.env.OPENCLAW_PACKAGE_SPEC;
+    process.env.VERCEL = "1";
+    const handle = await createHandle(h);
+
+    await assert.rejects(
+      () => setupOpenClaw(handle, {
+        gatewayToken: "tok",
+        proxyOrigin: "https://proxy.test",
+      }),
+      (err: Error) => {
+        assert.ok(
+          err.message.includes("OPENCLAW_PACKAGE_SPEC"),
+          `Error should reference OPENCLAW_PACKAGE_SPEC, got: ${err.message}`,
+        );
+        return true;
+      },
+    );
+  } finally {
+    if (origSpec === undefined) {
+      delete process.env.OPENCLAW_PACKAGE_SPEC;
+    } else {
+      process.env.OPENCLAW_PACKAGE_SPEC = origSpec;
+    }
+    if (origVercel === undefined) {
+      delete process.env.VERCEL;
+    } else {
+      process.env.VERCEL = origVercel;
+    }
+    h.teardown();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// detectDrift — unit tests
+// ---------------------------------------------------------------------------
+
+test("detectDrift returns false for exact pinned match", () => {
+  assert.equal(detectDrift("openclaw@1.2.3", "1.2.3"), false);
+});
+
+test("detectDrift returns true for version mismatch", () => {
+  assert.equal(detectDrift("openclaw@1.2.3", "1.2.4"), true);
+});
+
+test("detectDrift returns true for latest tag", () => {
+  assert.equal(detectDrift("openclaw@latest", "1.2.3"), true);
+});
+
+test("detectDrift returns true for range spec", () => {
+  assert.equal(detectDrift("openclaw@^1.0.0", "1.2.3"), true);
+  assert.equal(detectDrift("openclaw@~1.0.0", "1.0.5"), true);
+  assert.equal(detectDrift("openclaw@>=1.0.0", "1.2.3"), true);
+});
+
+test("detectDrift returns true when installedVersion is null", () => {
+  assert.equal(detectDrift("openclaw@1.2.3", null), true);
 });

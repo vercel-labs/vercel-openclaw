@@ -8,7 +8,11 @@ export type ChannelConnectabilityIssueId =
   | "webhook-bypass"
   | "store"
   | "ai-gateway"
-  | "launch-verification";
+  | "launch-verification"
+  | "openclaw-package-spec"
+  | "oauth-client-id"
+  | "oauth-client-secret"
+  | "session-secret";
 
 export type ChannelConnectabilityIssue = {
   id: ChannelConnectabilityIssueId;

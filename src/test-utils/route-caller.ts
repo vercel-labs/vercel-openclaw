@@ -456,6 +456,22 @@ export function getAdminRestoreRoute(): AdminRouteModule {
   return _adminRestoreRoute;
 }
 
+type LaunchVerifyRouteModule = {
+  POST: (request: Request) => Promise<Response>;
+  GET: (request: Request) => Promise<Response>;
+};
+
+let _adminLaunchVerifyRoute: LaunchVerifyRouteModule | null = null;
+
+export function getAdminLaunchVerifyRoute(): LaunchVerifyRouteModule {
+  if (!_adminLaunchVerifyRoute) {
+    patchNextServerAfter();
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    _adminLaunchVerifyRoute = require("@/app/api/admin/launch-verify/route") as LaunchVerifyRouteModule;
+  }
+  return _adminLaunchVerifyRoute;
+}
+
 let _slackManifestRoute: SimpleRouteModule | null = null;
 let _slackTestRoute: SimpleRouteModule | null = null;
 let _telegramPreviewRoute: SimpleRouteModule | null = null;

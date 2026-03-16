@@ -134,6 +134,26 @@ export function requiresDurableStore(): boolean {
   return isVercelDeployment();
 }
 
+/**
+ * Resolve the openclaw npm package spec to install in the sandbox.
+ *
+ * Resolution order:
+ * 1. `OPENCLAW_PACKAGE_SPEC` env var (e.g. "openclaw@1.2.3", "openclaw@^1.0.0")
+ * 2. Falls back to "openclaw@latest" in non-Vercel environments.
+ * 3. On Vercel deployments, a missing `OPENCLAW_PACKAGE_SPEC` returns `null`
+ *    so callers can fail fast with a clear error.
+ */
+export function getOpenclawPackageSpec(): string | null {
+  const explicit = process.env.OPENCLAW_PACKAGE_SPEC?.trim();
+  if (explicit) {
+    return explicit;
+  }
+  if (isVercelDeployment()) {
+    return null;
+  }
+  return "openclaw@latest";
+}
+
 export async function getAiGatewayAuthMode(): Promise<"oidc" | "api-key" | "unavailable"> {
   const staticKey = process.env.AI_GATEWAY_API_KEY?.trim() || "";
   const resolvedGatewayToken = await getAiGatewayBearerTokenOptional();

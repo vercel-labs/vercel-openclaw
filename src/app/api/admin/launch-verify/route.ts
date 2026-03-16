@@ -12,7 +12,8 @@ import {
   probeGatewayReady,
   stopSandbox,
 } from "@/server/sandbox/lifecycle";
-import { getAiGatewayBearerTokenOptional } from "@/server/env";
+import { getAiGatewayBearerTokenOptional, getOpenclawPackageSpec } from "@/server/env";
+import { detectDrift } from "@/server/openclaw/bootstrap";
 import { getInitializedMeta } from "@/server/store/store";
 import {
   publishLaunchVerifyQueueProbe,
@@ -26,6 +27,8 @@ import type {
   LaunchVerificationPayload,
   LaunchVerificationPhase,
   LaunchVerificationPhaseId,
+  LaunchVerificationRuntime,
+  LaunchVerificationSandboxHealth,
 } from "@/shared/launch-verification";
 
 const ENSURE_POLL_MS = 2_000;
@@ -72,13 +75,25 @@ export async function POST(request: Request): Promise<Response> {
   }
 
   const startedAt = new Date().toISOString();
-  let body: { mode?: string } = {};
+
+  // Mode resolution: query param takes precedence over JSON body.
+  // Both `POST ?mode=destructive` and `POST { "mode": "destructive" }` are accepted.
+  const url = new URL(request.url);
+  const queryMode = url.searchParams.get("mode");
+  let bodyMode: string | undefined;
   try {
-    body = (await request.json()) as { mode?: string };
+    const body = (await request.json()) as { mode?: string };
+    bodyMode = body.mode;
   } catch {
-    // default to safe mode
+    // No JSON body — use query param or default to safe.
   }
-  const mode = body.mode === "destructive" ? "destructive" : "safe";
+  const rawMode = queryMode ?? bodyMode;
+  const mode = rawMode === "destructive" ? "destructive" : "safe";
+
+  logInfo("launch_verify.mode_resolved", {
+    source: queryMode ? "query" : bodyMode ? "body" : "default",
+    mode,
+  });
 
   logInfo("launch_verify.started", { mode });
 
@@ -181,22 +196,30 @@ export async function POST(request: Request): Promise<Response> {
   });
   phases.push(ensurePhase);
 
-  // Phase 4: chatCompletions - verify gateway responds over OIDC
+  // Phase 4: chatCompletions - verify gateway responds with AI Gateway auth
   if (ensurePhase.status === "pass") {
     const chatPhase = await runPhase("chatCompletions", async () => {
       const gatewayUrl = await getSandboxDomain();
       const meta = await getInitializedMeta();
-      const token = await getAiGatewayBearerTokenOptional();
-      if (!token) {
+      const aiGatewayToken = await getAiGatewayBearerTokenOptional();
+      if (!aiGatewayToken) {
         throw new Error("No AI Gateway bearer token available.");
       }
 
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${meta.gatewayToken}`,
+        "X-AI-Gateway-Token": aiGatewayToken,
+      };
+
+      logInfo("launch_verify.chat_completions_auth", {
+        hasGatewayToken: Boolean(meta.gatewayToken),
+        hasAiGatewayToken: Boolean(aiGatewayToken),
+      });
+
       const res = await fetch(`${gatewayUrl}/v1/chat/completions`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${meta.gatewayToken}`,
-        },
+        headers,
         body: JSON.stringify({
           model: "default",
           messages: [{ role: "user", content: "Reply with exactly: launch-verify-ok" }],
@@ -250,6 +273,29 @@ export async function POST(request: Request): Promise<Response> {
     phases.push(skipPhase("wakeFromSleep", "Not run in safe mode."));
   }
 
+  // Build runtime info from stored metadata + env
+  let runtime: LaunchVerificationRuntime | undefined;
+  let sandboxHealth: LaunchVerificationSandboxHealth | undefined;
+  try {
+    const runtimeMeta = await getInitializedMeta();
+    const packageSpec = getOpenclawPackageSpec();
+    if (packageSpec) {
+      runtime = {
+        packageSpec,
+        installedVersion: runtimeMeta.openclawVersion,
+        drift: detectDrift(packageSpec, runtimeMeta.openclawVersion),
+      };
+    }
+    // sandboxHealth.repaired is true when ensure had to start/restore the sandbox
+    // rather than finding it already running.
+    sandboxHealth = {
+      repaired: ensurePhase.status === "pass" &&
+        ensurePhase.message !== "Sandbox already running.",
+    };
+  } catch {
+    // Non-fatal — runtime and health info is best-effort
+  }
+
   const ok = phases.every((p) => p.status === "pass" || p.status === "skip");
   const payload: LaunchVerificationPayload = {
     ok,
@@ -257,6 +303,8 @@ export async function POST(request: Request): Promise<Response> {
     startedAt,
     completedAt: new Date().toISOString(),
     phases,
+    runtime,
+    sandboxHealth,
   };
 
   const readiness = await writeChannelReadiness(payload);

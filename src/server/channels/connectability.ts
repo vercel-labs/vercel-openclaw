@@ -9,6 +9,7 @@ import {
   getStoreEnv,
   isVercelDeployment,
 } from "@/server/env";
+import { buildDeploymentContract } from "@/server/deployment-contract";
 import { getWebhookBypassRequirement } from "@/server/deploy-requirements";
 import {
   readChannelReadiness,
@@ -180,6 +181,21 @@ export async function buildChannelPrerequisite(
     });
   }
 
+  // Contract-derived issues: openclaw-package-spec, auth config.
+  // Uses the same deployment contract as preflight so wording is identical.
+  const contract = await buildDeploymentContract();
+  for (const req of contract.requirements) {
+    if (req.status === "fail") {
+      addIssue(issues, {
+        id: req.id as ChannelConnectabilityIssue["id"],
+        status: "fail",
+        message: `${label} cannot be connected: ${req.message}`,
+        remediation: req.remediation,
+        env: req.env,
+      });
+    }
+  }
+
   logInfo("channel_prerequisite.built", {
     channel,
     status: summarizeStatus(issues),
@@ -239,7 +255,7 @@ export async function buildChannelConnectability(
       status: "fail",
       message: `${label} cannot be connected until destructive launch verification passes. ${reason}`,
       remediation:
-        "Run destructive launch verification from the admin panel or POST /api/admin/launch-verify?mode=destructive to prove the full queue → wake → reply path works.",
+        'Run destructive launch verification from the admin panel or POST /api/admin/launch-verify with {"mode":"destructive"} (or ?mode=destructive) to prove the full queue → wake → reply path works.',
       env: [],
     });
   }

@@ -107,6 +107,7 @@ test("passes with public origin, bypass, durable store, and OIDC", async () => {
   process.env.VERCEL_AUTOMATION_BYPASS_SECRET = "bypass";
   process.env.UPSTASH_REDIS_REST_URL = "https://upstash.example";
   process.env.UPSTASH_REDIS_REST_TOKEN = "token";
+  process.env.OPENCLAW_PACKAGE_SPEC = "openclaw@1.0.0";
   delete process.env.AI_GATEWAY_API_KEY;
   _setAiGatewayTokenOverrideForTesting("oidc-token");
   _setChannelReadinessOverrideForTesting(makeReadyReadiness());
@@ -206,7 +207,7 @@ test("fails with multiple issues when bypass, store, and OIDC are all missing on
   assert.equal(result.canConnect, false);
   assert.equal(result.status, "fail");
   const issueIds = result.issues.map((i) => i.id).sort();
-  assert.deepEqual(issueIds, ["ai-gateway", "launch-verification", "store", "webhook-bypass"]);
+  assert.deepEqual(issueIds, ["ai-gateway", "launch-verification", "openclaw-package-spec", "store", "webhook-bypass"]);
   assert.equal(
     result.webhookUrl,
     `${PUBLIC_ORIGIN}/api/channels/slack/webhook`,
@@ -220,6 +221,7 @@ test("webhook URL includes bypass query param when bypass secret is set", async 
   process.env.VERCEL_AUTOMATION_BYPASS_SECRET = "bypass-secret";
   process.env.UPSTASH_REDIS_REST_URL = "https://upstash.example";
   process.env.UPSTASH_REDIS_REST_TOKEN = "token";
+  process.env.OPENCLAW_PACKAGE_SPEC = "openclaw@1.0.0";
   delete process.env.AI_GATEWAY_API_KEY;
   _setAiGatewayTokenOverrideForTesting("oidc-token");
   _setChannelReadinessOverrideForTesting(makeReadyReadiness());
@@ -287,6 +289,11 @@ test("launch-verification blocker fires when readiness is missing", async () => 
   assert.ok(
     issue.remediation.includes("destructive launch verification"),
     "remediation should mention destructive launch verification",
+  );
+  assert.ok(
+    issue.remediation.includes('{"mode":"destructive"}') ||
+    issue.remediation.includes("?mode=destructive"),
+    "remediation should document how to invoke destructive mode",
   );
 });
 
@@ -373,6 +380,53 @@ test("[regression] prerequisite excludes launch-verification; full connectabilit
   const launchIssue = full.issues.find((i) => i.id === "launch-verification");
   assert.ok(launchIssue, "full connectability must include launch-verification issue");
   assert.equal(launchIssue.status, "fail");
+});
+
+test("Vercel deployment missing OPENCLAW_PACKAGE_SPEC fails channel connectability", async () => {
+  process.env.VERCEL = "1";
+  process.env.NEXT_PUBLIC_APP_URL = PUBLIC_ORIGIN;
+  process.env.VERCEL_AUTOMATION_BYPASS_SECRET = "bypass";
+  process.env.UPSTASH_REDIS_REST_URL = "https://upstash.example";
+  process.env.UPSTASH_REDIS_REST_TOKEN = "token";
+  delete process.env.OPENCLAW_PACKAGE_SPEC;
+  delete process.env.AI_GATEWAY_API_KEY;
+  _setAiGatewayTokenOverrideForTesting("oidc-token");
+  _setChannelReadinessOverrideForTesting(makeReadyReadiness());
+
+  const result = await buildChannelConnectability(
+    "slack",
+    makeRequest(PUBLIC_ORIGIN),
+  );
+
+  assert.equal(result.canConnect, false);
+  const issue = result.issues.find((i) => i.id === "openclaw-package-spec");
+  assert.ok(issue, "expected openclaw-package-spec issue");
+  assert.equal(issue.status, "fail");
+  assert.ok(
+    issue.message.includes("OPENCLAW_PACKAGE_SPEC is required on Vercel deployments"),
+    "message should use the same wording as deployment contract",
+  );
+});
+
+test("Vercel deployment with pinned OPENCLAW_PACKAGE_SPEC passes channel connectability", async () => {
+  process.env.VERCEL = "1";
+  process.env.NEXT_PUBLIC_APP_URL = PUBLIC_ORIGIN;
+  process.env.VERCEL_AUTOMATION_BYPASS_SECRET = "bypass";
+  process.env.UPSTASH_REDIS_REST_URL = "https://upstash.example";
+  process.env.UPSTASH_REDIS_REST_TOKEN = "token";
+  process.env.OPENCLAW_PACKAGE_SPEC = "openclaw@1.2.3";
+  delete process.env.AI_GATEWAY_API_KEY;
+  _setAiGatewayTokenOverrideForTesting("oidc-token");
+  _setChannelReadinessOverrideForTesting(makeReadyReadiness());
+
+  const result = await buildChannelConnectability(
+    "slack",
+    makeRequest(PUBLIC_ORIGIN),
+  );
+
+  assert.equal(result.canConnect, true);
+  const issue = result.issues.find((i) => i.id === "openclaw-package-spec");
+  assert.equal(issue, undefined, "should have no openclaw-package-spec issue when pinned");
 });
 
 test("[regression] channel connectability blocks until launch-verify readiness is written for current deployment", async () => {

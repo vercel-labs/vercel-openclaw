@@ -263,7 +263,10 @@ Session details:
 | `AI_GATEWAY_API_KEY`               | Local dev only | Static AI Gateway credential for local development. Do not set on deployed Vercel environments — OIDC is used automatically. |
 | `NEXT_PUBLIC_VERCEL_APP_CLIENT_ID` | Sign-in mode | OAuth client ID. |
 | `VERCEL_APP_CLIENT_SECRET`         | Sign-in mode | OAuth client secret. |
-| `SESSION_SECRET`                   | Sign-in mode | Cookie encryption secret. |
+| `SESSION_SECRET`                   | Sign-in mode | Cookie encryption secret. Must be explicitly set on deployed Vercel environments — do not rely on silent derivation from the Upstash token. |
+| `OPENCLAW_PACKAGE_SPEC`            | Vercel   | Pinned OpenClaw version (e.g. `openclaw@1.2.3`). Required on Vercel for deterministic builds. Local dev falls back to `openclaw@latest`. |
+| `VERCEL_AUTOMATION_BYPASS_SECRET`  | Conditional | Required when `VERCEL_AUTH_MODE=deployment-protection` and channel webhooks are used. Enable Protection Bypass for Automation in Vercel. |
+| `CRON_SECRET`                      | Optional | Enables `/api/cron/drain-channels` as a diagnostic backstop. Not required for production — Vercel Queues is the primary delivery path. |
 | `NEXT_PUBLIC_APP_URL`              | Optional | Base origin for OAuth callback generation. Useful behind custom domains. |
 | `NEXT_PUBLIC_BASE_DOMAIN`          | Optional | Preferred external host for Discord endpoint generation and manifest links. |
 

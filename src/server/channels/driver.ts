@@ -21,6 +21,7 @@ import { getPublicOriginFromHint } from "@/server/public-url";
 import {
   ensureSandboxReady,
   getSandboxDomain,
+  reconcileSandboxHealth,
   touchRunningSandbox,
 } from "@/server/sandbox/lifecycle";
 import { getInitializedMeta, getStore } from "@/server/store/store";
@@ -353,11 +354,30 @@ export async function processChannelJob<
     let readyMeta: Awaited<ReturnType<typeof ensureSandboxReady>>;
     let gatewayUrl: string;
     try {
-      readyMeta = await ensureSandboxReady({
+      // Reconcile stale metadata before entering the ready-wait loop.
+      // Without this, ensureSandboxReady trusts metadata "running" from
+      // ensureSandboxRunning, then polls probeGatewayReady which keeps
+      // failing until timeout because recovery was never triggered.
+      const health = await reconcileSandboxHealth({
         origin: resolveAppOrigin(job.origin),
         reason: `channel:${options.channel}`,
-        timeoutMs: sandboxReadyTimeoutMs,
       });
+      if (health.repaired) {
+        logInfo("channels.wake_health_repaired", {
+          channel: options.channel,
+          newStatus: health.meta.status,
+        });
+      }
+
+      if (health.status === "ready") {
+        readyMeta = health.meta;
+      } else {
+        readyMeta = await ensureSandboxReady({
+          origin: resolveAppOrigin(job.origin),
+          reason: `channel:${options.channel}`,
+          timeoutMs: sandboxReadyTimeoutMs,
+        });
+      }
       gatewayUrl = await getSandboxDomain();
       logInfo("channels.wake_ready", {
         channel: options.channel,

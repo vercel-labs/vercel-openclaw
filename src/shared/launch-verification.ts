@@ -15,12 +15,24 @@ export type LaunchVerificationPhase = {
   error?: string;
 };
 
+export type LaunchVerificationRuntime = {
+  packageSpec: string;
+  installedVersion: string | null;
+  drift: boolean;
+};
+
+export type LaunchVerificationSandboxHealth = {
+  repaired: boolean;
+};
+
 export type LaunchVerificationPayload = {
   ok: boolean;
   mode: "safe" | "destructive";
   startedAt: string;
   completedAt: string;
   phases: LaunchVerificationPhase[];
+  runtime?: LaunchVerificationRuntime;
+  sandboxHealth?: LaunchVerificationSandboxHealth;
 };
 
 export type ChannelReadiness = {

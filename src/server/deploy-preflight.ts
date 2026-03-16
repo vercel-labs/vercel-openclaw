@@ -1,13 +1,16 @@
 import {
-  getAiGatewayAuthMode,
   getAuthMode,
-  getStoreEnv,
   isVercelDeployment,
   requiresDurableStore,
 } from "@/server/env";
 import { isPublicUrl } from "@/server/channels/discord/application";
 import { buildChannelPrerequisiteReport } from "@/server/channels/connectability";
 import type { ChannelConnectability } from "@/shared/channel-connectability";
+import {
+  buildDeploymentContract,
+  type DeploymentContract,
+  type DeploymentRequirement,
+} from "@/server/deployment-contract";
 import {
   getWebhookBypassRequirement,
   getWebhookBypassStatusMessage,
@@ -27,13 +30,17 @@ export type PreflightCheckId =
   | "webhook-bypass"
   | "store"
   | "ai-gateway"
-  | "drain-recovery";
+  | "drain-recovery"
+  | "openclaw-package-spec"
+  | "auth-config";
 
 export type PreflightActionId =
   | "configure-public-origin"
   | "configure-webhook-bypass"
   | "configure-upstash"
-  | "configure-ai-gateway-auth";
+  | "configure-ai-gateway-auth"
+  | "configure-openclaw-package-spec"
+  | "configure-oauth";
 
 export type PreflightCheck = {
   id: PreflightCheckId;
@@ -109,12 +116,36 @@ function buildWebhookDiagnostics(
   };
 }
 
+function contractRequirementToAction(
+  req: DeploymentRequirement,
+): PreflightAction | null {
+  if (req.status === "pass") return null;
+
+  const idMap: Partial<Record<string, PreflightActionId>> = {
+    "openclaw-package-spec": "configure-openclaw-package-spec",
+    "oauth-client-id": "configure-oauth",
+    "oauth-client-secret": "configure-oauth",
+    "session-secret": "configure-oauth",
+  };
+  const actionId = idMap[req.id];
+  if (!actionId) return null;
+
+  return {
+    id: actionId,
+    status: req.status === "fail" ? "required" : "recommended",
+    message: req.message,
+    remediation: req.remediation,
+    env: req.env,
+  };
+}
+
 function buildActions(input: {
   publicOriginResolution: PublicOriginResolution | null;
   webhookBypassEnabled: boolean;
   webhookBypassRequired: boolean;
   storeBackend: "upstash" | "memory";
   aiGatewayAuth: PreflightPayload["aiGatewayAuth"];
+  contract: DeploymentContract;
 }): PreflightAction[] {
   const actions: PreflightAction[] = [];
 
@@ -180,6 +211,16 @@ function buildActions(input: {
     });
   }
 
+  // Translate contract requirements into actions (openclaw-package-spec, oauth)
+  const seenActionIds = new Set<PreflightActionId>();
+  for (const req of input.contract.requirements) {
+    const action = contractRequirementToAction(req);
+    if (action && !seenActionIds.has(action.id)) {
+      seenActionIds.add(action.id);
+      actions.push(action);
+    }
+  }
+
   return actions;
 }
 
@@ -242,6 +283,10 @@ export async function buildDeployPreflight(
 ): Promise<PreflightPayload> {
   const authMode = getAuthMode();
 
+  // Build the deployment contract once — single source of truth for
+  // openclaw-package-spec, oauth, and session-secret requirements.
+  const contract = await buildDeploymentContract();
+
   let publicOriginResolution: PublicOriginResolution | null = null;
   try {
     publicOriginResolution = resolvePublicOrigin(request);
@@ -252,9 +297,9 @@ export async function buildDeployPreflight(
   const publicOrigin = publicOriginResolution?.origin ?? null;
   const webhookBypassRequirement = getWebhookBypassRequirement();
   const webhookBypassEnabled = webhookBypassRequirement.configured;
-  const storeBackend = getStoreEnv() ? "upstash" : "memory";
+  const storeBackend = contract.storeBackend;
 
-  const aiGatewayAuth = await getAiGatewayAuthMode();
+  const aiGatewayAuth = contract.aiGatewayAuth;
 
   const cronSecretConfigured = Boolean(
     process.env.CRON_SECRET?.trim(),
@@ -265,6 +310,24 @@ export async function buildDeployPreflight(
   );
 
   const channels = await buildChannelPrerequisiteReport(request);
+
+  // Translate contract requirements into preflight checks
+  const packageSpecReq = contract.requirements.find(
+    (r) => r.id === "openclaw-package-spec",
+  );
+  const authReqs = contract.requirements.filter(
+    (r) =>
+      r.id === "oauth-client-id" ||
+      r.id === "oauth-client-secret" ||
+      r.id === "session-secret",
+  );
+  const authConfigStatus: PreflightStatus = authReqs.some(
+    (r) => r.status === "fail",
+  )
+    ? "fail"
+    : authReqs.some((r) => r.status === "warn")
+      ? "warn"
+      : "pass";
 
   const checks: PreflightCheck[] = [
     {
@@ -318,6 +381,31 @@ export async function buildDeployPreflight(
         ? "Channel delivery uses Vercel Queues as the primary mechanism. /api/cron/drain-channels is available as a diagnostic backstop."
         : "Channel delivery uses Vercel Queues as the primary mechanism. Set CRON_SECRET to enable /api/cron/drain-channels as an optional diagnostic backstop.",
     },
+    // Contract-derived checks
+    ...(packageSpecReq
+      ? [
+          {
+            id: "openclaw-package-spec" as const,
+            status: packageSpecReq.status as PreflightStatus,
+            message: packageSpecReq.message,
+          },
+        ]
+      : []),
+    ...(authReqs.length > 0
+      ? [
+          {
+            id: "auth-config" as const,
+            status: authConfigStatus,
+            message:
+              authConfigStatus === "pass"
+                ? "Auth configuration is complete."
+                : authReqs
+                    .filter((r) => r.status === "fail")
+                    .map((r) => r.message)
+                    .join(" "),
+          },
+        ]
+      : []),
   ];
 
   const actions = buildActions({
@@ -326,6 +414,7 @@ export async function buildDeployPreflight(
     webhookBypassRequired: webhookBypassRequirement.required,
     storeBackend,
     aiGatewayAuth,
+    contract,
   });
 
   const ok =

@@ -8,6 +8,7 @@ import {
   ensureSandboxRunning,
   ensureSandboxReady,
   probeGatewayReady,
+  reconcileSandboxHealth,
   stopSandbox,
   snapshotSandbox,
   getSandboxDomain,
@@ -800,7 +801,7 @@ test("restoreSandboxFromSnapshot with startup script exit code != 0 throws error
 
       const meta = await getInitializedMeta();
       assert.equal(meta.status, "error", "Status should be error after startup script failure");
-      assert.ok(meta.lastError?.includes("Restore startup script failed"), "lastError should mention startup script failure");
+      assert.ok(meta.lastError?.includes("restore-startup-script"), "lastError should mention startup script failure");
     } finally {
       _setAiGatewayTokenOverrideForTesting(null);
       globalThis.fetch = originalFetch;
@@ -1762,8 +1763,55 @@ test("[failure] restore failure from stopped state (startup script fails)", asyn
 
       const meta = await getInitializedMeta();
       assert.equal(meta.status, "error", "Status should be error after startup script failure");
-      assert.ok(meta.lastError?.includes("Restore startup script failed"), "lastError should mention startup failure");
+      assert.ok(meta.lastError?.includes("restore-startup-script"), "lastError should mention startup failure");
     } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+test("[failure] restore failure when token write command fails", async () => {
+  const fake = new FakeSandboxController();
+  const originalFetch = globalThis.fetch;
+
+  // Make the token-write sh command return non-zero exit code
+  fake.commandHandler = (cmd, args) => {
+    if (cmd === "sh" && args?.includes("-c")) {
+      return { exitCode: 1, output: "permission denied: /root/.openclaw" };
+    }
+    return { exitCode: 0, output: "" };
+  };
+
+  await withTestEnv(fake, async () => {
+    await mutateMeta((meta) => {
+      meta.status = "stopped";
+      meta.snapshotId = "snap-restore-token-fail";
+      meta.gatewayToken = "test-gw-token";
+    });
+
+    globalThis.fetch = async () =>
+      new Response('<div id="openclaw-app"></div>', { status: 200 });
+
+    _setAiGatewayTokenOverrideForTesting("test-key");
+    try {
+      let scheduledCallback: (() => Promise<void> | void) | null = null;
+
+      await ensureSandboxRunning({
+        origin: "https://test.example.com",
+        reason: "restore-token-write-fail-test",
+        schedule(cb) {
+          scheduledCallback = cb;
+        },
+      });
+
+      assert.ok(scheduledCallback);
+      await (scheduledCallback as () => Promise<void>)();
+
+      const meta = await getInitializedMeta();
+      assert.equal(meta.status, "error", "Status should be error after token write failure");
+      assert.ok(meta.lastError?.includes("write-ai-gateway-token"), "lastError should mention token write failure");
+    } finally {
+      _setAiGatewayTokenOverrideForTesting(null);
       globalThis.fetch = originalFetch;
     }
   });
@@ -1858,6 +1906,184 @@ test("[failure] ensureSandboxReady times out with 504 when gateway never shows o
           return true;
         },
       );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// reconcileSandboxHealth
+// ---------------------------------------------------------------------------
+
+test("reconcileSandboxHealth returns ready when gateway is reachable", async () => {
+  const fake = new FakeSandboxController();
+  await withTestEnv(fake, async () => {
+    await mutateMeta((meta) => {
+      meta.status = "running";
+      meta.sandboxId = "sbx-healthy";
+      meta.portUrls = { "3000": "https://sbx-healthy-3000.fake.vercel.run" };
+    });
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () =>
+      new Response('<html><div id="openclaw-app"></div></html>', {
+        status: 200,
+      });
+
+    try {
+      const result = await reconcileSandboxHealth({
+        origin: "https://test.example.com",
+        reason: "test-healthy",
+      });
+
+      assert.equal(result.status, "ready");
+      assert.equal(result.repaired, false);
+      assert.equal(result.meta.status, "running");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+test("reconcileSandboxHealth detects stale running and triggers recovery", async () => {
+  const fake = new FakeSandboxController();
+  await withTestEnv(fake, async () => {
+    await mutateMeta((meta) => {
+      meta.status = "running";
+      meta.sandboxId = "sbx-stale";
+      meta.snapshotId = "snap-for-recovery";
+      meta.portUrls = { "3000": "https://sbx-stale-3000.fake.vercel.run" };
+    });
+
+    // Gateway probe fails — sandbox is gone
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => {
+      throw new Error("ECONNREFUSED");
+    };
+
+    let scheduledWork: (() => Promise<void> | void) | null = null;
+
+    try {
+      const result = await reconcileSandboxHealth({
+        origin: "https://test.example.com",
+        reason: "test-stale-running",
+        schedule(cb) {
+          scheduledWork = cb;
+        },
+      });
+
+      assert.equal(result.status, "recovering");
+      assert.equal(result.repaired, true);
+      // Meta should no longer say running (marked unavailable)
+      const meta = await getInitializedMeta();
+      assert.notEqual(meta.status, "running");
+      // Recovery should have been scheduled
+      assert.ok(scheduledWork, "Background recovery should have been scheduled");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+test("reconcileSandboxHealth delegates to ensureSandboxRunning when not running", async () => {
+  const fake = new FakeSandboxController();
+  await withTestEnv(fake, async () => {
+    await mutateMeta((meta) => {
+      meta.status = "stopped";
+      meta.sandboxId = null;
+      meta.snapshotId = "snap-stopped";
+    });
+
+    let scheduledWork: (() => Promise<void> | void) | null = null;
+
+    const result = await reconcileSandboxHealth({
+      origin: "https://test.example.com",
+      reason: "test-not-running",
+      schedule(cb) {
+        scheduledWork = cb;
+      },
+    });
+
+    assert.equal(result.status, "recovering");
+    assert.equal(result.repaired, false);
+    assert.ok(scheduledWork, "Recovery should have been scheduled via ensureSandboxRunning");
+    const meta = await getInitializedMeta();
+    assert.equal(meta.status, "restoring");
+  });
+});
+
+test("reconcileSandboxHealth concurrent calls are deduplicated by start lock", async () => {
+  const fake = new FakeSandboxController();
+  await withTestEnv(fake, async () => {
+    await mutateMeta((meta) => {
+      meta.status = "stopped";
+      meta.sandboxId = null;
+      meta.snapshotId = "snap-concurrent";
+    });
+
+    const scheduled: Array<() => Promise<void> | void> = [];
+    const schedule = (cb: () => Promise<void> | void) => {
+      scheduled.push(cb);
+    };
+
+    // Fire two concurrent reconcile calls
+    const [r1, r2] = await Promise.all([
+      reconcileSandboxHealth({
+        origin: "https://test.example.com",
+        reason: "concurrent-1",
+        schedule,
+      }),
+      reconcileSandboxHealth({
+        origin: "https://test.example.com",
+        reason: "concurrent-2",
+        schedule,
+      }),
+    ]);
+
+    // Both should return recovering
+    assert.equal(r1.status, "recovering");
+    assert.equal(r2.status, "recovering");
+
+    // Only one background task should have been scheduled (start lock dedup)
+    assert.equal(scheduled.length, 1, "Concurrent ensures should be deduplicated by the start lock");
+  });
+});
+
+test("reconcileSandboxHealth with 410-style unreachable sandbox repairs correctly", async () => {
+  const fake = new FakeSandboxController();
+  await withTestEnv(fake, async () => {
+    await mutateMeta((meta) => {
+      meta.status = "running";
+      meta.sandboxId = "sbx-410";
+      meta.snapshotId = "snap-410-recovery";
+      meta.portUrls = { "3000": "https://sbx-410-3000.fake.vercel.run" };
+    });
+
+    // Simulate a 410 Gone response from gateway probe
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () =>
+      new Response("Gone", { status: 410 });
+
+    let scheduledWork: (() => Promise<void> | void) | null = null;
+
+    try {
+      const result = await reconcileSandboxHealth({
+        origin: "https://test.example.com",
+        reason: "gateway.410",
+        schedule(cb) {
+          scheduledWork = cb;
+        },
+      });
+
+      assert.equal(result.status, "recovering");
+      assert.equal(result.repaired, true);
+      assert.ok(scheduledWork, "Recovery should have been scheduled");
+
+      // Verify meta was cleared and set to restore
+      const meta = await getInitializedMeta();
+      assert.equal(meta.sandboxId, null);
+      assert.equal(meta.status, "restoring");
     } finally {
       globalThis.fetch = originalFetch;
     }
