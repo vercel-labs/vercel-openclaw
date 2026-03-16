@@ -1,5 +1,8 @@
 {
   "installCommand": "npm install",
+  "crons": [
+    { "path": "/api/cron/watchdog", "schedule": "*/5 * * * *" }
+  ],
   "functions": {
     "src/app/api/queues/channels/slack/route.ts": {
       "maxDuration": 300,
