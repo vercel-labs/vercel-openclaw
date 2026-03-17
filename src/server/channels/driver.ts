@@ -20,6 +20,7 @@ import {
 } from "@/server/channels/keys";
 import { logError, logInfo, logWarn } from "@/server/log";
 import { getPublicOriginFromHint } from "@/server/public-url";
+import { getSandboxController } from "@/server/sandbox/controller";
 import {
   ensureSandboxReady,
   getSandboxDomain,
@@ -428,19 +429,23 @@ export async function processChannelJob<
         requestTimeoutMs,
       });
 
-      const replyText = toPlainText(reply);
-      const imageCount = reply.images?.length ?? 0;
+      // Resolve sandbox-relative image paths (e.g. "smiley-1.png" from MEDIA: lines)
+      // by downloading them from the sandbox and converting to inline base64.
+      const resolvedReply = await resolveSandboxImages(reply, readyMeta.sandboxId);
+
+      const replyText = toPlainText(resolvedReply);
+      const imageCount = resolvedReply.images?.length ?? 0;
 
       logInfo("channels.gateway_response_received", {
         channel: options.channel,
         replyTextLength: replyText.length,
         imageCount,
-        imageKinds: reply.images?.map((img) => img.kind) ?? [],
+        imageKinds: resolvedReply.images?.map((img) => img.kind) ?? [],
         usingSendReplyRich: Boolean(adapter.sendReplyRich),
       });
 
       if (adapter.sendReplyRich) {
-        await adapter.sendReplyRich(message, reply);
+        await adapter.sendReplyRich(message, resolvedReply);
       } else {
         await adapter.sendReply(message, replyText);
       }
@@ -746,6 +751,147 @@ function parseRetryAfterSeconds(headerValue: string | null): number | undefined 
 
   const waitSeconds = Math.ceil((timestamp - Date.now()) / 1000);
   return waitSeconds > 0 ? waitSeconds : undefined;
+}
+
+const SANDBOX_HOME_DIR = "/home/vercel-sandbox";
+// 5 MB limit: Telegram sendPhoto accepts max 10 MB uploads, base64 encoding
+// adds ~33% overhead, and we want headroom for concurrent requests in serverless.
+const MAX_SANDBOX_IMAGE_BYTES = 5 * 1024 * 1024;
+
+function isSandboxRelativePath(url: string): boolean {
+  // Not an absolute URL (no protocol) and not a data URI
+  return !url.includes("://") && !url.startsWith("data:");
+}
+
+/** Allow only safe characters in filenames to prevent shell injection. */
+function isSafeFilename(name: string): boolean {
+  return /^[a-zA-Z0-9._-]+$/.test(name) && !name.startsWith(".");
+}
+
+function inferMimeTypeFromFilename(filename: string): string {
+  const lower = filename.toLowerCase();
+  if (lower.endsWith(".png")) return "image/png";
+  if (lower.endsWith(".gif")) return "image/gif";
+  if (lower.endsWith(".webp")) return "image/webp";
+  if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
+  if (lower.endsWith(".svg")) return "image/svg+xml";
+  return "image/png";
+}
+
+/**
+ * Resolve sandbox-relative image paths by downloading them from the sandbox.
+ * OpenClaw's MEDIA: lines emit bare filenames (e.g. "smiley-1.png") that exist
+ * in the sandbox filesystem but are not publicly accessible URLs.
+ */
+async function resolveSandboxImages(
+  reply: ChannelReply,
+  sandboxId: string | null,
+): Promise<ChannelReply> {
+  if (!reply.images || reply.images.length === 0 || !sandboxId) {
+    return reply;
+  }
+
+  const relativeImages = reply.images.filter(
+    (img) => img.kind === "url" && isSandboxRelativePath(img.url),
+  );
+  if (relativeImages.length === 0) {
+    return reply;
+  }
+
+  logInfo("channels.resolving_sandbox_images", {
+    count: relativeImages.length,
+    paths: relativeImages.map((img) => (img as { url: string }).url),
+  });
+
+  let sandbox;
+  try {
+    sandbox = await getSandboxController().get({ sandboxId });
+  } catch (error) {
+    logWarn("channels.sandbox_image_resolve_failed", {
+      error: formatError(error),
+      reason: "sandbox_unreachable",
+    });
+    return reply;
+  }
+
+  const resolvedImages: NonNullable<ChannelReply["images"]> = [];
+  for (const image of reply.images) {
+    if (image.kind !== "url" || !isSandboxRelativePath(image.url)) {
+      resolvedImages.push(image);
+      continue;
+    }
+
+    const filename = image.url;
+
+    if (!isSafeFilename(filename)) {
+      logWarn("channels.sandbox_image_unsafe_filename", { filename });
+      resolvedImages.push(image);
+      continue;
+    }
+
+    // Try common locations where OpenClaw saves generated files
+    const candidatePaths = [
+      `${SANDBOX_HOME_DIR}/${filename}`,
+      `${SANDBOX_HOME_DIR}/Desktop/${filename}`,
+      `${SANDBOX_HOME_DIR}/Downloads/${filename}`,
+      `${SANDBOX_HOME_DIR}/.openclaw/${filename}`,
+      `/tmp/${filename}`,
+    ];
+
+    let resolved = false;
+    for (const path of candidatePaths) {
+      try {
+        const buffer = await sandbox.readFileToBuffer({ path });
+        if (!buffer || buffer.length === 0) {
+          continue;
+        }
+        if (buffer.length > MAX_SANDBOX_IMAGE_BYTES) {
+          logWarn("channels.sandbox_image_too_large", {
+            path,
+            sizeBytes: buffer.length,
+            maxBytes: MAX_SANDBOX_IMAGE_BYTES,
+          });
+          continue;
+        }
+        const mimeType = inferMimeTypeFromFilename(filename);
+        const base64 = buffer.toString("base64");
+
+        resolvedImages.push({
+          kind: "data",
+          mimeType,
+          base64,
+          filename,
+          alt: image.alt,
+        });
+
+        logInfo("channels.sandbox_image_resolved", {
+          filename,
+          path,
+          sizeBytes: buffer.length,
+          mimeType,
+        });
+        resolved = true;
+        break;
+      } catch (error) {
+        logWarn("channels.sandbox_image_read_error", {
+          path,
+          error: formatError(error),
+        });
+        continue;
+      }
+    }
+
+    if (!resolved) {
+      logWarn("channels.sandbox_image_not_found", { filename, candidatePaths });
+      // Keep the original unresolved image (will fail on send but at least shows intent)
+      resolvedImages.push(image);
+    }
+  }
+
+  return {
+    text: reply.text,
+    images: resolvedImages.length > 0 ? resolvedImages : undefined,
+  };
 }
 
 function resolveAppOrigin(origin: string | null | undefined): string {
