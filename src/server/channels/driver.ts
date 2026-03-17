@@ -409,9 +409,15 @@ export async function processChannelJob<
         ? await adapter.buildGatewayMessages(message)
         : defaultGatewayMessages(message);
 
+      const hasImageParts = messages.some(
+        (m) => Array.isArray(m.content) && m.content.some((p) => p.type === "image_url"),
+      );
+
       logInfo("channels.gateway_request_started", {
         channel: options.channel,
         requestTimeoutMs,
+        messageCount: messages.length,
+        hasImageParts,
       });
 
       const reply = await forwardToGateway({
@@ -423,13 +429,25 @@ export async function processChannelJob<
       });
 
       const replyText = toPlainText(reply);
+      const imageCount = reply.images?.length ?? 0;
+
+      logInfo("channels.gateway_response_received", {
+        channel: options.channel,
+        replyTextLength: reply.text.length,
+        imageCount,
+        imageKinds: reply.images?.map((img) => img.kind) ?? [],
+        usingSendReplyRich: Boolean(adapter.sendReplyRich),
+      });
 
       if (adapter.sendReplyRich) {
         await adapter.sendReplyRich(message, reply);
       } else {
         await adapter.sendReply(message, replyText);
       }
-      logInfo("channels.platform_reply_sent", { channel: options.channel });
+      logInfo("channels.platform_reply_sent", {
+        channel: options.channel,
+        imageCount,
+      });
       logInfo("channels.delivery_success", { channel: options.channel });
       if (sessionKey) {
         await appendSessionHistory(options.channel, sessionKey, message.text, replyText);
@@ -519,6 +537,9 @@ async function forwardToGateway(options: {
 
   const reply = extractReply(payload);
   if (!reply) {
+    logWarn("channels.gateway_missing_reply", {
+      bodyLength: body.length,
+    });
     throw new Error("gateway_missing_reply");
   }
 

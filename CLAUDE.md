@@ -408,6 +408,8 @@ Main file:
 
 The admin page is intentionally small. It is a control surface, not a dashboard framework.
 
+**Terminal tab:** Shows the current sandbox ID and a copy-paste `npx sandbox connect <id>` command for an interactive shell via the [Vercel Sandbox CLI](https://vercel.com/docs/vercel-sandbox). Users run `npx sandbox login` first. If connect returns 404, append `--scope TEAM_SLUG --project PROJECT_NAME`, or set optional `NEXT_PUBLIC_SANDBOX_SCOPE` / `NEXT_PUBLIC_SANDBOX_PROJECT` so the UI pre-fills those flags.
+
 ## Important implementation constraints
 
 - Do not add `export const runtime = "nodejs"` to route handlers. This repo uses `cacheComponents: true` in `next.config.ts`, and explicit `runtime` exports break the Next.js 16 build.

@@ -1648,6 +1648,138 @@ a[href]:focus-visible {
 
 /* ────── SSH / Terminal ────── */
 
+.ssh-connect-section {
+  margin-top: 16px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--background-muted);
+}
+
+.ssh-connect-field + .ssh-connect-field {
+  margin-top: 12px;
+}
+
+.ssh-connect-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--foreground-subtle);
+}
+
+.ssh-connect-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.ssh-connect-code {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--background);
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--foreground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ssh-connect-copy {
+  flex-shrink: 0;
+  padding: 6px 12px;
+  font-size: 12px;
+}
+
+.ssh-connect-command-blocked {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--warning-surface);
+  color: var(--foreground-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.ssh-connect-unavailable {
+  margin-top: 14px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--background-muted);
+  color: var(--foreground-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.ssh-cli-instructions {
+  margin-top: 14px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--background);
+  color: var(--foreground-muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.ssh-cli-instructions summary {
+  cursor: pointer;
+  font-weight: 500;
+  color: var(--foreground);
+  list-style-position: outside;
+}
+
+.ssh-cli-instructions summary code {
+  font-size: 12px;
+}
+
+.ssh-cli-instructions[open] summary {
+  margin-bottom: 10px;
+}
+
+.ssh-cli-instructions ol {
+  margin: 0 0 0 1.25rem;
+  padding: 0;
+}
+
+.ssh-cli-instructions li + li {
+  margin-top: 8px;
+}
+
+.ssh-cli-instructions a {
+  color: var(--info);
+  text-decoration: none;
+}
+
+.ssh-cli-instructions a:hover {
+  text-decoration: underline;
+}
+
+.ssh-inline-code {
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--background-muted);
+  border: 1px solid var(--border);
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 12px;
+  color: var(--foreground);
+}
+
+.ssh-cli-note {
+  margin: 12px 0 0;
+  font-size: 12px;
+  font-style: italic;
+  color: var(--foreground-subtle);
+}
+
 .ssh-input-row {
   display: flex;
   align-items: center;
