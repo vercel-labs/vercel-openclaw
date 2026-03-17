@@ -1,11 +1,15 @@
 import { requireJsonRouteAuth } from "@/server/auth/route-auth";
-import { getPublicChannelState } from "@/server/channels/state";
+import { getPublicChannelState, buildTelegramWebhookUrl } from "@/server/channels/state";
+import { setWebhook } from "@/server/channels/telegram/bot-api";
 import { getAuthMode } from "@/server/env";
 import { computeWouldBlock } from "@/server/firewall/state";
-import { extractRequestId, logError } from "@/server/log";
+import { extractRequestId, logError, logInfo, logWarn } from "@/server/log";
 import { probeGatewayReady, touchRunningSandbox } from "@/server/sandbox/lifecycle";
 import { getStore, getInitializedMeta } from "@/server/store/store";
 import { jsonError } from "@/shared/http";
+
+const TELEGRAM_WEBHOOK_RECONCILE_INTERVAL_MS = 5 * 60 * 1000;
+let lastTelegramWebhookReconcileAt = 0;
 
 export async function GET(request: Request): Promise<Response> {
   const auth = await requireJsonRouteAuth(request);
@@ -27,6 +31,29 @@ export async function GET(request: Request): Promise<Response> {
         : includeHealth
           ? (await probeGatewayReady()).ready
           : false;
+
+    // Re-register Telegram webhook periodically so Telegram resumes
+    // delivery after errors (deployments, OIDC expiry, etc.).
+    // Fire-and-forget — don't block the status response.
+    const now = Date.now();
+    if (
+      meta.channels.telegram &&
+      now - lastTelegramWebhookReconcileAt > TELEGRAM_WEBHOOK_RECONCILE_INTERVAL_MS
+    ) {
+      lastTelegramWebhookReconcileAt = now;
+      const tg = meta.channels.telegram;
+      void (async () => {
+        try {
+          const webhookUrl = buildTelegramWebhookUrl(request);
+          await setWebhook(tg.botToken, webhookUrl, tg.webhookSecret);
+          logInfo("status.telegram_webhook_reconciled", {});
+        } catch (err) {
+          logWarn("status.telegram_webhook_reconcile_failed", {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      })();
+    }
 
     const response = Response.json({
       authMode: getAuthMode(),
