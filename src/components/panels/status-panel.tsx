@@ -33,7 +33,7 @@ export function StatusPanel({ status, busy, runAction }: StatusPanelProps) {
       variant: "danger",
     });
     if (!ok) return;
-    setOptimisticStatus("snapshotting");
+    setOptimisticStatus("stopping");
     void runAction("/api/admin/stop", {
       label: "Stop sandbox",
       method: "POST",

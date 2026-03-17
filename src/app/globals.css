@@ -1619,7 +1619,8 @@ a[href]:focus-visible {
 .status-badge.restoring,
 .status-badge.booting,
 .status-badge.setup,
-.status-badge.snapshotting {
+.status-badge.snapshotting,
+.status-badge.stopping {
   border-color: rgba(245, 166, 35, 0.3);
   background: var(--warning-surface);
   color: var(--warning);
@@ -1629,7 +1630,8 @@ a[href]:focus-visible {
 .status-badge.restoring::before,
 .status-badge.booting::before,
 .status-badge.setup::before,
-.status-badge.snapshotting::before {
+.status-badge.snapshotting::before,
+.status-badge.stopping::before {
   animation: badge-pulse 1.4s ease-in-out infinite;
 }
 
