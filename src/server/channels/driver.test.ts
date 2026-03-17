@@ -6,6 +6,7 @@ import {
   enqueueChannelJob,
   drainChannelQueue,
   getChannelQueueDepth,
+  runWithProcessingIndicator,
   type QueuedChannelJob,
   DEFAULT_CHANNEL_SANDBOX_READY_TIMEOUT_MS,
 } from "@/server/channels/driver";
@@ -1128,4 +1129,109 @@ test("[processChannelJob] structured log events at wake, gateway, and send phase
     assert.ok(gwLog?.data);
     assert.equal((gwLog.data as Record<string, unknown>).channel, "slack");
   });
+});
+
+// ---------------------------------------------------------------------------
+// runWithProcessingIndicator lifecycle tests
+// ---------------------------------------------------------------------------
+
+test("runWithProcessingIndicator starts and stops the new indicator path", async () => {
+  const events: string[] = [];
+
+  const adapter: PlatformAdapter<unknown, { text: string }> = {
+    extractMessage() {
+      throw new Error("not used");
+    },
+    async sendReply() {},
+    async startProcessingIndicator() {
+      events.push("start");
+      return {
+        async stop() {
+          events.push("stop");
+        },
+      };
+    },
+  };
+
+  const result = await runWithProcessingIndicator(
+    {
+      channel: "slack",
+      adapter,
+      message: { text: "hello" },
+      delayMs: 0,
+    },
+    async () => {
+      events.push("run");
+      return "ok";
+    },
+  );
+
+  assert.equal(result, "ok");
+  assert.deepEqual(events, ["start", "run", "stop"]);
+});
+
+test("runWithProcessingIndicator avoids flashing the indicator on fast runs", async () => {
+  const events: string[] = [];
+
+  const adapter: PlatformAdapter<unknown, { text: string }> = {
+    extractMessage() {
+      throw new Error("not used");
+    },
+    async sendReply() {},
+    async startProcessingIndicator() {
+      events.push("start");
+      return {
+        async stop() {
+          events.push("stop");
+        },
+      };
+    },
+  };
+
+  await runWithProcessingIndicator(
+    {
+      channel: "slack",
+      adapter,
+      message: { text: "hello" },
+      delayMs: 25,
+    },
+    async () => {},
+  );
+
+  assert.deepEqual(events, []);
+});
+
+test("runWithProcessingIndicator falls back to legacy typing and always clears it", async () => {
+  const events: string[] = [];
+
+  const adapter: PlatformAdapter<unknown, { text: string }> = {
+    extractMessage() {
+      throw new Error("not used");
+    },
+    async sendReply() {},
+    async sendTypingIndicator() {
+      events.push("legacy-start");
+    },
+    async clearTypingIndicator() {
+      events.push("legacy-stop");
+    },
+  };
+
+  await assert.rejects(
+    runWithProcessingIndicator(
+      {
+        channel: "telegram",
+        adapter,
+        message: { text: "hello" },
+        delayMs: 0,
+      },
+      async () => {
+        events.push("run");
+        throw new Error("boom");
+      },
+    ),
+    /boom/,
+  );
+
+  assert.deepEqual(events, ["legacy-start", "run", "legacy-stop"]);
 });

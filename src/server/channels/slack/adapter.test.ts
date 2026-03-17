@@ -292,3 +292,220 @@ test("createSlackAdapter extractMessage returns empty history and logs when thre
     _resetLogBuffer();
   }
 });
+
+test("createSlackAdapter extractMessage omits the processing placeholder from thread history", async () => {
+  const adapter = createSlackAdapter(
+    {
+      signingSecret: "secret",
+      botToken: "xoxb-token",
+    },
+    {
+      fetchFn: async (input) => {
+        assert.ok(String(input).includes("conversations.replies"));
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            messages: [
+              { text: "hello", ts: "123.45", user: "U123" },
+              {
+                text: "_Thinking..._",
+                ts: "123.46",
+                bot_id: "B123",
+                subtype: "bot_message",
+              },
+              {
+                text: "real answer",
+                ts: "123.47",
+                bot_id: "B123",
+                subtype: "bot_message",
+              },
+              { text: "follow-up", ts: "123.48", user: "U123" },
+            ],
+          }),
+          { status: 200 },
+        );
+      },
+    },
+  );
+
+  const result = await adapter.extractMessage({
+    type: "event_callback",
+    event: {
+      type: "message",
+      text: "follow-up",
+      channel: "C123",
+      ts: "123.48",
+      thread_ts: "123.45",
+      user: "U123",
+    },
+  });
+
+  assert.equal(result.kind, "message");
+  if (result.kind !== "message") {
+    return;
+  }
+
+  assert.deepEqual(result.message.history, [
+    { role: "user", content: "hello" },
+    { role: "assistant", content: "real answer" },
+  ]);
+});
+
+test("createSlackAdapter sendReply updates an existing processing placeholder in place", async () => {
+  const fetchCalls: Array<{ input: RequestInfo | URL; init?: RequestInit }> = [];
+
+  const adapter = createSlackAdapter(
+    {
+      signingSecret: "secret",
+      botToken: "xoxb-token",
+    },
+    {
+      fetchFn: async (input, init) => {
+        fetchCalls.push({ input, init });
+        return new Response(JSON.stringify({ ok: true, ts: "999.01" }), {
+          status: 200,
+        });
+      },
+    },
+  );
+
+  const message: SlackExtractedMessage = {
+    text: "hello",
+    channel: "C123",
+    threadTs: "123.45",
+    ts: "123.45",
+    processingPlaceholderTs: "999.01",
+  };
+
+  await adapter.sendReply(message, "reply text");
+
+  assert.equal(message.processingPlaceholderTs, undefined);
+  assert.equal(fetchCalls.length, 1);
+  assert.ok(String(fetchCalls[0]?.input).includes("chat.update"));
+  assert.deepEqual(JSON.parse(fetchCalls[0]?.init?.body as string), {
+    channel: "C123",
+    ts: "999.01",
+    text: "reply text",
+  });
+});
+
+test("createSlackAdapter sendReply falls back to post plus delete when placeholder update cannot be applied", async () => {
+  const fetchCalls: Array<{ input: RequestInfo | URL; init?: RequestInit }> = [];
+
+  const adapter = createSlackAdapter(
+    {
+      signingSecret: "secret",
+      botToken: "xoxb-token",
+    },
+    {
+      fetchFn: async (input, init) => {
+        fetchCalls.push({ input, init });
+
+        if (String(input).includes("chat.update")) {
+          return new Response(
+            JSON.stringify({ ok: false, error: "message_not_found" }),
+            { status: 200 },
+          );
+        }
+
+        if (String(input).includes("chat.postMessage")) {
+          return new Response(JSON.stringify({ ok: true, ts: "1000.01" }), {
+            status: 200,
+          });
+        }
+
+        if (String(input).includes("chat.delete")) {
+          return new Response(JSON.stringify({ ok: true }), {
+            status: 200,
+          });
+        }
+
+        throw new Error(`unexpected Slack URL: ${String(input)}`);
+      },
+    },
+  );
+
+  const message: SlackExtractedMessage = {
+    text: "hello",
+    channel: "C123",
+    threadTs: "123.45",
+    ts: "123.45",
+    processingPlaceholderTs: "999.01",
+  };
+
+  await adapter.sendReply(message, "reply text");
+
+  assert.equal(message.processingPlaceholderTs, undefined);
+  assert.equal(fetchCalls.length, 3);
+  assert.ok(String(fetchCalls[0]?.input).includes("chat.update"));
+  assert.ok(String(fetchCalls[1]?.input).includes("chat.postMessage"));
+  assert.ok(String(fetchCalls[2]?.input).includes("chat.delete"));
+});
+
+test("createSlackAdapter sendReply propagates non-retryable chat.update errors without fallback", async () => {
+  const adapter = createSlackAdapter(
+    {
+      signingSecret: "secret",
+      botToken: "xoxb-token",
+    },
+    {
+      fetchFn: async (input) => {
+        if (String(input).includes("chat.update")) {
+          return new Response(
+            JSON.stringify({ ok: false, error: "channel_not_found" }),
+            { status: 200 },
+          );
+        }
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      },
+    },
+  );
+
+  const message: SlackExtractedMessage = {
+    text: "hello",
+    channel: "C123",
+    threadTs: "123.45",
+    ts: "123.45",
+    processingPlaceholderTs: "999.01",
+  };
+
+  await assert.rejects(
+    adapter.sendReply(message, "reply text"),
+    (error) => {
+      assert.ok(error instanceof Error);
+      assert.ok(error.message.includes("error=channel_not_found"));
+      return true;
+    },
+  );
+});
+
+test("createSlackAdapter sendReply without placeholder posts normally", async () => {
+  const fetchCalls: Array<{ input: RequestInfo | URL }> = [];
+
+  const adapter = createSlackAdapter(
+    {
+      signingSecret: "secret",
+      botToken: "xoxb-token",
+    },
+    {
+      fetchFn: async (input) => {
+        fetchCalls.push({ input });
+        return new Response(JSON.stringify({ ok: true, ts: "1000.01" }), {
+          status: 200,
+        });
+      },
+    },
+  );
+
+  const message: SlackExtractedMessage = {
+    text: "hello",
+    channel: "C123",
+    threadTs: "123.45",
+    ts: "123.45",
+  };
+
+  await adapter.sendReply(message, "reply text");
+
+  assert.equal(fetchCalls.length, 1);
+  assert.ok(String(fetchCalls[0]?.input).includes("chat.postMessage"));
+});

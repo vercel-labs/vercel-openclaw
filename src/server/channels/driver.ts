@@ -294,6 +294,40 @@ export async function drainChannelQueue<
   }
 }
 
+export async function runWithProcessingIndicator<
+  TMessage extends ExtractedChannelMessage,
+  TResult,
+>(
+  params: {
+    channel: ChannelName;
+    adapter: PlatformAdapter<unknown, TMessage>;
+    message: TMessage;
+    delayMs?: number;
+    onError?: (error: unknown) => void;
+  },
+  run: () => Promise<TResult>,
+): Promise<TResult> {
+  const processingIndicator = await startPlatformProcessingIndicator(
+    params.adapter,
+    params.message,
+    {
+      delayMs: params.delayMs ?? CHANNEL_PROCESSING_INDICATOR_DELAY_MS,
+      onError: params.onError ?? ((indicatorError) => {
+        logWarn("channels.processing_indicator_failed", {
+          channel: params.channel,
+          error: formatError(indicatorError),
+        });
+      }),
+    },
+  );
+
+  try {
+    return await run();
+  } finally {
+    await processingIndicator.stop().catch(() => {});
+  }
+}
+
 export async function processChannelJob<
   TConfig,
   TPayload,
@@ -333,77 +367,68 @@ export async function processChannelJob<
   const requestTimeoutMs =
     options.requestTimeoutMs ?? DEFAULT_CHANNEL_REQUEST_TIMEOUT_MS;
 
-  const processingIndicator = await startPlatformProcessingIndicator(
-    adapter,
-    message,
+  await runWithProcessingIndicator(
     {
-      delayMs: CHANNEL_PROCESSING_INDICATOR_DELAY_MS,
-      onError: (indicatorError) => {
-        logWarn("channels.processing_indicator_failed", {
-          channel: options.channel,
-          error: formatError(indicatorError),
+      channel: options.channel,
+      adapter: adapter as PlatformAdapter<unknown, TMessage>,
+      message,
+    },
+    async () => {
+      logInfo("channels.wake_requested", {
+        channel: options.channel,
+        sandboxReadyTimeoutMs,
+      });
+
+      let readyMeta: Awaited<ReturnType<typeof ensureSandboxReady>>;
+      let gatewayUrl: string;
+      try {
+        readyMeta = await ensureSandboxReady({
+          origin: resolveAppOrigin(job.origin),
+          reason: `channel:${options.channel}`,
+          timeoutMs: sandboxReadyTimeoutMs,
         });
-      },
+        gatewayUrl = await getSandboxDomain();
+        logInfo("channels.wake_ready", {
+          channel: options.channel,
+        });
+      } catch (sandboxError) {
+        logWarn("channels.wake_retry_scheduled", {
+          channel: options.channel,
+          error: formatError(sandboxError),
+          retryAfterSeconds: DEFAULT_CHANNEL_WAKE_RETRY_AFTER_SECONDS,
+        });
+        throw new RetryableChannelError(
+          `sandbox_not_ready: ${formatError(sandboxError)}`,
+          DEFAULT_CHANNEL_WAKE_RETRY_AFTER_SECONDS,
+        );
+      }
+      await touchRunningSandbox();
+
+      const messages = adapter.buildGatewayMessages
+        ? await adapter.buildGatewayMessages(message)
+        : defaultGatewayMessages(message);
+
+      logInfo("channels.gateway_request_started", {
+        channel: options.channel,
+        requestTimeoutMs,
+      });
+
+      const replyText = await forwardToGateway({
+        gatewayUrl,
+        gatewayToken: readyMeta.gatewayToken,
+        messages,
+        sessionKey,
+        requestTimeoutMs,
+      });
+
+      await adapter.sendReply(message, replyText);
+      logInfo("channels.platform_reply_sent", { channel: options.channel });
+      logInfo("channels.delivery_success", { channel: options.channel });
+      if (sessionKey) {
+        await appendSessionHistory(options.channel, sessionKey, message.text, replyText);
+      }
     },
   );
-
-  try {
-    logInfo("channels.wake_requested", {
-      channel: options.channel,
-      sandboxReadyTimeoutMs,
-    });
-
-    let readyMeta: Awaited<ReturnType<typeof ensureSandboxReady>>;
-    let gatewayUrl: string;
-    try {
-      readyMeta = await ensureSandboxReady({
-        origin: resolveAppOrigin(job.origin),
-        reason: `channel:${options.channel}`,
-        timeoutMs: sandboxReadyTimeoutMs,
-      });
-      gatewayUrl = await getSandboxDomain();
-      logInfo("channels.wake_ready", {
-        channel: options.channel,
-      });
-    } catch (sandboxError) {
-      logWarn("channels.wake_retry_scheduled", {
-        channel: options.channel,
-        error: formatError(sandboxError),
-        retryAfterSeconds: DEFAULT_CHANNEL_WAKE_RETRY_AFTER_SECONDS,
-      });
-      throw new RetryableChannelError(
-        `sandbox_not_ready: ${formatError(sandboxError)}`,
-        DEFAULT_CHANNEL_WAKE_RETRY_AFTER_SECONDS,
-      );
-    }
-    await touchRunningSandbox();
-
-    const messages = adapter.buildGatewayMessages
-      ? await adapter.buildGatewayMessages(message)
-      : defaultGatewayMessages(message);
-
-    logInfo("channels.gateway_request_started", {
-      channel: options.channel,
-      requestTimeoutMs,
-    });
-
-    const replyText = await forwardToGateway({
-      gatewayUrl,
-      gatewayToken: readyMeta.gatewayToken,
-      messages,
-      sessionKey,
-      requestTimeoutMs,
-    });
-
-    await adapter.sendReply(message, replyText);
-    logInfo("channels.platform_reply_sent", { channel: options.channel });
-    logInfo("channels.delivery_success", { channel: options.channel });
-    if (sessionKey) {
-      await appendSessionHistory(options.channel, sessionKey, message.text, replyText);
-    }
-  } finally {
-    await processingIndicator.stop().catch(() => {});
-  }
 }
 
 function defaultGatewayMessages(

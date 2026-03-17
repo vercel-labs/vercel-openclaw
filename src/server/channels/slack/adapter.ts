@@ -13,9 +13,11 @@ const SLACK_SIGNATURE_VERSION = "v0";
 const SLACK_SIGNATURE_MAX_AGE_SECONDS = 60 * 5;
 const SLACK_POST_MESSAGE_URL = "https://slack.com/api/chat.postMessage";
 const SLACK_DELETE_MESSAGE_URL = "https://slack.com/api/chat.delete";
+const SLACK_UPDATE_MESSAGE_URL = "https://slack.com/api/chat.update";
 const SLACK_CONVERSATIONS_REPLIES_URL = "https://slack.com/api/conversations.replies";
 const SLACK_THREAD_HISTORY_LIMIT = 10;
 const SLACK_REQUEST_TIMEOUT_MS = 15_000;
+const SLACK_PROCESSING_PLACEHOLDER_TEXT = "_Thinking..._";
 
 type SlackConfig = {
   signingSecret: string;
@@ -125,6 +127,93 @@ function parseRetryAfterSeconds(retryAfterHeader: string | null): number | undef
   return numeric;
 }
 
+function isSlackProcessingPlaceholder(
+  reply: Pick<SlackThreadReply, "text" | "bot_id">,
+): boolean {
+  return Boolean(
+    reply.bot_id &&
+      typeof reply.text === "string" &&
+      reply.text.trim() === SLACK_PROCESSING_PLACEHOLDER_TEXT,
+  );
+}
+
+function canFallbackFromPlaceholderUpdateError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  return (
+    error.message.includes("error=message_not_found") ||
+    error.message.includes("error=cant_update_message")
+  );
+}
+
+async function updateProcessingPlaceholder(
+  botToken: string,
+  channel: string,
+  ts: string,
+  text: string,
+  fetchFn?: typeof fetch,
+): Promise<void> {
+  const runFetch = fetchFn ?? globalThis.fetch;
+  let response: Response;
+
+  try {
+    response = await runFetch(SLACK_UPDATE_MESSAGE_URL, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${botToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        channel,
+        ts,
+        text,
+      }),
+      signal: AbortSignal.timeout(SLACK_REQUEST_TIMEOUT_MS),
+    });
+  } catch (error) {
+    if (isLikelyNetworkError(error)) {
+      throw toRetryableSendError(
+        `slack_processing_placeholder_update_network: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+        undefined,
+        error,
+      );
+    }
+    throw error;
+  }
+
+  let payload: SlackSendResponse | null = null;
+  try {
+    payload = (await response.json()) as SlackSendResponse;
+  } catch {
+    payload = null;
+  }
+
+  if (response.status === 429 || response.status >= 500) {
+    throw toRetryableSendError(
+      `slack_processing_placeholder_update_retryable status=${response.status}`,
+      parseRetryAfterSeconds(response.headers.get("retry-after")),
+    );
+  }
+
+  if (!response.ok || payload?.ok !== true) {
+    const detail = typeof payload?.error === "string" ? payload.error : "";
+    throw new Error(
+      detail
+        ? `slack_processing_placeholder_update_failed: status=${response.status} error=${detail}`
+        : `slack_processing_placeholder_update_failed: status=${response.status}`,
+    );
+  }
+
+  logInfo("channels.slack_processing_placeholder_updated", {
+    channel,
+    ts,
+  });
+}
+
 async function fetchSlackThreadHistory(options: {
   botToken: string;
   channel: string;
@@ -169,6 +258,9 @@ async function fetchSlackThreadHistory(options: {
         continue;
       }
       if (reply.subtype && reply.subtype !== "bot_message") {
+        continue;
+      }
+      if (isSlackProcessingPlaceholder(reply)) {
         continue;
       }
       history.push({
@@ -308,7 +400,7 @@ async function postProcessingPlaceholder(
       body: JSON.stringify({
         channel,
         thread_ts: threadTs,
-        text: "_Thinking..._",
+        text: SLACK_PROCESSING_PLACEHOLDER_TEXT,
       }),
       signal: AbortSignal.timeout(SLACK_REQUEST_TIMEOUT_MS),
     });
@@ -497,7 +589,53 @@ export function createSlackAdapter(
     },
 
     async sendReply(message, replyText) {
+      const placeholderTs = message.processingPlaceholderTs;
+
+      if (placeholderTs) {
+        try {
+          await updateProcessingPlaceholder(
+            config.botToken,
+            message.channel,
+            placeholderTs,
+            replyText,
+            fetchFn,
+          );
+          message.processingPlaceholderTs = undefined;
+          return;
+        } catch (error) {
+          if (!canFallbackFromPlaceholderUpdateError(error)) {
+            throw error;
+          }
+
+          logWarn("channels.slack_processing_placeholder_update_fallback", {
+            channel: message.channel,
+            threadTs: message.threadTs,
+            placeholderTs,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+
       await postSlackReply(config.botToken, message, replyText, fetchFn);
+
+      if (placeholderTs) {
+        try {
+          await deleteProcessingPlaceholder(
+            config.botToken,
+            message.channel,
+            placeholderTs,
+            fetchFn,
+          );
+          message.processingPlaceholderTs = undefined;
+        } catch (error) {
+          logWarn("channels.slack_processing_placeholder_delete_failed_after_reply", {
+            channel: message.channel,
+            threadTs: message.threadTs,
+            placeholderTs,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
     },
 
     async startProcessingIndicator(message): Promise<ProcessingIndicator> {

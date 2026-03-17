@@ -82,6 +82,29 @@ test("startDelayed stop is idempotent", async () => {
   await indicator.stop();
 });
 
+test("startDelayed stops an indicator that resolves after stop is requested", async () => {
+  let stopCalls = 0;
+
+  const indicator = startDelayed(
+    async () =>
+      new Promise((resolve) => {
+        setTimeout(() => {
+          resolve({
+            async stop() {
+              stopCalls += 1;
+            },
+          });
+        }, 20);
+      }),
+    0,
+  );
+
+  await indicator.stop();
+  await delay(40);
+
+  assert.equal(stopCalls, 1);
+});
+
 test("startDelayed with zero delay starts immediately", async () => {
   let started = 0;
   const indicator = startDelayed(async () => {
