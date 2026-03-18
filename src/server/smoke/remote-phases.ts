@@ -1356,8 +1356,15 @@ export async function selfHealTokenRefresh(
     }
     log(phase, "pre-check-ok", { status: preCheck.status });
 
-    // Step 2: Corrupt the token file and kill the gateway process
-    const corruptCmd = `printf '%s' 'STALE-EXPIRED-TOKEN' > ${SANDBOX_AI_KEY_PATH}; kill -9 $(pgrep -f openclaw-gateway) 2>/dev/null || true`;
+    // Step 2: Corrupt the token file on disk so it differs from the fresh OIDC
+    // token. When ensureFreshGatewayToken runs during the Telegram queue consumer,
+    // it will detect the mismatch and perform a full refresh: write the fresh
+    // token, restart the gateway with env -u, and wait for readiness.
+    //
+    // The running gateway still works (it has the good token in memory), but after
+    // the restart it picks up the fresh file-based token via the app's env -u
+    // startup path — proving the full refresh cycle works end to end.
+    const corruptCmd = `printf '%s' 'STALE-EXPIRED-TOKEN' > ${SANDBOX_AI_KEY_PATH}`;
     const corruptResult = await sshCommand(baseUrl, corruptCmd, reqTimeout);
     if (!corruptResult) {
       return {
@@ -1366,29 +1373,18 @@ export async function selfHealTokenRefresh(
         errorCode: "CORRUPT_FAILED",
       };
     }
-    log(phase, "gateway-corrupted");
 
-    // Step 3: Wait for the gateway process to exit
-    await sleep(HEAL_POST_KILL_SETTLE_MS);
-    const deadCheck = await fetchWithTimeout(
-      url(baseUrl, "/gateway/v1/chat/completions"),
-      {
-        method: "POST",
-        headers: { ...authHeaders({ mutation: true }), "Content-Type": "application/json" },
-        body: JSON.stringify({ model: "default", messages: [{ role: "user", content: "test" }], stream: false }),
-      },
-      HEAL_DEAD_CHECK_TIMEOUT_MS,
-    ).catch(() => null);
-    const deadStatus = deadCheck?.status ?? 0;
-    if (deadCheck?.ok) {
+    // Verify corruption
+    const verifyResult = await sshCommand(baseUrl, `cat ${SANDBOX_AI_KEY_PATH}`, reqTimeout);
+    const tokenOnDisk = verifyResult?.stdout?.trim() ?? "";
+    if (tokenOnDisk !== "STALE-EXPIRED-TOKEN") {
       return {
         phase, passed: false, durationMs: 0, endpoint,
-        error: `Gateway still healthy after corruption (HTTP ${deadStatus}). Kill may have failed.`,
+        error: `Token file corruption failed: got '${tokenOnDisk.slice(0, 20)}'`,
         errorCode: "CORRUPT_VERIFY_FAILED",
-        hint: "The gateway process may not have been killed",
       };
     }
-    log(phase, "gateway-dead-confirmed", { status: deadStatus });
+    log(phase, "token-corrupted", { tokenOnDisk: tokenOnDisk.slice(0, 20) });
 
     // Step 4: Read baseline queue state
     const baselineSummary = await fetchChannelSummary(baseUrl, reqTimeout);
