@@ -15,6 +15,7 @@ import {
   stripProxyResponseHeaders,
 } from "@/server/proxy/proxy-route-utils";
 import {
+  ensureFreshGatewayToken,
   ensureSandboxRunning,
   getSandboxDomain,
   reconcileSandboxHealth,
@@ -71,6 +72,9 @@ async function handleProxy(request: Request, path: string): Promise<Response> {
     });
   }
 
+  // Proactively refresh the OIDC token if stale (throttled to every 5 min).
+  await ensureFreshGatewayToken();
+
   const meta = await touchRunningSandbox();
   if (!meta.sandboxId || !meta.gatewayToken) {
     logWarn("gateway.missing_credentials", {
@@ -79,10 +83,18 @@ async function handleProxy(request: Request, path: string): Promise<Response> {
       hasSandboxId: Boolean(meta.sandboxId),
       hasGatewayToken: Boolean(meta.gatewayToken),
     });
+    // Trigger restore in background so the waiting page has something
+    // to poll for (touchRunningSandbox may have just marked the sandbox
+    // unavailable after detecting it was auto-suspended).
+    const reEnsure = await ensureSandboxRunning({
+      origin: getPublicOrigin(request),
+      reason: "gateway.sandbox_lost_after_touch",
+      schedule: after,
+    });
     return buildGatewayPendingResponse({
       request,
       returnPath,
-      status: meta.status,
+      status: reEnsure.meta.status,
       setCookieHeader: auth.setCookieHeader,
     });
   }
@@ -94,20 +106,28 @@ async function handleProxy(request: Request, path: string): Promise<Response> {
     authorization: `Bearer ${meta.gatewayToken}`,
   });
 
-  const init: RequestInit & { duplex?: "half" } = {
-    method: request.method,
-    headers,
-    redirect: "manual",
-    signal: AbortSignal.timeout(maxDuration * 1000),
-  };
+  // Buffer the request body so we can replay it on 401 retry.
+  let bodyBytes: ArrayBuffer | null = null;
   if (request.body && !["GET", "HEAD"].includes(request.method)) {
-    init.body = request.body;
-    init.duplex = "half";
+    bodyBytes = await request.arrayBuffer();
+  }
+
+  function buildFetchInit(body: ArrayBuffer | null): RequestInit {
+    const init: RequestInit = {
+      method: request.method,
+      headers,
+      redirect: "manual",
+      signal: AbortSignal.timeout(maxDuration * 1000),
+    };
+    if (body) {
+      init.body = body;
+    }
+    return init;
   }
 
   let upstream: Response;
   try {
-    upstream = await fetch(targetUrl, init);
+    upstream = await fetch(targetUrl, buildFetchInit(bodyBytes));
   } catch (err) {
     logError("gateway.upstream_fetch_failed", {
       ...reqCtx,
@@ -118,6 +138,31 @@ async function handleProxy(request: Request, path: string): Promise<Response> {
       auth.setCookieHeader,
     );
   }
+
+  // 401 from upstream means the OIDC token expired inside the sandbox.
+  // The proxy Authorization header (meta.gatewayToken) authenticates us to the
+  // sandbox gateway — that token is unchanged. The expired token is the OIDC
+  // credential the sandbox gateway uses to call the Vercel AI Gateway.
+  // ensureFreshGatewayToken writes a fresh OIDC token to the sandbox filesystem
+  // and restarts the gateway process, so the retry uses the same proxy headers.
+  if (upstream.status === 401) {
+    logWarn("gateway.upstream_401_token_expired", reqCtx);
+    try {
+      await ensureFreshGatewayToken({ force: true });
+      upstream = await fetch(targetUrl, buildFetchInit(bodyBytes));
+      logInfo("gateway.upstream_401_retry_succeeded", {
+        ...reqCtx,
+        retryStatus: upstream.status,
+      });
+    } catch (retryErr) {
+      logError("gateway.upstream_401_retry_failed", {
+        ...reqCtx,
+        error: retryErr instanceof Error ? retryErr.message : String(retryErr),
+      });
+      // Fall through with the original 401 response — it's already in `upstream`.
+    }
+  }
+
   if (upstream.status === 410) {
     logWarn("gateway.upstream_410", reqCtx);
     await reconcileSandboxHealth({

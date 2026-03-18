@@ -30,6 +30,7 @@ import {
   ensureSandboxRunning,
   probeGatewayReady,
 } from "@/server/sandbox/lifecycle";
+import { _setAiGatewayTokenOverrideForTesting } from "@/server/env";
 
 // ---------------------------------------------------------------------------
 // Patch next/server before route modules are loaded
@@ -414,15 +415,7 @@ test("Gateway: POST body is forwarded to upstream", async () => {
     h.fakeFetch.on("POST", /fake\.vercel\.run/, async (_url, init) => {
       capturedMethod = init?.method ?? null;
       if (init?.body) {
-        // The body is a ReadableStream from the proxied request
-        const reader = (init.body as ReadableStream).getReader();
-        const chunks: Uint8Array[] = [];
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          if (value) chunks.push(value);
-        }
-        capturedBody = Buffer.concat(chunks).toString("utf-8");
+        capturedBody = await new Response(init.body).text();
       }
       return new Response(JSON.stringify({ received: true }), {
         status: 200,
@@ -631,14 +624,7 @@ test("Gateway: PUT body is forwarded to upstream", async () => {
     h.fakeFetch.on("PUT", /fake\.vercel\.run/, async (_url, init) => {
       capturedMethod = init?.method ?? null;
       if (init?.body) {
-        const reader = (init.body as ReadableStream).getReader();
-        const chunks: Uint8Array[] = [];
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          if (value) chunks.push(value);
-        }
-        capturedBody = Buffer.concat(chunks).toString("utf-8");
+        capturedBody = await new Response(init.body).text();
       }
       return new Response(JSON.stringify({ updated: true }), {
         status: 200,
@@ -680,14 +666,7 @@ test("Gateway: PATCH body is forwarded to upstream", async () => {
     h.fakeFetch.on("PATCH", /fake\.vercel\.run/, async (_url, init) => {
       capturedMethod = init?.method ?? null;
       if (init?.body) {
-        const reader = (init.body as ReadableStream).getReader();
-        const chunks: Uint8Array[] = [];
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          if (value) chunks.push(value);
-        }
-        capturedBody = Buffer.concat(chunks).toString("utf-8");
+        capturedBody = await new Response(init.body).text();
       }
       return new Response(JSON.stringify({ patched: true }), {
         status: 200,
@@ -1253,56 +1232,143 @@ test("Gateway: upstream 500 error is passed through to client", async () => {
   }
 });
 
-test("sandbox running + upstream 410 triggers restore via gateway.upstream_410 path", async () => {
+test("sandbox running + extendTimeout fails → detects dead sandbox before proxy attempt", async () => {
   const h = createScenarioHarness();
   try {
-    // Step 1: Drive sandbox to "running" — simulates admin page showing Running + Gateway Ready
     await driveToRunning(h);
 
-    // Verify metadata says running (same as what admin page would show)
     const { getInitializedMeta } = await import("@/server/store/store");
     const metaBefore = await getInitializedMeta();
     assert.equal(metaBefore.status, "running", "Precondition: meta should be running");
     assert.ok(metaBefore.sandboxId, "Precondition: sandboxId should exist");
 
-    // Step 2: Sandbox dies — upstream starts returning 410 (Vercel auto-suspended)
+    // Clear the touch throttle so touchRunningSandbox actually calls extendTimeout
+    await h.mutateMeta((meta) => {
+      meta.lastAccessedAt = null;
+    });
+
+    // Make extendTimeout throw (simulates Vercel auto-suspended sandbox)
+    const handle = h.controller.getHandle(metaBefore.sandboxId!)!;
+    handle.extendTimeout = async () => {
+      throw new Error("sandbox not found");
+    };
+
     _resetLogBuffer();
     h.fakeFetch.reset();
-    h.fakeFetch.onGet(/fake\.vercel\.run/, () =>
-      new Response("Gone", { status: 410 }),
-    );
+    // DO NOT set up any fakeFetch handlers — if the proxy fires, the fetch
+    // will throw, which would be a 502 not a waiting page.
     const originalFetch = globalThis.fetch;
     globalThis.fetch = h.fakeFetch.fetch;
     try {
-      // Step 3: User clicks "Open VClaw" → hits /gateway
       const result = await callGatewayGet("/", { accept: "text/html" });
 
-      // Step 4: Verify we get the waiting page
       assert.equal(result.status, 202, "Should return 202 waiting page");
       assert.ok(
-        result.text.includes("Restoring snapshot"),
-        `Expected "Restoring snapshot" in HTML, got: ${result.text.slice(0, 200)}`,
+        result.text.includes("<!DOCTYPE html>"),
+        "Expected waiting page HTML",
       );
 
       const logs = getServerLogs();
       const logMessages = logs.map((e) => e.message);
 
-      assert.ok(logMessages.includes("gateway.upstream_410"), "upstream 410 path should fire when sandbox is gone");
-      assert.ok(!logMessages.includes("gateway.pending"), "gateway.pending should NOT fire — metadata said running");
-      assert.ok(!logMessages.includes("gateway.missing_credentials"), "missing_credentials should NOT fire");
+      // Should detect dead sandbox via touchRunningSandbox, NOT via 410
+      assert.ok(
+        logMessages.includes("gateway.missing_credentials"),
+        "Should fire gateway.missing_credentials (touchRunningSandbox marked unavailable)",
+      );
+      assert.ok(
+        !logMessages.includes("gateway.upstream_410"),
+        "Should NOT fire gateway.upstream_410 (proxy attempt should not happen)",
+      );
 
-      // Also verify that ensureSandboxRunning saw running status
-      const ensureLog = logs.find((e) => e.message === "sandbox.ensure_running");
-      assert.ok(ensureLog, "Should have sandbox.ensure_running log");
-      assert.equal(
-        ensureLog?.data?.status,
-        "running",
-        "ensureSandboxRunning should have seen status=running in metadata",
+      // Verify ensureSandboxRunning was called to trigger restore
+      const ensureLogs = logs.filter((e) => e.message === "sandbox.ensure_running");
+      const restoreEnsure = ensureLogs.find(
+        (e) => e.data?.reason === "gateway.sandbox_lost_after_touch",
+      );
+      assert.ok(restoreEnsure, "Should trigger ensureSandboxRunning to start restore");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  } finally {
+    h.teardown();
+  }
+});
+
+// ===========================================================================
+// 28. Upstream 401 triggers OIDC token refresh and retries once
+// ===========================================================================
+
+test("Gateway: upstream 401 forces token refresh and retries", async () => {
+  const h = createScenarioHarness();
+  try {
+    await driveToRunning(h);
+
+    _setAiGatewayTokenOverrideForTesting("fresh-oidc-token");
+
+    let callCount = 0;
+    h.fakeFetch.reset();
+    h.fakeFetch.onPost(/fake\.vercel\.run/, () => {
+      callCount++;
+      if (callCount === 1) {
+        return new Response("OIDC token has expired", { status: 401 });
+      }
+      return Response.json({ choices: [{ message: { content: "ok" } }] });
+    });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = h.fakeFetch.fetch;
+    try {
+      const result = await callGatewayPost(
+        "/v1/chat/completions",
+        JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+      );
+      assert.equal(result.status, 200, "Retry after token refresh should succeed");
+      assert.equal(callCount, 2, "Should have made exactly 2 upstream requests (initial 401 + retry)");
+
+      const logs = getServerLogs();
+      const logMessages = logs.map((e) => e.message);
+      assert.ok(
+        logMessages.includes("gateway.upstream_401_token_expired"),
+        "Should log the 401 token expiry",
+      );
+      assert.ok(
+        logMessages.includes("gateway.upstream_401_retry_succeeded"),
+        "Should log the successful retry",
       );
     } finally {
       globalThis.fetch = originalFetch;
     }
   } finally {
+    _setAiGatewayTokenOverrideForTesting(null);
+    h.teardown();
+  }
+});
+
+test("Gateway: upstream 401 with failed retry returns the retry response", async () => {
+  const h = createScenarioHarness();
+  try {
+    await driveToRunning(h);
+
+    _setAiGatewayTokenOverrideForTesting("fresh-oidc-token");
+
+    h.fakeFetch.reset();
+    h.fakeFetch.onPost(/fake\.vercel\.run/, () =>
+      new Response("OIDC token has expired", { status: 401 }),
+    );
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = h.fakeFetch.fetch;
+    try {
+      const result = await callGatewayPost(
+        "/v1/chat/completions",
+        JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+      );
+      // Even with token refresh, if retry still returns 401, pass it through
+      assert.equal(result.status, 401, "Should pass through persistent 401");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  } finally {
+    _setAiGatewayTokenOverrideForTesting(null);
     h.teardown();
   }
 });
