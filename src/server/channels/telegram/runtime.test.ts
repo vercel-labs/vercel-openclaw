@@ -101,7 +101,7 @@ test("[telegram runtime] drain forwards message to /v1/chat/completions", async 
 // Drain handles chat completions 500 with retry
 // ---------------------------------------------------------------------------
 
-test("[telegram runtime] drain handles chat completions 500 with retry", async () => {
+test("[telegram runtime] drain handles chat completions 500 with failed queue", async () => {
   await withHarness(async (h) => {
     h.fakeFetch.onPost(/\/v1\/chat\/completions/, () =>
       new Response("Internal Server Error", { status: 500 }),
@@ -126,6 +126,7 @@ test("[telegram runtime] drain handles chat completions 500 with retry", async (
       await enqueueChannelJob("telegram", createTelegramJob());
       await drainTelegramQueue();
 
+      // 500 is a transient 5xx error — retryable, parked in processing queue
       const store = h.getStore();
       const processingLen = await store.getQueueLength(channelProcessingKey("telegram"));
       assert.ok(processingLen >= 1, "Job should be parked for retry in processing queue");

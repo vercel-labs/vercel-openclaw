@@ -73,7 +73,7 @@ export type PreflightPayload = {
   webhookBypassEnabled: boolean;
   webhookBypassRequired: boolean;
   storeBackend: "upstash" | "memory";
-  aiGatewayAuth: "oidc" | "unavailable";
+  aiGatewayAuth: "oidc" | "api-key" | "unavailable";
   cronSecretConfigured: boolean;
   publicOriginResolution: PublicOriginResolution | null;
   webhookDiagnostics: PreflightWebhookDiagnostics;

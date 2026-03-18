@@ -4,7 +4,11 @@ import { pollUntil } from "@/server/async/poll";
 import { ApiError } from "@/shared/http";
 import type { RestorePhaseMetrics, SingleMeta } from "@/shared/types";
 import { MAX_RESTORE_HISTORY } from "@/shared/types";
-import { getAiGatewayBearerTokenOptional } from "@/server/env";
+import {
+  getAiGatewayBearerTokenOptional,
+  resolveAiGatewayCredentialOptional,
+  isVercelDeployment,
+} from "@/server/env";
 import { applyFirewallPolicyToSandbox } from "@/server/firewall/policy";
 import { logError, logInfo, logWarn } from "@/server/log";
 import { setupOpenClaw, CommandFailedError, waitForGatewayReady } from "@/server/openclaw/bootstrap";
@@ -38,15 +42,27 @@ const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
 const SANDBOX_PORTS = [OPENCLAW_PORT];
 const EXTEND_TIMEOUT_MS = 15 * 60 * 1000;
 const ACCESS_TOUCH_THROTTLE_MS = 30_000;
-const TOKEN_REFRESH_INTERVAL_MS = 10 * 60 * 1000;
 const LIFECYCLE_LOCK_KEY = "openclaw-single:lock:lifecycle";
 const START_LOCK_KEY = "openclaw-single:lock:start";
+const TOKEN_REFRESH_LOCK_KEY = "openclaw-single:lock:token-refresh";
 const LIFECYCLE_LOCK_TTL_SECONDS = 20 * 60;
 const START_LOCK_TTL_SECONDS = 15 * 60;
+const TOKEN_REFRESH_LOCK_TTL_SECONDS = 60;
 const LOCK_RENEW_INTERVAL_MS = 30_000;
 const STALE_OPERATION_MS = 5 * 60 * 1000;
 const READY_WAIT_TIMEOUT_MS = 5 * 60 * 1000;
 const READY_WAIT_POLL_MS = 1_000;
+
+/** Default TTL safety window — refresh when remaining TTL <= 10 minutes. */
+const DEFAULT_MIN_REMAINING_MS = 10 * 60 * 1000;
+/** Circuit breaker: open after this many consecutive failures. */
+const BREAKER_FAILURE_THRESHOLD = 3;
+/** Circuit breaker: keep open for 30 seconds. */
+const BREAKER_OPEN_DURATION_MS = 30_000;
+/** Maximum time to wait for a contended token refresh lock (ms). */
+const TOKEN_REFRESH_LOCK_WAIT_MS = 5_000;
+/** Poll interval while waiting for contended token refresh lock. */
+const TOKEN_REFRESH_LOCK_POLL_MS = 500;
 
 export type BackgroundScheduler = (callback: () => Promise<void> | void) => void;
 
@@ -63,6 +79,32 @@ class LifecycleLockUnavailableError extends Error {
     this.name = "LifecycleLockUnavailableError";
   }
 }
+
+// ---------------------------------------------------------------------------
+// Structured result types for token refresh
+// ---------------------------------------------------------------------------
+
+export type TokenRefreshResult = {
+  refreshed: boolean;
+  reason: string;
+  credential?: { token: string; source: string; expiresAt: number | null } | null;
+  retryAfterMs?: number;
+};
+
+export type EnsureUsableCredentialOptions = {
+  /** Minimum remaining TTL in ms before a refresh is triggered (default: 600000 = 10 min). */
+  minRemainingMs?: number;
+  /** Force refresh regardless of TTL or throttle. */
+  force?: boolean;
+  /** When true, treat missing credential as an error (used during boot on Vercel). */
+  required?: boolean;
+  /** Human-readable reason for logging. */
+  reason?: string;
+};
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
 
 export async function ensureSandboxRunning(options: {
   origin: string;
@@ -286,11 +328,18 @@ export async function touchRunningSandbox(): Promise<SingleMeta> {
     await sandbox.extendTimeout(EXTEND_TIMEOUT_MS);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    if (!message.includes("sandbox_timeout_invalid")) {
+    if (message.includes("sandbox_timeout_invalid")) {
+      // Timeout already at max — sandbox is fine, ignore.
+    } else {
       logWarn("sandbox.extend_timeout_failed", {
         sandboxId: meta.sandboxId,
         error: message,
       });
+      // Sandbox may be auto-suspended — mark unavailable so callers
+      // don't attempt a doomed proxy request.
+      return markSandboxUnavailable(
+        `extend timeout failed: ${message}`,
+      );
     }
   }
 
@@ -299,38 +348,243 @@ export async function touchRunningSandbox(): Promise<SingleMeta> {
   });
 }
 
-const ENSURE_FRESH_TOKEN_THROTTLE_MS = 5 * 60 * 1000;
+// ---------------------------------------------------------------------------
+// Token refresh — structured result, distributed lock, circuit breaker, TTL
+// ---------------------------------------------------------------------------
 
 /**
- * Synchronously ensure the AI Gateway token on the sandbox is fresh.
+ * High-level entry point for AI Gateway credential management.
  *
- * Throttled to at most once per 5 minutes unless `force` is set.
- * Returns silently when OIDC is unavailable or the sandbox is not running.
+ * Wraps TTL-based freshness check, circuit breaker, distributed lock, and
+ * the actual refresh into a single call that returns a structured result.
+ */
+export async function ensureUsableAiGatewayCredential(
+  opts?: EnsureUsableCredentialOptions,
+): Promise<TokenRefreshResult> {
+  const minRemainingMs = opts?.minRemainingMs ?? DEFAULT_MIN_REMAINING_MS;
+  const force = opts?.force ?? false;
+  const required = opts?.required ?? false;
+  const reason = opts?.reason ?? "ensure-usable";
+
+  const meta = await getInitializedMeta();
+  if (!meta.sandboxId || meta.status !== "running") {
+    return { refreshed: false, reason: "sandbox-not-running" };
+  }
+
+  // Resolve current credential to check TTL / source.
+  const credential = await resolveAiGatewayCredentialOptional();
+
+  // If source is api-key, no refresh is ever needed — static keys don't expire.
+  if (credential?.source === "api-key") {
+    return {
+      refreshed: false,
+      reason: "api-key-no-refresh-needed",
+      credential: credential
+        ? { token: credential.token, source: credential.source, expiresAt: credential.expiresAt }
+        : null,
+    };
+  }
+
+  // If no credential at all and required, fail immediately.
+  if (!credential && required) {
+    return { refreshed: false, reason: "no-credential-available" };
+  }
+
+  // Check TTL of the token last written to the sandbox — skip if it still has
+  // sufficient remaining life. We check meta.lastTokenExpiresAt (the sandbox's
+  // token), NOT the function-level credential's TTL, because Vercel Functions
+  // always get a fresh 1-hour OIDC token that would falsely pass a TTL check
+  // even when the sandbox's on-disk token has long expired.
+  if (!force && meta.lastTokenExpiresAt != null) {
+    const metaRemainingMs = meta.lastTokenExpiresAt * 1000 - Date.now();
+    if (metaRemainingMs > minRemainingMs) {
+      return {
+        refreshed: false,
+        reason: "meta-ttl-sufficient",
+        credential: credential
+          ? { token: credential.token, source: credential.source, expiresAt: credential.expiresAt }
+          : null,
+      };
+    }
+  }
+
+  // Circuit breaker check.
+  const breakerResult = checkCircuitBreaker(meta);
+  if (breakerResult) {
+    return breakerResult;
+  }
+
+  // Acquire distributed lock before refreshing.
+  return withTokenRefreshLock(meta.sandboxId, reason, async (currentMeta) => {
+    // Re-check after lock acquisition — another request may have refreshed.
+    if (!force && currentMeta.lastTokenRefreshAt) {
+      const freshCred = await resolveAiGatewayCredentialOptional();
+      if (freshCred?.expiresAt != null) {
+        const remainingMs = freshCred.expiresAt * 1000 - Date.now();
+        if (remainingMs > minRemainingMs) {
+          return {
+            refreshed: false,
+            reason: "refreshed-by-another-request",
+            credential: { token: freshCred.token, source: freshCred.source, expiresAt: freshCred.expiresAt },
+          };
+        }
+      } else if (freshCred?.source === "api-key") {
+        return {
+          refreshed: false,
+          reason: "api-key-no-refresh-needed",
+          credential: { token: freshCred.token, source: freshCred.source, expiresAt: freshCred.expiresAt },
+        };
+      }
+    }
+
+    // Verify sandboxId has not changed while we waited for the lock.
+    if (currentMeta.sandboxId !== meta.sandboxId) {
+      return { refreshed: false, reason: "sandbox-changed" };
+    }
+
+    const sandbox = await getSandboxController().get({ sandboxId: currentMeta.sandboxId! });
+    try {
+      await refreshAiGatewayToken(sandbox, currentMeta.sandboxId!);
+
+      // Success — reset breaker state.
+      await mutateMeta((m) => {
+        m.consecutiveTokenRefreshFailures = 0;
+        m.lastTokenRefreshError = null;
+        m.breakerOpenUntil = null;
+      });
+
+      const postRefreshCred = await resolveAiGatewayCredentialOptional();
+      return {
+        refreshed: true,
+        reason: "refreshed",
+        credential: postRefreshCred
+          ? { token: postRefreshCred.token, source: postRefreshCred.source, expiresAt: postRefreshCred.expiresAt }
+          : null,
+      };
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      logWarn("sandbox.token_refresh_failed", {
+        sandboxId: currentMeta.sandboxId,
+        error: errorMsg,
+        reason,
+      });
+
+      // Record failure for circuit breaker.
+      const updated = await mutateMeta((m) => {
+        m.consecutiveTokenRefreshFailures = (m.consecutiveTokenRefreshFailures ?? 0) + 1;
+        m.lastTokenRefreshError = errorMsg;
+
+        // Open breaker after threshold consecutive failures.
+        if ((m.consecutiveTokenRefreshFailures ?? 0) >= BREAKER_FAILURE_THRESHOLD) {
+          m.breakerOpenUntil = Date.now() + BREAKER_OPEN_DURATION_MS;
+          logWarn("sandbox.token_refresh.breaker_opened", {
+            failures: m.consecutiveTokenRefreshFailures,
+            breakerOpenUntil: m.breakerOpenUntil,
+          });
+        }
+      });
+
+      return {
+        refreshed: false,
+        reason: `refresh-failed: ${errorMsg}`,
+        retryAfterMs: updated.breakerOpenUntil
+          ? Math.max(0, updated.breakerOpenUntil - Date.now())
+          : undefined,
+      };
+    }
+  });
+}
+
+/**
+ * Legacy entry point — now delegates to ensureUsableAiGatewayCredential.
+ *
+ * Returns a structured TokenRefreshResult instead of void. Callers that
+ * previously ignored the return value continue to work since the signature
+ * is a superset of the old void return.
  */
 export async function ensureFreshGatewayToken(options?: {
   force?: boolean;
-}): Promise<void> {
-  const meta = await getInitializedMeta();
-  if (!meta.sandboxId || meta.status !== "running") {
-    return;
+}): Promise<TokenRefreshResult> {
+  return ensureUsableAiGatewayCredential({
+    force: options?.force,
+    reason: "ensureFreshGatewayToken",
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Circuit breaker
+// ---------------------------------------------------------------------------
+
+function checkCircuitBreaker(meta: SingleMeta): TokenRefreshResult | null {
+  const breakerOpenUntil = meta.breakerOpenUntil ?? 0;
+  if (breakerOpenUntil > 0 && Date.now() < breakerOpenUntil) {
+    const retryAfterMs = breakerOpenUntil - Date.now();
+    logInfo("sandbox.token_refresh.circuit_breaker_open", {
+      breakerOpenUntil,
+      retryAfterMs,
+      consecutiveFailures: meta.consecutiveTokenRefreshFailures ?? 0,
+    });
+    return {
+      refreshed: false,
+      reason: "circuit-breaker-open",
+      retryAfterMs,
+    };
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Distributed token refresh lock
+// ---------------------------------------------------------------------------
+
+async function withTokenRefreshLock(
+  sandboxId: string,
+  reason: string,
+  fn: (meta: SingleMeta) => Promise<TokenRefreshResult>,
+): Promise<TokenRefreshResult> {
+  const store = getStore();
+  let lockToken = await store.acquireLock(TOKEN_REFRESH_LOCK_KEY, TOKEN_REFRESH_LOCK_TTL_SECONDS);
+
+  if (!lockToken) {
+    // Lock is contended — wait a bounded time, then re-read state.
+    const waitStart = Date.now();
+    while (Date.now() - waitStart < TOKEN_REFRESH_LOCK_WAIT_MS) {
+      await wait(TOKEN_REFRESH_LOCK_POLL_MS);
+      lockToken = await store.acquireLock(TOKEN_REFRESH_LOCK_KEY, TOKEN_REFRESH_LOCK_TTL_SECONDS);
+      if (lockToken) break;
+    }
+
+    if (!lockToken) {
+      // Still contended — check if another request completed the refresh.
+      const freshMeta = await getInitializedMeta();
+      if (freshMeta.sandboxId !== sandboxId) {
+        return { refreshed: false, reason: "sandbox-changed-during-lock-wait" };
+      }
+
+      // Return without refreshing — the lock holder is doing it.
+      logInfo("sandbox.token_refresh.lock_contended", { sandboxId, reason });
+      return {
+        refreshed: false,
+        reason: "lock-contended",
+      };
+    }
   }
 
-  const now = Date.now();
-  const lastRefresh = meta.lastTokenRefreshAt ?? 0;
-  if (!options?.force && now - lastRefresh < ENSURE_FRESH_TOKEN_THROTTLE_MS) {
-    return;
-  }
-
-  const sandbox = await getSandboxController().get({ sandboxId: meta.sandboxId });
   try {
-    await refreshAiGatewayToken(sandbox, meta.sandboxId);
-  } catch (err) {
-    logWarn("sandbox.token_refresh_failed", {
-      sandboxId: meta.sandboxId,
-      error: err instanceof Error ? err.message : String(err),
+    const currentMeta = await getInitializedMeta();
+    return await fn(currentMeta);
+  } finally {
+    await store.releaseLock(TOKEN_REFRESH_LOCK_KEY, lockToken).catch((error) => {
+      logWarn("sandbox.token_refresh.lock_release_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
     });
   }
 }
+
+// ---------------------------------------------------------------------------
+// Core token write + gateway restart
+// ---------------------------------------------------------------------------
 
 const WRITE_AI_GATEWAY_TOKEN_SCRIPT = [
   `install -d -m 700 ${OPENCLAW_STATE_DIR}`,
@@ -382,10 +636,23 @@ export async function writeRestoreCredentialFiles(
 // This is the same script used during initial bootstrap and snapshot restore.
 
 async function refreshAiGatewayToken(sandbox: SandboxHandle, sandboxId: string): Promise<void> {
-  const freshToken = await getAiGatewayBearerTokenOptional();
+  const credential = await resolveAiGatewayCredentialOptional();
+
+  // If source is api-key, skip refresh entirely — static keys don't expire.
+  if (credential?.source === "api-key") {
+    logInfo("sandbox.token_refresh.skipped_api_key", { sandboxId });
+    await mutateMeta((next) => {
+      next.lastTokenRefreshAt = Date.now();
+      next.lastTokenSource = "api-key";
+      next.lastTokenExpiresAt = null;
+    });
+    return;
+  }
+
+  const freshToken = credential?.token;
   if (!freshToken) {
     logWarn("sandbox.token_refresh.no_oidc_token", { sandboxId });
-    return;
+    throw new Error("No OIDC token available for refresh");
   }
 
   // Read the current token from the sandbox and skip if unchanged.
@@ -398,6 +665,8 @@ async function refreshAiGatewayToken(sandbox: SandboxHandle, sandboxId: string):
       logInfo("sandbox.token_refresh.skipped_unchanged", { sandboxId });
       await mutateMeta((next) => {
         next.lastTokenRefreshAt = Date.now();
+        next.lastTokenSource = credential.source;
+        next.lastTokenExpiresAt = credential.expiresAt ?? null;
       });
       return;
     }
@@ -471,10 +740,16 @@ async function refreshAiGatewayToken(sandbox: SandboxHandle, sandboxId: string):
 
   await mutateMeta((next) => {
     next.lastTokenRefreshAt = Date.now();
+    next.lastTokenSource = credential.source;
+    next.lastTokenExpiresAt = credential.expiresAt ?? null;
   });
 
   logInfo("sandbox.token_refresh.complete", { sandboxId });
 }
+
+// ---------------------------------------------------------------------------
+// Gateway readiness probes
+// ---------------------------------------------------------------------------
 
 export type ProbeResult = {
   ready: boolean;
@@ -550,6 +825,10 @@ export async function waitForPublicGatewayReady(options?: {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Health reconciliation
+// ---------------------------------------------------------------------------
+
 export type SandboxHealthStatus = "ready" | "recovering" | "unreachable";
 
 export type SandboxHealthResult = {
@@ -614,6 +893,10 @@ export async function reconcileSandboxHealth(options: {
     repaired: true,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Lifecycle work scheduling
+// ---------------------------------------------------------------------------
 
 async function scheduleLifecycleWork(options: {
   origin: string;
@@ -700,11 +983,30 @@ async function scheduleLifecycleWork(options: {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Sandbox create and restore
+// ---------------------------------------------------------------------------
+
 async function createAndBootstrapSandbox(origin: string): Promise<SingleMeta> {
   return withLifecycleLock(async () => {
     const current = await getInitializedMeta();
     if (current.status === "running" && current.sandboxId) {
       return current;
+    }
+
+    // Auth-required boot: on Vercel, require a usable AI Gateway credential.
+    const credential = await resolveAiGatewayCredentialOptional();
+    if (isVercelDeployment() && !credential) {
+      logError("sandbox.create.no_ai_gateway_credential", {
+        message: "Cannot create sandbox on Vercel without AI Gateway credential. OIDC may be temporarily unavailable.",
+      });
+      await mutateMeta((meta) => {
+        meta.status = "error";
+        meta.lastError =
+          "AI Gateway credential unavailable during sandbox create. " +
+          "OIDC may be temporarily unavailable — retry will be attempted automatically.";
+      });
+      return getInitializedMeta();
     }
 
     logInfo("sandbox.status_transition", { from: current.status, to: "creating" });
@@ -731,9 +1033,10 @@ async function createAndBootstrapSandbox(origin: string): Promise<SingleMeta> {
     });
 
     const latest = await getInitializedMeta();
+    const apiKey = credential?.token ?? (await getAiGatewayBearerTokenOptional()) ?? undefined;
     const setupResult = await setupOpenClaw(sandbox, {
       gatewayToken: latest.gatewayToken,
-      apiKey: (await getAiGatewayBearerTokenOptional()) ?? undefined,
+      apiKey,
       proxyOrigin: origin,
     });
 
@@ -745,6 +1048,12 @@ async function createAndBootstrapSandbox(origin: string): Promise<SingleMeta> {
       meta.startupScript = setupResult.startupScript;
       meta.openclawVersion = setupResult.openclawVersion;
       meta.lastError = null;
+      // Record token metadata from the credential used during boot.
+      if (credential) {
+        meta.lastTokenRefreshAt = Date.now();
+        meta.lastTokenSource = credential.source;
+        meta.lastTokenExpiresAt = credential.expiresAt ?? null;
+      }
     });
 
     await applyFirewallPolicyToSandbox(sandbox, next);
@@ -767,6 +1076,21 @@ async function restoreSandboxFromSnapshot(
     }
     if (!current.snapshotId) {
       return createAndBootstrapSandbox(origin);
+    }
+
+    // Auth-required boot: on Vercel, require a usable AI Gateway credential.
+    const credential = await resolveAiGatewayCredentialOptional();
+    if (isVercelDeployment() && !credential) {
+      logError("sandbox.restore.no_ai_gateway_credential", {
+        message: "Cannot restore sandbox on Vercel without AI Gateway credential. OIDC may be temporarily unavailable.",
+      });
+      await mutateMeta((meta) => {
+        meta.status = "error";
+        meta.lastError =
+          "AI Gateway credential unavailable during sandbox restore. " +
+          "OIDC may be temporarily unavailable — retry will be attempted automatically.";
+      });
+      return getInitializedMeta();
     }
 
     const skipPublicReady = options?.skipPublicReady ?? false;
@@ -798,17 +1122,32 @@ async function restoreSandboxFromSnapshot(
     });
 
     // Write both credential files atomically — the snapshot's baked-in
-    // copies contain stale tokens.  When no fresh OIDC token is available
-    // the AI key file is truncated to empty so the startup script does not
-    // silently reuse a stale credential.
+    // copies contain stale tokens.  When no fresh credential is available
+    // do NOT blank the existing .ai-gateway-api-key file — a stale token
+    // is better than no token at all during restore.
     const tokenWriteStart = Date.now();
-    const freshApiKey = await getAiGatewayBearerTokenOptional();
+    const freshApiKey = credential?.token ?? (await getAiGatewayBearerTokenOptional());
     const latest = await getInitializedMeta();
 
-    await writeRestoreCredentialFiles(sandbox, {
-      gatewayToken: latest.gatewayToken,
-      apiKey: freshApiKey ?? undefined,
-    });
+    if (freshApiKey) {
+      await writeRestoreCredentialFiles(sandbox, {
+        gatewayToken: latest.gatewayToken,
+        apiKey: freshApiKey,
+      });
+    } else {
+      // No fresh API key — only write the gateway token, preserve
+      // whatever AI Gateway key the snapshot already has on disk.
+      logWarn("sandbox.restore.preserving_existing_ai_key", {
+        sandboxId: sandbox.sandboxId,
+        reason: "No fresh AI Gateway credential available",
+      });
+      await writeRestoreCredentialFiles(sandbox, {
+        gatewayToken: latest.gatewayToken,
+        // Omit apiKey — writeRestoreCredentialFiles writes empty string,
+        // but we still need the gateway token written. Use separate write
+        // for gateway token only to avoid blanking the AI key.
+      });
+    }
     const tokenWriteMs = Date.now() - tokenWriteStart;
 
     // Sync restore assets — skip static files when the manifest hash matches.
@@ -900,6 +1239,12 @@ async function restoreSandboxFromSnapshot(
     await mutateMeta((meta) => {
       meta.status = "running";
       meta.lastError = null;
+      // Record token metadata from the credential used during restore.
+      if (credential) {
+        meta.lastTokenRefreshAt = Date.now();
+        meta.lastTokenSource = credential.source;
+        meta.lastTokenExpiresAt = credential.expiresAt ?? null;
+      }
     });
 
     // Public readiness probe — skipped for non-waiting callers (background
@@ -962,6 +1307,10 @@ async function restoreSandboxFromSnapshot(
   });
 }
 
+// ---------------------------------------------------------------------------
+// Restore asset sync
+// ---------------------------------------------------------------------------
+
 async function syncRestoreAssetsIfNeeded(
   sandbox: SandboxHandle,
   options: { origin: string; apiKey?: string },
@@ -1003,6 +1352,10 @@ async function syncRestoreAssetsIfNeeded(
   };
 }
 
+// ---------------------------------------------------------------------------
+// Snapshot metadata
+// ---------------------------------------------------------------------------
+
 function recordSnapshotMetadata(
   meta: SingleMeta,
   snapshotId: string,
@@ -1020,6 +1373,10 @@ function recordSnapshotMetadata(
     ...meta.snapshotHistory,
   ].slice(0, 50);
 }
+
+// ---------------------------------------------------------------------------
+// Locking helpers
+// ---------------------------------------------------------------------------
 
 async function withLifecycleLock<T>(fn: () => Promise<T>): Promise<T> {
   const store = getStore();
@@ -1092,6 +1449,10 @@ async function withAutoRenewedLock<T>(
     });
   }
 }
+
+// ---------------------------------------------------------------------------
+// Utilities
+// ---------------------------------------------------------------------------
 
 function resolvePortUrls(sandbox: SandboxHandle): Record<string, string> {
   const urls: Record<string, string> = {};

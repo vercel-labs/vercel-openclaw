@@ -106,7 +106,7 @@ test("[discord runtime] drain forwards message to /v1/chat/completions", async (
 // Drain handles chat completions 500 with retry
 // ---------------------------------------------------------------------------
 
-test("[discord runtime] drain handles chat completions 500 with retry", async () => {
+test("[discord runtime] drain handles chat completions 500 with failed queue", async () => {
   await withHarness(async (h) => {
     h.fakeFetch.onPost(/\/v1\/chat\/completions/, () =>
       new Response("Internal Server Error", { status: 500 }),
@@ -130,6 +130,7 @@ test("[discord runtime] drain handles chat completions 500 with retry", async ()
       await enqueueChannelJob("discord", createDiscordJob());
       await drainDiscordQueue();
 
+      // 500 is a transient 5xx error — retryable, parked in processing queue
       const store = h.getStore();
       const processingLen = await store.getQueueLength(channelProcessingKey("discord"));
       assert.ok(processingLen >= 1, "Job should be parked for retry in processing queue");

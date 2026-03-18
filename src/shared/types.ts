@@ -196,6 +196,16 @@ export type SingleMeta = {
   lastRestoreMetrics: RestorePhaseMetrics | null;
   /** Capped ring of per-restore timing records (most recent first). */
   restoreHistory: RestorePhaseMetrics[];
+  /** Unix-epoch seconds when the current AI Gateway token expires, or null for static keys. */
+  lastTokenExpiresAt?: number | null;
+  /** Credential source used for the most recent AI Gateway token. */
+  lastTokenSource?: "oidc" | "api-key" | null;
+  /** Error message from the most recent token refresh failure, or null. */
+  lastTokenRefreshError?: string | null;
+  /** Number of consecutive token refresh failures (resets on success). */
+  consecutiveTokenRefreshFailures?: number;
+  /** Unix-epoch ms until which the token-refresh circuit breaker is open, or null. */
+  breakerOpenUntil?: number | null;
 };
 
 export const CURRENT_SCHEMA_VERSION = 3;
@@ -354,6 +364,27 @@ export function ensureMetaShape(input: unknown): SingleMeta | null {
           .filter(isRestorePhaseMetrics)
           .slice(0, MAX_RESTORE_HISTORY) as RestorePhaseMetrics[]
       : [],
+    lastTokenExpiresAt:
+      typeof (raw as Record<string, unknown>).lastTokenExpiresAt === "number"
+        ? (raw as Record<string, unknown>).lastTokenExpiresAt as number
+        : null,
+    lastTokenSource:
+      ((raw as Record<string, unknown>).lastTokenSource === "oidc" ||
+        (raw as Record<string, unknown>).lastTokenSource === "api-key")
+        ? (raw as Record<string, unknown>).lastTokenSource as "oidc" | "api-key"
+        : null,
+    lastTokenRefreshError:
+      typeof (raw as Record<string, unknown>).lastTokenRefreshError === "string"
+        ? (raw as Record<string, unknown>).lastTokenRefreshError as string
+        : null,
+    consecutiveTokenRefreshFailures:
+      typeof (raw as Record<string, unknown>).consecutiveTokenRefreshFailures === "number"
+        ? (raw as Record<string, unknown>).consecutiveTokenRefreshFailures as number
+        : 0,
+    breakerOpenUntil:
+      typeof (raw as Record<string, unknown>).breakerOpenUntil === "number"
+        ? (raw as Record<string, unknown>).breakerOpenUntil as number
+        : null,
   };
 }
 

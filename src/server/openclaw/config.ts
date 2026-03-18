@@ -78,80 +78,78 @@ export function buildGatewayConfig(
     },
   };
 
-  if (apiKey) {
-    config.agents = {
-      defaults: {
-        model: {
-          primary: "vercel-ai-gateway/openai/gpt-5.3-chat",
-          fallbacks: [
-            "vercel-ai-gateway/anthropic/claude-haiku-4.5",
-            "vercel-ai-gateway/anthropic/claude-sonnet-4.6",
-            "vercel-ai-gateway/openai/gpt-5.2",
-            "vercel-ai-gateway/google/gemini-2.5-flash",
-          ],
-        },
-        models: {
-          // Anthropic
-          "vercel-ai-gateway/anthropic/claude-opus-4.6": { alias: "Claude Opus 4.6" },
-          "vercel-ai-gateway/anthropic/claude-sonnet-4.6": { alias: "Claude Sonnet 4.6" },
-          "vercel-ai-gateway/anthropic/claude-haiku-4.5": { alias: "Claude Haiku 4.5" },
-          // OpenAI
-          "vercel-ai-gateway/openai/gpt-5.3-chat": { alias: "GPT-5.3 Chat" },
-          "vercel-ai-gateway/openai/gpt-5.2": { alias: "GPT-5.2" },
-          "vercel-ai-gateway/openai/gpt-5-mini": { alias: "GPT-5 Mini" },
-          "vercel-ai-gateway/openai/o3": { alias: "o3" },
-          "vercel-ai-gateway/openai/o4-mini": { alias: "o4-mini" },
-          // Google
-          "vercel-ai-gateway/google/gemini-2.5-pro": { alias: "Gemini 2.5 Pro" },
-          "vercel-ai-gateway/google/gemini-2.5-flash": { alias: "Gemini 2.5 Flash" },
-          "vercel-ai-gateway/google/gemini-3-flash": { alias: "Gemini 3 Flash" },
-          "vercel-ai-gateway/google/gemini-3.1-flash-image-preview": { alias: "Gemini 3.1 Flash Image" },
-          // DeepSeek
-          "vercel-ai-gateway/deepseek/deepseek-v3.2": { alias: "DeepSeek V3.2" },
-          "vercel-ai-gateway/deepseek/deepseek-v3.2-thinking": { alias: "DeepSeek V3.2 Thinking" },
-          // xAI
-          "vercel-ai-gateway/xai/grok-4": { alias: "Grok 4" },
-          // Mistral
-          "vercel-ai-gateway/mistral/mistral-large-3": { alias: "Mistral Large 3" },
-          "vercel-ai-gateway/mistral/devstral-2": { alias: "Devstral 2" },
-        },
+  config.agents = {
+    defaults: {
+      model: {
+        primary: "vercel-ai-gateway/openai/gpt-5.3-chat",
+        fallbacks: [
+          "vercel-ai-gateway/anthropic/claude-haiku-4.5",
+          "vercel-ai-gateway/anthropic/claude-sonnet-4.6",
+          "vercel-ai-gateway/openai/gpt-5.2",
+          "vercel-ai-gateway/google/gemini-2.5-flash",
+        ],
       },
-    };
-    config.models = {
-      mode: "merge",
-      providers: {
-        openai: {
-          baseUrl: "https://ai-gateway.vercel.sh/v1",
-          apiKey: "sk-placeholder",
-          api: "openai-completions",
-          models: [
-            { id: "gpt-image-1", name: "GPT Image 1" },
-            { id: "dall-e-3", name: "DALL-E 3" },
-            { id: "gpt-4o", name: "GPT-4o", input: ["text", "image"] },
-            { id: "gpt-4o-mini-tts", name: "GPT-4o Mini TTS" },
-            { id: "text-embedding-3-small", name: "Text Embedding 3 Small" },
-            { id: "text-embedding-3-large", name: "Text Embedding 3 Large" },
-          ],
-        },
+      models: {
+        // Anthropic
+        "vercel-ai-gateway/anthropic/claude-opus-4.6": { alias: "Claude Opus 4.6" },
+        "vercel-ai-gateway/anthropic/claude-sonnet-4.6": { alias: "Claude Sonnet 4.6" },
+        "vercel-ai-gateway/anthropic/claude-haiku-4.5": { alias: "Claude Haiku 4.5" },
+        // OpenAI
+        "vercel-ai-gateway/openai/gpt-5.3-chat": { alias: "GPT-5.3 Chat" },
+        "vercel-ai-gateway/openai/gpt-5.2": { alias: "GPT-5.2" },
+        "vercel-ai-gateway/openai/gpt-5-mini": { alias: "GPT-5 Mini" },
+        "vercel-ai-gateway/openai/o3": { alias: "o3" },
+        "vercel-ai-gateway/openai/o4-mini": { alias: "o4-mini" },
+        // Google
+        "vercel-ai-gateway/google/gemini-2.5-pro": { alias: "Gemini 2.5 Pro" },
+        "vercel-ai-gateway/google/gemini-2.5-flash": { alias: "Gemini 2.5 Flash" },
+        "vercel-ai-gateway/google/gemini-3-flash": { alias: "Gemini 3 Flash" },
+        "vercel-ai-gateway/google/gemini-3.1-flash-image-preview": { alias: "Gemini 3.1 Flash Image" },
+        // DeepSeek
+        "vercel-ai-gateway/deepseek/deepseek-v3.2": { alias: "DeepSeek V3.2" },
+        "vercel-ai-gateway/deepseek/deepseek-v3.2-thinking": { alias: "DeepSeek V3.2 Thinking" },
+        // xAI
+        "vercel-ai-gateway/xai/grok-4": { alias: "Grok 4" },
+        // Mistral
+        "vercel-ai-gateway/mistral/mistral-large-3": { alias: "Mistral Large 3" },
+        "vercel-ai-gateway/mistral/devstral-2": { alias: "Devstral 2" },
       },
-    };
-    config.tools = {
-      media: {
-        image: {
-          enabled: true,
-          models: [
-            { provider: "vercel-ai-gateway", model: "anthropic/claude-sonnet-4.6" },
-            { provider: "vercel-ai-gateway", model: "openai/gpt-4o" },
-          ],
-        },
-        video: {
-          enabled: true,
-          models: [{ provider: "vercel-ai-gateway", model: "google/gemini-3-flash" }],
-        },
-        audio: { enabled: true },
+    },
+  };
+  config.models = {
+    mode: "merge",
+    providers: {
+      openai: {
+        baseUrl: "https://ai-gateway.vercel.sh/v1",
+        apiKey: "sk-placeholder",
+        api: "openai-completions",
+        models: [
+          { id: "gpt-image-1", name: "GPT Image 1" },
+          { id: "dall-e-3", name: "DALL-E 3" },
+          { id: "gpt-4o", name: "GPT-4o", input: ["text", "image"] },
+          { id: "gpt-4o-mini-tts", name: "GPT-4o Mini TTS" },
+          { id: "text-embedding-3-small", name: "Text Embedding 3 Small" },
+          { id: "text-embedding-3-large", name: "Text Embedding 3 Large" },
+        ],
       },
-    };
-  }
+    },
+  };
+  config.tools = {
+    media: {
+      image: {
+        enabled: true,
+        models: [
+          { provider: "vercel-ai-gateway", model: "anthropic/claude-sonnet-4.6" },
+          { provider: "vercel-ai-gateway", model: "openai/gpt-4o" },
+        ],
+      },
+      video: {
+        enabled: true,
+        models: [{ provider: "vercel-ai-gateway", model: "google/gemini-3-flash" }],
+      },
+      audio: { enabled: true },
+    },
+  };
 
   return JSON.stringify(config);
 }
@@ -240,7 +238,7 @@ if [ -n "$ai_gateway_api_key" ]; then
   export OPENAI_API_KEY="$ai_gateway_api_key"
   export OPENAI_BASE_URL="https://ai-gateway.vercel.sh/v1"
 fi
-pkill -f "openclaw gateway" || true
+pkill -f "openclaw.gateway" || true
 setsid env OPENCLAW_CONFIG_PATH="${OPENCLAW_CONFIG_PATH}" OPENCLAW_GATEWAY_TOKEN="$gateway_token" AI_GATEWAY_API_KEY="$ai_gateway_api_key" OPENAI_API_KEY="$ai_gateway_api_key" OPENAI_BASE_URL="https://ai-gateway.vercel.sh/v1" ${OPENCLAW_BIN} gateway --port ${OPENCLAW_PORT} --bind loopback >> ${OPENCLAW_LOG_FILE} 2>&1 &
 _learning_log=/tmp/shell-commands-for-learning.log
 touch "$_learning_log"
@@ -291,7 +289,7 @@ if [ -n "$ai_gateway_api_key" ]; then
   export OPENAI_BASE_URL="$ai_gateway_base_url"
 fi
 echo '{"event":"fast_restore.kill_old_gateway"}' >&2
-pkill -f "openclaw gateway" || true
+pkill -f "openclaw.gateway" || true
 echo '{"event":"fast_restore.start_gateway"}' >&2
 setsid ${OPENCLAW_BIN} gateway --port ${OPENCLAW_PORT} --bind loopback >> ${OPENCLAW_LOG_FILE} 2>&1 &
 echo '{"event":"fast_restore.force_pair_inline"}' >&2

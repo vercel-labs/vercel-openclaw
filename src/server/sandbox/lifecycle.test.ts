@@ -1709,7 +1709,7 @@ test("[lifecycle] probeGatewayReady setup + ready -> transitions to running", as
 // Edge-branch: touchRunningSandbox extend timeout error handling
 // ---------------------------------------------------------------------------
 
-test("[lifecycle] touchRunningSandbox extend timeout throws -> logs warning but still updates lastAccessedAt", async () => {
+test("[lifecycle] touchRunningSandbox extend timeout throws -> marks sandbox unavailable", async () => {
   const fake = new FakeSandboxController();
   await withTestEnv(fake, async () => {
     await mutateMeta((meta) => {
@@ -1726,9 +1726,14 @@ test("[lifecycle] touchRunningSandbox extend timeout throws -> logs warning but 
     fake.handlesByIds.set("sbx-extend-error", handle);
 
     const result = await touchRunningSandbox();
-    // Should still succeed and update lastAccessedAt
-    assert.equal(result.status, "running");
-    assert.ok(result.lastAccessedAt, "lastAccessedAt should be updated despite extend error");
+    // Non-sandbox_timeout_invalid errors now mark the sandbox as unavailable
+    // (status transitions to "error" when no snapshotId, "stopped" when snapshotId exists)
+    assert.ok(
+      result.status === "error" || result.status === "stopped",
+      `Expected error or stopped status, got: ${result.status}`,
+    );
+    assert.ok(result.lastError, "lastError should be set");
+    assert.ok(result.lastError!.includes("extend timeout failed"), "lastError should reference extend timeout");
   });
 });
 

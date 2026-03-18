@@ -102,18 +102,9 @@ const policyContradictions = [
     pattern: /\bruntime\s+refuses\s+to\s+install\b/gi,
     label: 'claims runtime refuses to install when OPENCLAW_PACKAGE_SPEC is unpinned — runtime falls back to openclaw@latest',
   },
-  {
-    // The "api-key" AI Gateway auth mode was removed. Only "oidc" and
-    // "unavailable" exist in getAiGatewayAuthMode() and the deployment
-    // contract. Docs must not reference a stale "api-key" mode.
-    pattern: /aiGatewayAuth[^;]*"api-key"/g,
-    label: 'references stale "api-key" AI Gateway auth mode — only "oidc" and "unavailable" exist',
-  },
-  {
-    // Catches "falls back to `api-key`" in prose descriptions
-    pattern: /falls\s+back\s+to\s+`api-key`/gi,
-    label: 'references stale "api-key" AI Gateway auth fallback — only "unavailable" exists',
-  },
+  // NOTE: "api-key" is now a valid AI Gateway auth mode alongside "oidc"
+  // and "unavailable". The previous guards against stale "api-key"
+  // references have been removed.
   {
     // The preflight route probes OIDC at runtime, not just config.
     // "config-only" misleads callers into thinking the check is static.

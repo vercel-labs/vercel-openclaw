@@ -2,8 +2,10 @@ import { randomUUID } from "node:crypto";
 
 import { pollUntil } from "@/server/async/poll";
 import { extractReply, toPlainText } from "@/server/channels/core/reply";
-import { logInfo } from "@/server/log";
-import { getStore } from "@/server/store/store";
+import { callGatewayWithAuthRecovery } from "@/server/gateway/auth-recovery";
+import { logInfo, logWarn } from "@/server/log";
+import { ensureFreshGatewayToken } from "@/server/sandbox/lifecycle";
+import { getInitializedMeta, getStore } from "@/server/store/store";
 
 const RESULT_TTL_SECONDS = 15 * 60;
 const RESULT_POLL_MS = 1_000;
@@ -141,6 +143,11 @@ export async function runLaunchVerifyCompletion(options: {
     prompt: options.prompt,
   });
 
+  const timeoutMs = options.requestTimeoutMs ?? 90_000;
+
+  // Pre-refresh the gateway token before the first attempt.
+  await ensureFreshGatewayToken();
+
   let lastError: Error | null = null;
 
   for (let attempt = 0; attempt <= COMPLETION_MAX_RETRIES; attempt++) {
@@ -149,58 +156,82 @@ export async function runLaunchVerifyCompletion(options: {
       await new Promise((r) => setTimeout(r, COMPLETION_RETRY_DELAY_MS));
     }
 
-    let response: Response;
-    try {
-      response = await fetch(
-        new URL("/v1/chat/completions", options.gatewayUrl),
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${options.gatewayToken}`,
+    const meta = await getInitializedMeta();
+    const sandboxId = meta.sandboxId ?? "unknown";
+
+    const recoveryResult = await callGatewayWithAuthRecovery<string>({
+      label: "launch-verify",
+      sandboxId,
+      makeRequest: async () => {
+        // Re-read meta so retries after token refresh pick up the new token.
+        const currentMeta = await getInitializedMeta();
+        return fetch(
+          new URL("/v1/chat/completions", options.gatewayUrl),
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${currentMeta.gatewayToken}`,
+            },
+            body: JSON.stringify({
+              model: "default",
+              messages: [{ role: "user", content: options.prompt }],
+              stream: false,
+            }),
+            signal: AbortSignal.timeout(timeoutMs),
           },
-          body: JSON.stringify({
-            model: "default",
-            messages: [{ role: "user", content: options.prompt }],
-            stream: false,
-          }),
-          signal: AbortSignal.timeout(options.requestTimeoutMs ?? 90_000),
-        },
-      );
-    } catch (err) {
-      lastError = err instanceof Error ? err : new Error(String(err));
+        );
+      },
+      parseResponse: async (response) => {
+        const payload = (await response.json()) as unknown;
+        const reply = extractReply(payload);
+        if (!reply) {
+          throw new Error("Gateway response did not contain a reply.");
+        }
+        return toPlainText(reply);
+      },
+      onRefreshNeeded: async () => {
+        try {
+          await ensureFreshGatewayToken({ force: true });
+          return true;
+        } catch {
+          return false;
+        }
+      },
+    });
+
+    if (recoveryResult.ok) {
+      const replyText = recoveryResult.result;
+
+      logInfo("launch_verify.completion_done", {
+        replyText,
+        expectedText: options.expectedText,
+        refreshed: recoveryResult.refreshed,
+      });
+
+      if (normalizeReply(replyText) !== normalizeReply(options.expectedText)) {
+        throw new Error(
+          `Expected ${JSON.stringify(options.expectedText)} but got ${JSON.stringify(replyText)}`,
+        );
+      }
+
+      return replyText;
+    }
+
+    // Auth recovery failed
+    lastError = new Error(recoveryResult.error);
+
+    if (recoveryResult.retryable && attempt < COMPLETION_MAX_RETRIES) {
+      logWarn("launch_verify.completion_retryable_failure", {
+        attempt,
+        error: recoveryResult.error,
+        retryable: recoveryResult.retryable,
+      });
       continue;
     }
 
-    if (!response.ok) {
-      const text = (await response.text().catch(() => "")).slice(0, 300);
-      lastError = new Error(`Gateway returned ${response.status}: ${text}`);
-      if (response.status >= 500 && attempt < COMPLETION_MAX_RETRIES) {
-        continue;
-      }
-      throw lastError;
-    }
-
-    const payload = (await response.json()) as unknown;
-    const reply = extractReply(payload);
-    if (!reply) {
-      throw new Error("Gateway response did not contain a reply.");
-    }
-
-    const replyText = toPlainText(reply);
-
-    logInfo("launch_verify.completion_done", {
-      replyText,
-      expectedText: options.expectedText,
-    });
-
-    if (normalizeReply(replyText) !== normalizeReply(options.expectedText)) {
-      throw new Error(
-        `Expected ${JSON.stringify(options.expectedText)} but got ${JSON.stringify(replyText)}`,
-      );
-    }
-
-    return replyText;
+    // Non-retryable or exhausted retries
+    throw lastError;
   }
 
   throw lastError ?? new Error("Gateway completions failed after retries.");

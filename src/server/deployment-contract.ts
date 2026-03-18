@@ -35,7 +35,7 @@ export type DeploymentContract = {
   ok: boolean;
   authMode: "admin-secret" | "sign-in-with-vercel";
   storeBackend: "upstash" | "memory";
-  aiGatewayAuth: "oidc" | "unavailable";
+  aiGatewayAuth: "oidc" | "api-key" | "unavailable";
   openclawPackageSpec: string | null;
   requirements: DeploymentRequirement[];
 };
@@ -137,7 +137,7 @@ function checkStore(onVercel: boolean): DeploymentRequirement {
 
 function checkAiGateway(
   onVercel: boolean,
-  aiGatewayAuth: "oidc" | "unavailable",
+  aiGatewayAuth: "oidc" | "api-key" | "unavailable",
 ): DeploymentRequirement {
   if (aiGatewayAuth === "unavailable") {
     return {
@@ -156,7 +156,9 @@ function checkAiGateway(
   return {
     id: "ai-gateway",
     status: "pass",
-    message: "AI Gateway auth uses OIDC.",
+    message: aiGatewayAuth === "oidc"
+      ? "AI Gateway auth uses OIDC."
+      : "AI Gateway auth uses a static API key.",
     remediation: "",
     env: [],
   };

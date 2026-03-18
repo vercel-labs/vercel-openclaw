@@ -260,8 +260,8 @@ test("Drain retry: gateway 410 → job retried (sandbox treated as gone)", async
       const retryJob = JSON.parse(envelope.job) as QueuedChannelJob<unknown>;
       assert.equal(retryJob.retryCount, 1);
       assert.ok(
-        retryJob.lastError?.includes("sandbox_gone"),
-        `lastError should mention sandbox_gone, got: ${retryJob.lastError}`,
+        retryJob.lastError?.includes("410"),
+        `lastError should mention 410, got: ${retryJob.lastError}`,
       );
     } finally {
       globalThis.fetch = originalFetch;
@@ -871,10 +871,10 @@ test("Drain retry: failed entry contains channel, payload, error, and timestamp"
     await stopSandbox();
     assert.equal((await h.getMeta()).status, "stopped");
 
-    // Gateway returns a non-retryable error (e.g., 403 Forbidden)
+    // Gateway returns a non-retryable error (400 Bad Request — not auth, not 5xx)
     h.fakeFetch.onGet(/fake\.vercel\.run/, () => gatewayReadyResponse());
     h.fakeFetch.onPost(/\/v1\/chat\/completions/, () =>
-      new Response("Forbidden", { status: 403 }),
+      new Response("Bad Request", { status: 400 }),
     );
     h.fakeFetch.onGet(/slack\.com\/api\/conversations\.replies/, () =>
       Response.json({ ok: true, messages: [] }),
@@ -920,8 +920,8 @@ test("Drain retry: failed entry contains channel, payload, error, and timestamp"
         "error must be a non-empty string",
       );
       assert.ok(
-        dl.error.includes("gateway_failed") && dl.error.includes("403"),
-        `error should describe the 403 failure, got: ${dl.error}`,
+        dl.error.includes("gateway_failed") && dl.error.includes("400"),
+        `error should describe the 400 failure, got: ${dl.error}`,
       );
 
       // original job payload

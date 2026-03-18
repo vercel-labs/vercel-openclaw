@@ -18,6 +18,9 @@ import {
   channelProcessingKey,
   channelQueueKey,
 } from "@/server/channels/keys";
+import {
+  callGatewayWithAuthRecovery,
+} from "@/server/gateway/auth-recovery";
 import { logError, logInfo, logWarn } from "@/server/log";
 import { getPublicOriginFromHint } from "@/server/public-url";
 import { getSandboxController } from "@/server/sandbox/controller";
@@ -423,40 +426,44 @@ export async function processChannelJob<
         hasImageParts,
       });
 
-      let reply: ChannelReply;
-      try {
-        reply = await forwardToGateway({
-          gatewayUrl,
-          gatewayToken: readyMeta.gatewayToken,
-          messages,
-          sessionKey,
-          requestTimeoutMs,
-        });
-      } catch (firstError) {
-        if (!isGateway500(firstError)) {
-          throw firstError;
-        }
-
-        logWarn("channels.gateway_500_retry", {
-          channel: options.channel,
-          error: formatError(firstError),
-        });
-
-        await ensureFreshGatewayToken({ force: true });
-        const freshMeta = await getInitializedMeta();
-
-        try {
-          reply = await forwardToGateway({
+      const recoveryResult = await callGatewayWithAuthRecovery<ChannelReply>({
+        label: `channel:${options.channel}`,
+        sandboxId: readyMeta.sandboxId ?? "unknown",
+        makeRequest: async () => {
+          // Re-read meta on each attempt so retries pick up refreshed tokens.
+          const currentMeta = await getInitializedMeta();
+          return makeGatewayRequest({
             gatewayUrl,
-            gatewayToken: freshMeta.gatewayToken,
+            gatewayToken: currentMeta.gatewayToken,
             messages,
             sessionKey,
             requestTimeoutMs,
           });
-        } catch {
-          throw firstError;
+        },
+        parseResponse: async (response) => {
+          return parseGatewayResponse(response);
+        },
+        onRefreshNeeded: async () => {
+          try {
+            await ensureFreshGatewayToken({ force: true });
+            return true;
+          } catch {
+            return false;
+          }
+        },
+      });
+
+      if (!recoveryResult.ok) {
+        if (recoveryResult.retryable) {
+          throw new RetryableChannelError(
+            recoveryResult.error,
+            recoveryResult.retryAfterSeconds,
+          );
         }
+        throw new Error(recoveryResult.error);
       }
+
+      const reply = recoveryResult.result;
 
       // Resolve sandbox-relative image paths (e.g. "smiley-1.png" from MEDIA: lines)
       // by downloading them from the sandbox and converting to inline base64.
@@ -499,13 +506,18 @@ function defaultGatewayMessages(
   ];
 }
 
-async function forwardToGateway(options: {
+/**
+ * Build and send the raw HTTP request to the gateway.
+ * Returns the Response object directly -- auth recovery and parsing
+ * are handled by the caller via `callGatewayWithAuthRecovery`.
+ */
+async function makeGatewayRequest(options: {
   gatewayUrl: string;
   gatewayToken: string;
   messages: GatewayMessage[];
   sessionKey?: string;
   requestTimeoutMs?: number;
-}): Promise<ChannelReply> {
+}): Promise<Response> {
   const timeoutMs = options.requestTimeoutMs ?? DEFAULT_CHANNEL_REQUEST_TIMEOUT_MS;
   const url = new URL("/v1/chat/completions", options.gatewayUrl).toString();
   const headers: Record<string, string> = {
@@ -516,9 +528,8 @@ async function forwardToGateway(options: {
     headers["x-openclaw-session-key"] = options.sessionKey;
   }
 
-  let response: Response;
   try {
-    response = await fetch(url, {
+    return await fetch(url, {
       method: "POST",
       headers,
       body: JSON.stringify({
@@ -530,33 +541,17 @@ async function forwardToGateway(options: {
     });
   } catch (error) {
     if (isTimeoutError(error)) {
-      logWarn("channels.gateway_request_timeout", {
-        timeoutMs,
-      });
+      logWarn("channels.gateway_request_timeout", { timeoutMs });
     }
     throw toRetryableErrorIfNeeded(error);
   }
+}
 
-  if (response.status === 410) {
-    throw new RetryableChannelError("sandbox_gone");
-  }
-
-  if (response.status === 408 || response.status === 429 || response.status >= 500) {
-    throw new RetryableChannelError(
-      `gateway_retryable_${response.status}`,
-      parseRetryAfterSeconds(response.headers.get("retry-after")),
-    );
-  }
-
-  if (!response.ok) {
-    const body = (await response.text().catch(() => "")).slice(0, 300);
-    throw new Error(
-      body.length > 0
-        ? `gateway_failed status=${response.status} body=${body}`
-        : `gateway_failed status=${response.status}`,
-    );
-  }
-
+/**
+ * Parse a successful gateway response into a ChannelReply.
+ * Throws on empty body, invalid JSON, or missing reply content.
+ */
+async function parseGatewayResponse(response: Response): Promise<ChannelReply> {
   const body = await response.text();
   if (!body) {
     throw new RetryableChannelError("gateway_empty_response");
@@ -686,13 +681,6 @@ export function isRetryable(error: unknown): boolean {
     message.includes("econn") ||
     message.includes("enotfound") ||
     message.includes("socket")
-  );
-}
-
-function isGateway500(error: unknown): boolean {
-  return (
-    error instanceof RetryableChannelError &&
-    error.message.startsWith("gateway_retryable_5")
   );
 }
 

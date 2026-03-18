@@ -393,29 +393,44 @@ test("GET /api/admin/snapshots: returns empty array when no history", async () =
 // ===========================================================================
 
 test("POST /api/admin/snapshots/restore: restores from valid snapshotId", async () => {
-  await withTestEnv(async () => {
-    installFakeController();
-    await mutateMeta((m) => {
-      m.status = "stopped";
-      m.snapshotId = "snap-to-restore";
-      m.sandboxId = null;
+  // Suppress unhandled rejections from the fire-and-forget lifecycle work
+  // that continues after the route returns (void run() in scheduleLifecycleWork).
+  // The detached restore may call getInitializedMeta() after the test resets the store.
+  const suppressedErrors: unknown[] = [];
+  const handler = (err: unknown) => { suppressedErrors.push(err); };
+  process.on("unhandledRejection", handler);
+
+  try {
+    await withTestEnv(async () => {
+      installFakeController();
+      await mutateMeta((m) => {
+        m.status = "stopped";
+        m.snapshotId = "snap-to-restore";
+        m.sandboxId = null;
+      });
+
+      const result = await callRoute(
+        restoreRoute.POST!,
+        authPost(
+          "/api/admin/snapshots/restore",
+          JSON.stringify({ snapshotId: "snap-to-restore" }),
+        ),
+      );
+
+      resetAfterCallbacks();
+
+      assert.ok(
+        result.status === 200 || result.status === 202,
+        `Expected 200 or 202, got ${result.status}`,
+      );
+      const body = result.json as { snapshotId: string; state: string };
+      assert.equal(body.snapshotId, "snap-to-restore");
     });
-
-    const result = await callRoute(
-      restoreRoute.POST!,
-      authPost(
-        "/api/admin/snapshots/restore",
-        JSON.stringify({ snapshotId: "snap-to-restore" }),
-      ),
-    );
-
-    assert.ok(
-      result.status === 200 || result.status === 202,
-      `Expected 200 or 202, got ${result.status}`,
-    );
-    const body = result.json as { snapshotId: string; state: string };
-    assert.equal(body.snapshotId, "snap-to-restore");
-  });
+  } finally {
+    // Give the detached lifecycle work time to settle before removing the handler
+    await new Promise((r) => setTimeout(r, 50));
+    process.removeListener("unhandledRejection", handler);
+  }
 });
 
 test("POST /api/admin/snapshots/restore: returns 404 for unknown snapshotId", async () => {

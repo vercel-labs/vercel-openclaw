@@ -274,7 +274,7 @@ test("contract exposes expected metadata fields", async () => {
   );
   assert.ok(["upstash", "memory"].includes(contract.storeBackend));
   assert.ok(
-    ["oidc", "unavailable"].includes(contract.aiGatewayAuth),
+    ["oidc", "api-key", "unavailable"].includes(contract.aiGatewayAuth),
   );
   assert.equal(contract.openclawPackageSpec, "openclaw@3.1.0");
   assert.ok(Array.isArray(contract.requirements));

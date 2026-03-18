@@ -242,7 +242,7 @@ test("setupOpenClaw includes agents config when apiKey is provided", async () =>
   }
 });
 
-test("setupOpenClaw omits agents config when apiKey is not provided", async () => {
+test("setupOpenClaw includes agents config even when apiKey is not provided", async () => {
   const h = createScenarioHarness();
   try {
     const handle = await createHandle(h);
@@ -256,8 +256,9 @@ test("setupOpenClaw omits agents config when apiKey is not provided", async () =
       (f) => f.path === OPENCLAW_CONFIG_PATH,
     );
     const config = JSON.parse(configFile!.content.toString());
-    assert.equal(config.agents, undefined, "agents config should be absent without apiKey");
-    assert.equal(config.models, undefined, "models config should be absent without apiKey");
+    assert.ok(config.agents, "agents config should always be present");
+    assert.ok(config.models, "models config should always be present");
+    assert.ok(config.tools, "tools config should always be present");
   } finally {
     h.teardown();
   }

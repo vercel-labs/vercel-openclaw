@@ -3,6 +3,14 @@ import { logWarn } from "@/server/log";
 
 export type AuthMode = "admin-secret" | "sign-in-with-vercel";
 
+export type AiGatewayCredentialSource = "oidc" | "api-key";
+
+export type AiGatewayCredential = {
+  token: string;
+  source: AiGatewayCredentialSource;
+  expiresAt: number | null;
+};
+
 export function getAuthMode(): AuthMode {
   return process.env.VERCEL_AUTH_MODE === "sign-in-with-vercel"
     ? "sign-in-with-vercel"
@@ -97,35 +105,98 @@ export function _setAiGatewayTokenOverrideForTesting(value: string | undefined |
   _aiGatewayTokenOverride = value;
 }
 
+let _aiGatewayCredentialOverride: AiGatewayCredential | null | undefined;
+
+export function _setAiGatewayCredentialOverrideForTesting(cred: AiGatewayCredential | null): void {
+  _aiGatewayCredentialOverride = cred === null ? undefined : cred;
+}
+
+/**
+ * Decode the `exp` claim from a JWT without verification.
+ * Returns the numeric Unix epoch seconds, or `null` on any parse error.
+ */
+export function decodeJwtExp(token: string): number | null {
+  try {
+    const parts = token.split(".");
+    if (parts.length < 2 || !parts[1]) return null;
+    const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
+    if (typeof payload?.exp === "number" && Number.isFinite(payload.exp)) {
+      return payload.exp;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve an AI Gateway credential with source tracking and TTL info.
+ *
+ * Priority on Vercel deployments:
+ *  1. Vercel OIDC token (`@vercel/oidc`)
+ *  2. Static `AI_GATEWAY_API_KEY` env var (fallback)
+ *
+ * Priority elsewhere:
+ *  1. Static `AI_GATEWAY_API_KEY` env var
+ *  2. Vercel OIDC token (when available, e.g. `vercel env pull`)
+ *
+ * Returns `null` when no credential is available.
+ */
+export async function resolveAiGatewayCredentialOptional(): Promise<AiGatewayCredential | null> {
+  // Test credential override takes highest priority.
+  if (_aiGatewayCredentialOverride !== undefined) {
+    return _aiGatewayCredentialOverride;
+  }
+
+  // Legacy token override for existing tests.
+  if (_aiGatewayTokenOverride !== null) {
+    if (_aiGatewayTokenOverride === undefined) return null;
+    return { token: _aiGatewayTokenOverride, source: "oidc", expiresAt: decodeJwtExp(_aiGatewayTokenOverride) };
+  }
+
+  const onVercel = isVercelDeployment();
+
+  // On Vercel: try OIDC first.
+  if (onVercel) {
+    try {
+      const oidcToken = await getVercelOidcToken();
+      if (oidcToken) {
+        return { token: oidcToken, source: "oidc", expiresAt: decodeJwtExp(oidcToken) };
+      }
+    } catch {
+      // OIDC unavailable.
+    }
+  }
+
+  // Static API key.
+  const staticKey = process.env.AI_GATEWAY_API_KEY?.trim();
+  if (staticKey) {
+    return { token: staticKey, source: "api-key", expiresAt: null };
+  }
+
+  // Non-Vercel: try OIDC as fallback (e.g. `vercel env pull`).
+  if (!onVercel) {
+    try {
+      const oidcToken = await getVercelOidcToken();
+      if (oidcToken) {
+        return { token: oidcToken, source: "oidc", expiresAt: decodeJwtExp(oidcToken) };
+      }
+    } catch {
+      // OIDC unavailable.
+    }
+  }
+
+  return null;
+}
+
 /**
  * Resolve an AI Gateway bearer token.
- *
- * Priority:
- *  1. Static `AI_GATEWAY_API_KEY` env var (local dev / explicit override)
- *  2. Vercel OIDC token (`@vercel/oidc` — available in Vercel Functions)
  *
  * Returns `undefined` when no credential is available.
  */
 export async function getAiGatewayBearerTokenOptional(): Promise<string | undefined> {
-  if (_aiGatewayTokenOverride !== null) {
-    return _aiGatewayTokenOverride;
-  }
-
-  const staticKey = process.env.AI_GATEWAY_API_KEY?.trim();
-  if (staticKey) {
-    return staticKey;
-  }
-
-  try {
-    const oidcToken = await getVercelOidcToken();
-    if (oidcToken) {
-      return oidcToken;
-    }
-  } catch {
-    // OIDC unavailable in this environment.
-  }
-
-  return undefined;
+  const cred = await resolveAiGatewayCredentialOptional();
+  return cred?.token;
 }
 
 export function isVercelDeployment(): boolean {
@@ -169,7 +240,8 @@ export function getOpenclawPackageSpec(): string {
   return "openclaw@latest";
 }
 
-export async function getAiGatewayAuthMode(): Promise<"oidc" | "unavailable"> {
-  const resolvedGatewayToken = await getAiGatewayBearerTokenOptional();
-  return resolvedGatewayToken ? "oidc" : "unavailable";
+export async function getAiGatewayAuthMode(): Promise<"oidc" | "api-key" | "unavailable"> {
+  const cred = await resolveAiGatewayCredentialOptional();
+  if (!cred) return "unavailable";
+  return cred.source;
 }

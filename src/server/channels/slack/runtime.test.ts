@@ -110,7 +110,7 @@ test("[slack runtime] drain forwards message to /v1/chat/completions", async () 
 // Drain handles chat completions non-200 gracefully
 // ---------------------------------------------------------------------------
 
-test("[slack runtime] drain handles chat completions 500 with retry", async () => {
+test("[slack runtime] drain handles chat completions 500 with failed queue", async () => {
   await withHarness(async (h) => {
     // Override completions to return 500
     h.fakeFetch.onPost(/\/v1\/chat\/completions/, () =>
@@ -136,8 +136,8 @@ test("[slack runtime] drain handles chat completions 500 with retry", async () =
       await enqueueChannelJob("slack", createSlackJob());
       await drainSlackQueue();
 
+      // 500 is a transient 5xx error — retryable, parked in processing queue
       const store = h.getStore();
-      // Job should be in processing queue (parked for retry), not permanently failed yet
       const processingLen = await store.getQueueLength(channelProcessingKey("slack"));
       assert.ok(processingLen >= 1, "Job should be parked for retry in processing queue");
     } finally {
