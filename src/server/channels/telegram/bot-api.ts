@@ -136,6 +136,21 @@ export async function setWebhook(
   });
 }
 
+export type TelegramWebhookInfo = {
+  url: string;
+  has_custom_certificate: boolean;
+  pending_update_count: number;
+  last_error_date?: number;
+  last_error_message?: string;
+  last_synchronization_error_date?: number;
+  max_connections?: number;
+  allowed_updates?: string[];
+};
+
+export async function getWebhookInfo(botToken: string): Promise<TelegramWebhookInfo> {
+  return callTelegramApi<TelegramWebhookInfo>(botToken, "getWebhookInfo");
+}
+
 export async function deleteWebhook(botToken: string): Promise<void> {
   await callTelegramApi(botToken, "deleteWebhook", { drop_pending_updates: false });
 }

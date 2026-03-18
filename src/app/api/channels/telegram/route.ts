@@ -4,7 +4,7 @@ import {
   buildChannelConnectability,
   buildChannelConnectBlockedResponse,
 } from "@/server/channels/connectability";
-import { getMe, deleteWebhook, setWebhook } from "@/server/channels/telegram/bot-api";
+import { getMe, getWebhookInfo, deleteWebhook, setWebhook } from "@/server/channels/telegram/bot-api";
 import {
   createTelegramWebhookSecret,
   getPublicChannelState,
@@ -30,7 +30,15 @@ export async function GET(request: Request): Promise<Response> {
   }
 
   try {
+    const meta = await getInitializedMeta();
     const state = await getPublicChannelState(request);
+    const url = new URL(request.url);
+
+    if (url.searchParams.get("diagnostics") === "1" && meta.channels.telegram?.botToken) {
+      const webhookInfo = await getWebhookInfo(meta.channels.telegram.botToken).catch(() => null);
+      return authJsonOk({ ...state.telegram, webhookInfo }, auth);
+    }
+
     return authJsonOk(state.telegram, auth);
   } catch (error) {
     return authJsonError(error, auth);
