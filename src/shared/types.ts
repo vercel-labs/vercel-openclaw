@@ -162,7 +162,17 @@ export type RestorePhaseMetrics = {
   assetSha256: string | null;
   vcpus: number;
   recordedAt: number;
+  /** Wall-clock ms for the overlapped firewall-sync + local-ready phase. */
+  bootOverlapMs?: number;
+  /** Whether the public readiness probe was skipped (non-waiting callers). */
+  skippedPublicReady?: boolean;
 };
+
+/**
+ * Maximum number of restore history entries retained in metadata.
+ * Older entries are dropped on every persist to keep state bounded.
+ */
+export const MAX_RESTORE_HISTORY = 50;
 
 export type SingleMeta = {
   _schemaVersion: number;
@@ -184,6 +194,8 @@ export type SingleMeta = {
   channels: ChannelConfigs;
   snapshotHistory: SnapshotRecord[];
   lastRestoreMetrics: RestorePhaseMetrics | null;
+  /** Capped ring of per-restore timing records (most recent first). */
+  restoreHistory: RestorePhaseMetrics[];
 };
 
 export const CURRENT_SCHEMA_VERSION = 3;
@@ -226,6 +238,7 @@ export function createDefaultMeta(now: number, gatewayToken: string): SingleMeta
     channels: createDefaultChannelConfigs(),
     snapshotHistory: [],
     lastRestoreMetrics: null,
+    restoreHistory: [],
   };
 }
 
@@ -336,6 +349,11 @@ export function ensureMetaShape(input: unknown): SingleMeta | null {
     )
       ? ((raw as Record<string, unknown>).lastRestoreMetrics as RestorePhaseMetrics)
       : null,
+    restoreHistory: Array.isArray((raw as Record<string, unknown>).restoreHistory)
+      ? ((raw as Record<string, unknown>).restoreHistory as unknown[])
+          .filter(isRestorePhaseMetrics)
+          .slice(0, MAX_RESTORE_HISTORY) as RestorePhaseMetrics[]
+      : [],
   };
 }
 
