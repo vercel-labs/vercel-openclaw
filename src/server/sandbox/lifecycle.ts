@@ -1240,7 +1240,6 @@ async function restoreSandboxFromSnapshot(
 
     const restoreEnv: Record<string, string> = {
       OPENCLAW_GATEWAY_TOKEN: latest.gatewayToken,
-      OPENCLAW_CONFIG_JSON_B64: configJsonB64,
     };
     if (freshApiKey) {
       restoreEnv.AI_GATEWAY_API_KEY = freshApiKey;
@@ -1266,12 +1265,22 @@ async function restoreSandboxFromSnapshot(
       meta.portUrls = resolvePortUrls(sandbox);
     });
 
-    // All config, credentials, and firewall policy are resolved above.
-    // Zero writeFiles() calls on the hot path — everything goes via env
-    // to the fast-restore script which writes files locally (sub-ms).
+    // Credentials go via env. Config file (openclaw.json) still needs
+    // writeFiles because the Vercel Sandbox API rejects base64 content
+    // in env vars (returns 400).
     const tokenWriteMs = 0;
-    const assetSyncMs = 0;
     const forcePairMs = 0;
+
+    const assetSyncStart = Date.now();
+    await sandbox.writeFiles(
+      buildDynamicRestoreFiles({
+        proxyOrigin: origin,
+        apiKey: freshApiKey,
+        telegramBotToken: latest.channels.telegram?.botToken,
+        slackCredentials: slackConfig ? { botToken: slackConfig.botToken, signingSecret: slackConfig.signingSecret } : undefined,
+      }),
+    );
+    const assetSyncMs = Date.now() - assetSyncStart;
 
     const next = await mutateMeta((meta) => {
       meta.status = "booting";
