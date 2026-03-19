@@ -1263,6 +1263,7 @@ async function restoreSandboxFromSnapshot(
         snapshotId: current.snapshotId,
       },
       env: restoreEnv,
+      networkPolicy: firewallPolicy,
     });
     const sandboxCreateMs = Date.now() - sandboxCreateStart;
 
@@ -1320,12 +1321,8 @@ async function restoreSandboxFromSnapshot(
     let startupScriptMs = 0;
     let localReadyMs = 0;
 
-    // Apply firewall after create (networkPolicy on create returns 400).
-    const firewallPromise = (async () => {
-      const t0 = Date.now();
-      await applyFirewallPolicyToSandbox(sandbox, next);
-      firewallSyncMs = Date.now() - t0;
-    })();
+    // Firewall policy is now passed at Sandbox.create({ networkPolicy })
+    // — no separate updateNetworkPolicy call needed.
 
     {
       const t0 = Date.now();
@@ -1364,9 +1361,6 @@ async function restoreSandboxFromSnapshot(
     }
 
     const bootOverlapMs = Date.now() - bootOverlapStart;
-    // Wait for firewall sync to complete (runs concurrently with boot).
-    await firewallPromise;
-
     logInfo("sandbox.restore.boot_overlap_complete", {
       bootOverlapMs,
       firewallSyncMs,
