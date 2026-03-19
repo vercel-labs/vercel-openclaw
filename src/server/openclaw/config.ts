@@ -318,23 +318,31 @@ fi
 export function buildFastRestoreScript(): string {
   return `#!/bin/bash
 set -euo pipefail
+# Write config + credentials from env (sub-ms local write instead of
+# 5-9s writeFiles API call).  Falls back to snapshot files if env is empty.
+install -d -m 700 "${OPENCLAW_STATE_DIR}"
+if [ -n "\${OPENCLAW_CONFIG_JSON_B64:-}" ]; then
+  (umask 077; printf '%s' "\$OPENCLAW_CONFIG_JSON_B64" | base64 -d > "${OPENCLAW_CONFIG_PATH}")
+fi
 if [ -n "\${OPENCLAW_GATEWAY_TOKEN:-}" ]; then
-  gateway_token="$OPENCLAW_GATEWAY_TOKEN"
+  gateway_token="\$OPENCLAW_GATEWAY_TOKEN"
+  (umask 077; printf '%s' "\$gateway_token" > "${OPENCLAW_GATEWAY_TOKEN_PATH}")
 else
   gateway_token="$(cat "${OPENCLAW_GATEWAY_TOKEN_PATH}" 2>/dev/null || true)"
 fi
-if [ -z "$gateway_token" ]; then
+if [ -z "\$gateway_token" ]; then
   echo '{"event":"fast_restore.error","reason":"empty_gateway_token"}' >&2
   exit 1
 fi
 if [ -n "\${AI_GATEWAY_API_KEY:-}" ]; then
-  ai_gateway_api_key="$AI_GATEWAY_API_KEY"
+  ai_gateway_api_key="\$AI_GATEWAY_API_KEY"
+  (umask 077; printf '%s' "\$ai_gateway_api_key" > "${OPENCLAW_AI_GATEWAY_API_KEY_PATH}")
 else
   ai_gateway_api_key="$(cat "${OPENCLAW_AI_GATEWAY_API_KEY_PATH}" 2>/dev/null || true)"
 fi
 ai_gateway_base_url="https://ai-gateway.vercel.sh/v1"
 export OPENCLAW_CONFIG_PATH="${OPENCLAW_CONFIG_PATH}"
-export OPENCLAW_GATEWAY_TOKEN="$gateway_token"
+export OPENCLAW_GATEWAY_TOKEN="\$gateway_token"
 if [ -n "$ai_gateway_api_key" ]; then
   export AI_GATEWAY_API_KEY="$ai_gateway_api_key"
   export OPENAI_API_KEY="$ai_gateway_api_key"

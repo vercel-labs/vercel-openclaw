@@ -9,10 +9,11 @@ import {
   resolveAiGatewayCredentialOptional,
   isVercelDeployment,
 } from "@/server/env";
-import { applyFirewallPolicyToSandbox } from "@/server/firewall/policy";
+import { applyFirewallPolicyToSandbox, toNetworkPolicy } from "@/server/firewall/policy";
 import { logError, logInfo, logWarn } from "@/server/log";
 import { setupOpenClaw, CommandFailedError, waitForGatewayReady } from "@/server/openclaw/bootstrap";
 import {
+  buildGatewayConfig,
   OPENCLAW_AI_GATEWAY_API_KEY_PATH,
   OPENCLAW_FAST_RESTORE_SCRIPT_PATH,
   OPENCLAW_FORCE_PAIR_SCRIPT_PATH,
@@ -1203,14 +1204,43 @@ async function restoreSandboxFromSnapshot(
       meta.lastError = null;
     });
 
-    // Pass credentials via env at create time so the fast-restore script
-    // reads them from env instead of files.  This eliminates a separate
-    // writeFiles/runCommand round-trip (~5-9s) from the restore hot path.
+    // Build all payloads before Sandbox.create.  Config, credentials, and
+    // firewall policy are resolved here so zero writeFiles() calls are
+    // needed on the hot path.
     const freshApiKey = credential?.token;
     const latest = await getInitializedMeta();
+    const slackConfig = latest.channels.slack;
+
+    // Config JSON for the gateway — passed via env, written locally by script.
+    // The config contains the same data that would be in openclaw.json on disk
+    // (model list, proxy origins, channel config).  Base64 is for transport
+    // only — these values end up on the sandbox filesystem regardless.
+    // Secrets (API key, bot tokens) are also passed as separate env vars for
+    // the startup script; they appear in the config for OpenClaw's own use.
+    const configJson = buildGatewayConfig(
+      freshApiKey,
+      origin,
+      latest.channels.telegram?.botToken,
+      slackConfig ? { botToken: slackConfig.botToken, signingSecret: slackConfig.signingSecret } : undefined,
+    );
+    const configJsonB64 = Buffer.from(configJson).toString("base64");
+
+    // Resolve firewall policy to pass at create time (avoids a post-create
+    // updateNetworkPolicy call that competes with boot for the serialized API).
+    const firewallPolicy = toNetworkPolicy(
+      latest.firewall.mode,
+      latest.firewall.allowlist,
+    );
+
+    // External manifest hash comparison — avoids in-sandbox readFileToBuffer
+    // (~2-3s) for the static asset skip check.
+    const currentManifest = buildRestoreAssetManifest();
+    const skippedStaticAssetSync =
+      latest.lastRestoreMetrics?.assetSha256 === currentManifest.sha256;
 
     const restoreEnv: Record<string, string> = {
       OPENCLAW_GATEWAY_TOKEN: latest.gatewayToken,
+      OPENCLAW_CONFIG_JSON_B64: configJsonB64,
     };
     if (freshApiKey) {
       restoreEnv.AI_GATEWAY_API_KEY = freshApiKey;
@@ -1228,6 +1258,7 @@ async function restoreSandboxFromSnapshot(
         snapshotId: current.snapshotId,
       },
       env: restoreEnv,
+      networkPolicy: firewallPolicy,
     });
     const sandboxCreateMs = Date.now() - sandboxCreateStart;
 
@@ -1236,57 +1267,11 @@ async function restoreSandboxFromSnapshot(
       meta.portUrls = resolvePortUrls(sandbox);
     });
 
-    // Credentials are passed via env at create time — the fast-restore
-    // script reads OPENCLAW_GATEWAY_TOKEN and AI_GATEWAY_API_KEY from env
-    // first, falling back to files.  File writes are only needed to persist
-    // tokens for subsequent startups within the same sandbox session (e.g.
-    // token refresh).  We still write them but overlap with other work below.
-    const tokenWriteStart = Date.now();
-    // Fire-and-forget: write credential files for persistence, but don't
-    // block the restore hot path.  The gateway is already starting with
-    // env-provided tokens.
-    const credentialWritePromise = (async () => {
-      const files = [
-        { path: OPENCLAW_GATEWAY_TOKEN_PATH, content: Buffer.from(latest.gatewayToken) },
-      ];
-      if (freshApiKey) {
-        files.push({ path: OPENCLAW_AI_GATEWAY_API_KEY_PATH, content: Buffer.from(freshApiKey) });
-      }
-      await sandbox.writeFiles(files);
-    })();
-    const tokenWriteMs = 0; // env-based — no blocking write on hot path
-
-    // Sync restore assets before boot.  Overlapping with boot was tested but
-    // the Vercel Sandbox API serializes requests per sandbox, so concurrent
-    // writeFiles + runCommand contends and slows boot by ~6s.  Keeping this
-    // serial is faster in practice.
-    const assetSyncStart = Date.now();
-    const slackConfig = latest.channels.slack;
-    let assetSyncResult: { skippedStaticAssetSync: boolean; assetSha256: string | null } = {
-      skippedStaticAssetSync: false,
-      assetSha256: null,
-    };
-    try {
-      assetSyncResult = await syncRestoreAssetsIfNeeded(sandbox, {
-        origin,
-        apiKey: freshApiKey,
-        telegramBotToken: latest.channels.telegram?.botToken,
-        slackCredentials: slackConfig ? { botToken: slackConfig.botToken, signingSecret: slackConfig.signingSecret } : undefined,
-      });
-    } catch (err) {
-      logWarn("sandbox.restore.asset_sync_failed", {
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-    const assetSyncMs = Date.now() - assetSyncStart;
-    logInfo("sandbox.restore.asset_sync", {
-      assetSyncMs,
-      skippedStaticAssetSync: assetSyncResult.skippedStaticAssetSync,
-      assetSha256: assetSyncResult.assetSha256,
-    });
-
-    // Force-pair is inlined in the fast-restore script, so this phase
-    // is always 0.  Kept for RestorePhaseMetrics backward compatibility.
+    // All config, credentials, and firewall policy are resolved above.
+    // Zero writeFiles() calls on the hot path — everything goes via env
+    // to the fast-restore script which writes files locally (sub-ms).
+    const tokenWriteMs = 0;
+    const assetSyncMs = 0;
     const forcePairMs = 0;
 
     const next = await mutateMeta((meta) => {
@@ -1297,30 +1282,22 @@ async function restoreSandboxFromSnapshot(
       meta.lastError = null;
     });
 
-    // Overlap fast-restore (gateway start + force-pair + in-sandbox readiness
-    // polling) with firewall sync.  The fast-restore script now polls
-    // localhost internally instead of the host issuing ~120 separate
-    // sandbox.runCommand("curl") calls, eliminating per-attempt control-plane
-    // round-trip overhead.
+    // Config, credentials, and firewall policy are all passed via create-time
+    // env.  The fast-restore script reads them from env and writes locally.
+    // No per-command env needed — everything is in the sandbox env.
     const READINESS_TIMEOUT_SECONDS = 30;
     const bootOverlapStart = Date.now();
-    let firewallSyncMs = 0;
+    const firewallSyncMs = 0; // firewall policy passed at create time
     let startupScriptMs = 0;
     let localReadyMs = 0;
-    await Promise.all([
-      // Persist credential files (non-blocking — gateway uses env tokens)
-      credentialWritePromise.catch((err) => {
-        logWarn("sandbox.restore.credential_write_failed", {
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }),
-      (async () => {
-        const t0 = Date.now();
-        logInfo("sandbox.restore.fast_restore_start", { sandboxId: sandbox.sandboxId });
-        const restoreResult = await sandbox.runCommand("bash", [
-          OPENCLAW_FAST_RESTORE_SCRIPT_PATH,
-          String(READINESS_TIMEOUT_SECONDS),
-        ]);
+
+    {
+      const t0 = Date.now();
+      logInfo("sandbox.restore.fast_restore_start", { sandboxId: sandbox.sandboxId });
+      const restoreResult = await sandbox.runCommand("bash", [
+        OPENCLAW_FAST_RESTORE_SCRIPT_PATH,
+        String(READINESS_TIMEOUT_SECONDS),
+      ]);
 
         startupScriptMs = Date.now() - t0;
 
@@ -1348,17 +1325,7 @@ async function restoreSandboxFromSnapshot(
           localReadyMs,
           sandboxId: sandbox.sandboxId,
         });
-      })(),
-      (async () => {
-        const t0 = Date.now();
-        await applyFirewallPolicyToSandbox(sandbox, next);
-        firewallSyncMs = Date.now() - t0;
-        logInfo("sandbox.restore.firewall_sync_overlapped", {
-          firewallSyncMs,
-          sandboxId: sandbox.sandboxId,
-        });
-      })(),
-    ]);
+    }
 
     const bootOverlapMs = Date.now() - bootOverlapStart;
     logInfo("sandbox.restore.boot_overlap_complete", {
@@ -1383,6 +1350,34 @@ async function restoreSandboxFromSnapshot(
         meta.lastTokenExpiresAt = credential.expiresAt ?? null;
       }
     });
+
+    // Background static asset sync — not on the hot path.  The gateway
+    // already booted with the snapshot's cached scripts/skills.  This
+    // updates them to the current deploy version for the next session.
+    // On success, update lastRestoreMetrics.assetSha256 so the next
+    // restore can skip the sync.
+    if (!skippedStaticAssetSync) {
+      syncRestoreAssetsIfNeeded(sandbox, {
+        origin,
+        apiKey: freshApiKey,
+        telegramBotToken: latest.channels.telegram?.botToken,
+        slackCredentials: slackConfig ? { botToken: slackConfig.botToken, signingSecret: slackConfig.signingSecret } : undefined,
+      }).then(async (result) => {
+        await mutateMeta((m) => {
+          if (m.lastRestoreMetrics) {
+            m.lastRestoreMetrics.assetSha256 = result.assetSha256;
+            m.lastRestoreMetrics.skippedStaticAssetSync = true;
+          }
+        });
+        logInfo("sandbox.restore.background_asset_sync_complete", {
+          assetSha256: result.assetSha256,
+        });
+      }).catch((err) => {
+        logWarn("sandbox.restore.background_asset_sync_failed", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
+    }
 
     // Public readiness probe — skipped for non-waiting callers (background
     // ensure) since the gateway is locally healthy and the public route will
@@ -1422,8 +1417,13 @@ async function restoreSandboxFromSnapshot(
       localReadyMs,
       publicReadyMs,
       totalMs,
-      skippedStaticAssetSync: assetSyncResult.skippedStaticAssetSync,
-      assetSha256: assetSyncResult.assetSha256,
+      skippedStaticAssetSync,
+      // Only record the new hash if sync was skipped (already matched) or
+      // completed.  If background sync is pending, keep the old hash so
+      // the next restore retries if it fails.
+      assetSha256: skippedStaticAssetSync
+        ? currentManifest.sha256
+        : (latest.lastRestoreMetrics?.assetSha256 ?? null),
       vcpus,
       recordedAt: Date.now(),
       bootOverlapMs,

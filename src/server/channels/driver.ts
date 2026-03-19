@@ -4,6 +4,7 @@ import type { ChannelName } from "@/shared/channels";
 import type { SingleMeta } from "@/shared/types";
 import { extractReply, toPlainText } from "@/server/channels/core/reply";
 import { startPlatformProcessingIndicator } from "@/server/channels/core/processing-indicator";
+import { runWithBootMessages } from "@/server/channels/core/boot-messages";
 import type {
   ChannelReply,
   ExtractedChannelMessage,
@@ -373,6 +374,63 @@ export async function processChannelJob<
   const requestTimeoutMs =
     options.requestTimeoutMs ?? DEFAULT_CHANNEL_REQUEST_TIMEOUT_MS;
 
+  // --- Phase 1: Wake the sandbox (with boot messages if supported) ---
+  logInfo("channels.wake_requested", {
+    channel: options.channel,
+    sandboxReadyTimeoutMs,
+  });
+
+  let readyMeta: SingleMeta;
+  let gatewayUrl: string;
+  let bootMessageSent = false;
+
+  try {
+    if (adapter.sendBootMessage) {
+      const bootResult = await runWithBootMessages({
+        channel: options.channel,
+        adapter: adapter as PlatformAdapter<unknown, TMessage>,
+        message,
+        origin: resolveAppOrigin(job.origin),
+        reason: `channel:${options.channel}`,
+        timeoutMs: sandboxReadyTimeoutMs,
+      });
+      readyMeta = bootResult.meta;
+      bootMessageSent = bootResult.bootMessageSent;
+
+      if (readyMeta.status !== "running" || !readyMeta.sandboxId) {
+        readyMeta = await ensureSandboxReady({
+          origin: resolveAppOrigin(job.origin),
+          reason: `channel:${options.channel}`,
+          timeoutMs: sandboxReadyTimeoutMs,
+        });
+      }
+    } else {
+      readyMeta = await ensureSandboxReady({
+        origin: resolveAppOrigin(job.origin),
+        reason: `channel:${options.channel}`,
+        timeoutMs: sandboxReadyTimeoutMs,
+      });
+    }
+    gatewayUrl = await getSandboxDomain();
+    logInfo("channels.wake_ready", {
+      channel: options.channel,
+      bootMessageSent,
+    });
+  } catch (sandboxError) {
+    logWarn("channels.wake_retry_scheduled", {
+      channel: options.channel,
+      error: formatError(sandboxError),
+      retryAfterSeconds: DEFAULT_CHANNEL_WAKE_RETRY_AFTER_SECONDS,
+    });
+    throw new RetryableChannelError(
+      `sandbox_not_ready: ${formatError(sandboxError)}`,
+      DEFAULT_CHANNEL_WAKE_RETRY_AFTER_SECONDS,
+    );
+  }
+  await touchRunningSandbox();
+  await ensureFreshGatewayToken();
+
+  // --- Phase 2: Gateway request (with processing indicator) ---
   await runWithProcessingIndicator(
     {
       channel: options.channel,
@@ -380,37 +438,6 @@ export async function processChannelJob<
       message,
     },
     async () => {
-      logInfo("channels.wake_requested", {
-        channel: options.channel,
-        sandboxReadyTimeoutMs,
-      });
-
-      let readyMeta: Awaited<ReturnType<typeof ensureSandboxReady>>;
-      let gatewayUrl: string;
-      try {
-        readyMeta = await ensureSandboxReady({
-          origin: resolveAppOrigin(job.origin),
-          reason: `channel:${options.channel}`,
-          timeoutMs: sandboxReadyTimeoutMs,
-        });
-        gatewayUrl = await getSandboxDomain();
-        logInfo("channels.wake_ready", {
-          channel: options.channel,
-        });
-      } catch (sandboxError) {
-        logWarn("channels.wake_retry_scheduled", {
-          channel: options.channel,
-          error: formatError(sandboxError),
-          retryAfterSeconds: DEFAULT_CHANNEL_WAKE_RETRY_AFTER_SECONDS,
-        });
-        throw new RetryableChannelError(
-          `sandbox_not_ready: ${formatError(sandboxError)}`,
-          DEFAULT_CHANNEL_WAKE_RETRY_AFTER_SECONDS,
-        );
-      }
-      await touchRunningSandbox();
-      await ensureFreshGatewayToken();
-
       const messages = adapter.buildGatewayMessages
         ? await adapter.buildGatewayMessages(message)
         : defaultGatewayMessages(message);
@@ -430,7 +457,6 @@ export async function processChannelJob<
         label: `channel:${options.channel}`,
         sandboxId: readyMeta.sandboxId ?? "unknown",
         makeRequest: async () => {
-          // Re-read meta on each attempt so retries pick up refreshed tokens.
           const currentMeta = await getInitializedMeta();
           return makeGatewayRequest({
             gatewayUrl,
@@ -464,9 +490,6 @@ export async function processChannelJob<
       }
 
       const reply = recoveryResult.result;
-
-      // Resolve sandbox-relative image paths (e.g. "smiley-1.png" from MEDIA: lines)
-      // by downloading them from the sandbox and converting to inline base64.
       const resolvedReply = await resolveSandboxImages(reply, readyMeta.sandboxId);
 
       const replyText = toPlainText(resolvedReply);

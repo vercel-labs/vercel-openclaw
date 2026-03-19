@@ -10,6 +10,7 @@ import type { NetworkPolicy } from "@vercel/sandbox";
 import type {
   CommandResult,
   CreateParams,
+  RunCommandOptions,
   SandboxController,
   SandboxHandle,
   SnapshotResult,
@@ -53,11 +54,12 @@ export type CommandResponder = (
 
 export class FakeSandboxHandle implements SandboxHandle {
   sandboxId: string;
-  commands: Array<{ cmd: string; args?: string[] }> = [];
+  commands: Array<{ cmd: string; args?: string[]; env?: Record<string, string> }> = [];
   writtenFiles: Array<{ path: string; content: Buffer }> = [];
   networkPolicies: NetworkPolicy[] = [];
   extendedTimeouts: number[] = [];
   snapshotCalled = false;
+  createTimeNetworkPolicy?: import("@vercel/sandbox").NetworkPolicy;
   private portDomain: string;
   private eventLog: SandboxEvent[];
 
@@ -83,25 +85,32 @@ export class FakeSandboxHandle implements SandboxHandle {
     return this.timeoutMs;
   }
 
-  async runCommand(command: string, args?: string[], _opts?: { signal?: AbortSignal }): Promise<CommandResult> {
-    this.commands.push({ cmd: command, args });
+  async runCommand(
+    commandOrOpts: string | RunCommandOptions,
+    args?: string[],
+    _opts?: { signal?: AbortSignal },
+  ): Promise<CommandResult> {
+    const cmd = typeof commandOrOpts === "string" ? commandOrOpts : commandOrOpts.cmd;
+    const cmdArgs = typeof commandOrOpts === "string" ? args : commandOrOpts.args;
+    const cmdEnv = typeof commandOrOpts === "object" ? commandOrOpts.env : undefined;
+    this.commands.push({ cmd, args: cmdArgs, env: cmdEnv });
     this.eventLog.push({
       kind: "command",
       sandboxId: this.sandboxId,
       timestamp: Date.now(),
-      detail: { command, args },
+      detail: { command: cmd, args: cmdArgs },
     });
 
     // Check scripted responders first
     for (const responder of this.responders) {
-      const result = responder(command, args);
+      const result = responder(cmd, cmdArgs);
       if (result !== undefined) {
         return result;
       }
     }
 
     // Default: fast-restore script with stream-aware output
-    if (command === "bash" && args?.[0] === OPENCLAW_FAST_RESTORE_SCRIPT_PATH) {
+    if (cmd === "bash" && cmdArgs?.[0] === OPENCLAW_FAST_RESTORE_SCRIPT_PATH) {
       const stdoutJson = '{"ready":true,"attempts":3,"readyMs":150}';
       const stderrEvents = '{"event":"fast_restore.complete"}';
       return {
@@ -115,8 +124,8 @@ export class FakeSandboxHandle implements SandboxHandle {
     }
     // Default: recognize the curl readiness probe used by waitForGatewayReady
     if (
-      command === "curl" &&
-      args?.some((a) => a.includes("localhost:3000"))
+      cmd === "curl" &&
+      cmdArgs?.some((a) => a.includes("localhost:3000"))
     ) {
       return {
         exitCode: 0,
@@ -231,6 +240,9 @@ export class FakeSandboxController implements SandboxController {
     const isRestore = params.source?.type === "snapshot";
     const handle = new FakeSandboxHandle(id, this.events, params.timeout);
     handle.responders.push(...this.defaultResponders);
+    if (params.networkPolicy) {
+      handle.createTimeNetworkPolicy = params.networkPolicy;
+    }
     if (this.onWriteFiles) {
       handle.writeFilesHook = this.onWriteFiles;
     }

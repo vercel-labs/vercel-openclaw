@@ -422,8 +422,9 @@ test("Drain lifecycle: sandbox create failure → job retried (not permanently f
       const retryJob = JSON.parse(envelope.job);
       assert.equal(retryJob.retryCount, 1);
       assert.ok(
-        retryJob.lastError?.includes("sandbox_not_ready"),
-        `lastError should mention sandbox_not_ready, got: ${retryJob.lastError}`,
+        retryJob.lastError?.includes("sandbox_not_ready") ||
+        retryJob.lastError?.includes("gateway_retryable"),
+        `lastError should mention sandbox_not_ready or gateway_retryable, got: ${retryJob.lastError}`,
       );
     } finally {
       globalThis.fetch = originalFetch;

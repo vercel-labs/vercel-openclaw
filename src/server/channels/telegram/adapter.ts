@@ -10,7 +10,9 @@ import type {
 } from "@/server/channels/core/types";
 import { logWarn } from "@/server/log";
 import {
+  deleteMessage,
   downloadFile,
+  editMessageText,
   getFile,
   isRetryableTelegramSendError,
   sendChatAction,
@@ -374,6 +376,29 @@ export function createTelegramAdapter(
         }
         throw error;
       }
+    },
+
+    async sendBootMessage(message, text) {
+      const chatId = Number(message.chatId);
+      const result = await sendMessage(config.botToken, chatId, text);
+      const messageId = result.message_id;
+
+      return {
+        async update(newText: string) {
+          try {
+            await editMessageText(config.botToken, chatId, messageId, newText);
+          } catch {
+            // Non-fatal — boot message updates are cosmetic
+          }
+        },
+        async clear() {
+          try {
+            await deleteMessage(config.botToken, chatId, messageId);
+          } catch {
+            // Non-fatal — message may already be gone
+          }
+        },
+      };
     },
 
     getSessionKey(message) {

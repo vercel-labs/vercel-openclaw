@@ -49,6 +49,11 @@ export type ExtractMessageResult<TMessage extends ExtractedChannelMessage> =
   | { kind: "skip"; reason: string }
   | { kind: "fail"; reason: string };
 
+export interface BootMessageHandle {
+  update(text: string): Promise<void>;
+  clear(): Promise<void>;
+}
+
 export interface PlatformAdapter<
   TPayload = unknown,
   TMessage extends ExtractedChannelMessage = ExtractedChannelMessage,
@@ -65,6 +70,7 @@ export interface PlatformAdapter<
   startProcessingIndicator?(message: TMessage): Promise<import("@/server/channels/core/processing-indicator").ProcessingIndicator>;
   sendTypingIndicator?(message: TMessage): Promise<void>;
   clearTypingIndicator?(message: TMessage): Promise<void>;
+  sendBootMessage?(message: TMessage, text: string): Promise<BootMessageHandle>;
 }
 
 type RetryableSendErrorOptions = {

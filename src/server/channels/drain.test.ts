@@ -166,17 +166,30 @@ test("Drain: Telegram — enqueue → restore → typing indicator sent → gate
 
       await drainTelegramQueue();
 
-      // -- Verify typing indicator was sent --
-      const typingRequests = h.fakeFetch
+      // -- Verify boot message was sent (replaces typing indicator when sandbox is stopped) --
+      const bootMessageRequests = h.fakeFetch
         .requests()
         .filter(
           (r) =>
             r.url.includes("api.telegram.org") &&
-            r.url.includes("sendChatAction"),
+            r.url.includes("sendMessage"),
         );
       assert.ok(
-        typingRequests.length >= 1,
-        "Typing indicator (sendChatAction) should have been sent",
+        bootMessageRequests.length >= 1,
+        "Boot message (sendMessage) should have been sent during sandbox wake",
+      );
+
+      // -- Verify boot message was cleared (editMessageText or deleteMessage) --
+      const bootCleanupRequests = h.fakeFetch
+        .requests()
+        .filter(
+          (r) =>
+            r.url.includes("api.telegram.org") &&
+            (r.url.includes("editMessageText") || r.url.includes("deleteMessage")),
+        );
+      assert.ok(
+        bootCleanupRequests.length >= 1,
+        "Boot message should have been updated or deleted",
       );
 
       // -- Verify gateway request has correct auth --

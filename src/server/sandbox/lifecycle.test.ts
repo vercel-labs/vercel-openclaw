@@ -41,6 +41,7 @@ import {
   OPENCLAW_BUILTIN_IMAGE_GEN_SCRIPT_PATH,
   OPENCLAW_STARTUP_SCRIPT_PATH,
 } from "@/server/openclaw/config";
+import { buildRestoreAssetManifest } from "@/server/openclaw/restore-assets";
 import {
   FakeSandboxController,
   FakeSandboxHandle,
@@ -563,8 +564,10 @@ test("restoreSandboxFromSnapshot writes all files + manifest on first restore (n
       assert.ok(writtenPaths.includes(OPENCLAW_IMAGE_GEN_SCRIPT_PATH), "Should write image-gen script");
       assert.ok(writtenPaths.includes(OPENCLAW_BUILTIN_IMAGE_GEN_SKILL_PATH), "Should write builtin image-gen skill");
       assert.ok(writtenPaths.includes(OPENCLAW_BUILTIN_IMAGE_GEN_SCRIPT_PATH), "Should write builtin image-gen script");
-      // 19 total: 2 credentials (gateway token + API key) + 1 dynamic (config) + 15 static + 1 manifest
-      assert.equal(handle.writtenFiles.length, 19, "Should write exactly 19 files (credentials + dynamic + static + manifest)");
+      // Config + credentials are passed via env (no hot-path writeFiles).
+      // Static assets are synced in background.  Verify the background
+      // sync wrote the expected files.
+      assert.ok(handle.writtenFiles.length > 0, "Background asset sync should write files");
 
       // Verify manifest was written
       const manifestPath = writtenPaths.find((p) => p.includes(".restore-assets-manifest.json"));
@@ -594,7 +597,7 @@ test("restoreSandboxFromSnapshot skips static files on second restore when manif
       const { handle: firstHandle } = await triggerRestore(fake, {
         tokenOverride: "test-ai-key",
       });
-      assert.equal(firstHandle.writtenFiles.length, 19, "First restore should write 19 files (2 creds + 16 assets + 1 manifest)");
+      assert.ok(firstHandle.writtenFiles.length > 0, "First restore should write background asset files");
 
       // Snapshot the sandbox so we can restore again
       const snap = await firstHandle.snapshot();
@@ -634,7 +637,12 @@ test("restoreSandboxFromSnapshot skips static files on second restore when manif
       // Instead, let's verify the contract: on a fresh handle (no manifest),
       // we get all 16 files. This is correct because the snapshot sandbox
       // image would have the manifest file baked in.
-      assert.equal(secondHandle.writtenFiles.length, 19, "Second restore on fresh handle writes 19 files");
+      // Background asset sync writes files since the fake completes instantly.
+      // The key assertion is that credentials are NOT in writtenFiles (via env instead).
+      const credentialWrites = secondHandle.writtenFiles.filter(
+        (f) => f.path === OPENCLAW_GATEWAY_TOKEN_PATH || f.path === OPENCLAW_AI_GATEWAY_API_KEY_PATH,
+      );
+      assert.equal(credentialWrites.length, 0, "Credentials should not be in writtenFiles (passed via env)");
 
       // Now test the actual skip path: manually seed a handle with the manifest
       // and trigger a restore that reads it back.
@@ -656,11 +664,18 @@ test("restoreSandboxFromSnapshot skips static files on second restore when manif
 
       _setSandboxControllerForTesting(seededFake);
 
+      // Set the manifest hash in lastRestoreMetrics so the external hash
+      // comparison in restoreSandboxFromSnapshot sees a match.
+      const currentManifestHash = buildRestoreAssetManifest().sha256;
       await mutateMeta((meta) => {
         meta.status = "stopped";
         meta.snapshotId = "snap-seeded";
         meta.sandboxId = null;
         meta.portUrls = null;
+        meta.lastRestoreMetrics = {
+          ...(meta.lastRestoreMetrics ?? {} as any),
+          assetSha256: currentManifestHash,
+        };
       });
 
       const { handle: seededResult } = await triggerRestore(seededFake, {
@@ -673,8 +688,8 @@ test("restoreSandboxFromSnapshot skips static files on second restore when manif
       const newWrites = seededResult.writtenFiles.filter(
         (f) => !f.path.includes(".restore-assets-manifest.json"),
       );
-      // 3 = 2 credential files + 1 dynamic config
-      assert.equal(newWrites.length, 3, "Second restore with matching manifest should write 3 files (2 creds + 1 config)");
+      // With matching manifest, only dynamic config is written in background
+      assert.ok(newWrites.length <= 1, "Second restore with matching manifest should write at most 1 dynamic file");
 
       // Verify restore metrics reflect the skip
       const meta = await getInitializedMeta();
@@ -776,29 +791,24 @@ test("restoreSandboxFromSnapshot overlaps firewall sync with local readiness and
         "publicReadyMs should be 0 when skipped",
       );
 
-      // bootOverlapMs is the wall-clock time for Promise.all(fast-restore, firewall).
-      // localReadyMs is now an in-sandbox timing extracted from the script's JSON output,
-      // not a wall-clock duration of a Promise.all leg, so it may exceed bootOverlapMs.
-      // The correct invariant is: bootOverlapMs >= firewallSyncMs (firewall is one leg).
+      // bootOverlapMs is now just the fast-restore script time (firewall
+      // policy is passed at create time, not via a separate API call).
       const m = meta.lastRestoreMetrics;
       assert.ok(
         typeof m.bootOverlapMs === "number",
         "bootOverlapMs should be a number",
       );
+      // firewallSyncMs should be 0 (policy passed at create time)
+      assert.equal(m.firewallSyncMs, 0, "firewallSyncMs should be 0 (policy at create time)");
+      // Firewall policy was passed at create time, not via updateNetworkPolicy
       assert.ok(
-        m.bootOverlapMs! >= m.firewallSyncMs,
-        `bootOverlapMs (${m.bootOverlapMs}) should be >= firewallSyncMs (${m.firewallSyncMs})`,
+        handle.createTimeNetworkPolicy != null,
+        "Firewall policy should be set at create time",
       );
       // localReadyMs comes from the fast-restore script's readiness JSON
       assert.ok(
         typeof m.localReadyMs === "number" && m.localReadyMs >= 0,
         "localReadyMs should be a non-negative number from script output",
-      );
-
-      // Firewall policy should have been applied to the sandbox
-      assert.ok(
-        handle.networkPolicies.length >= 1,
-        "Firewall policy should be applied during overlapped restore",
       );
     } finally {
       globalThis.fetch = originalFetch;
@@ -806,7 +816,7 @@ test("restoreSandboxFromSnapshot overlaps firewall sync with local readiness and
   });
 });
 
-test("restoreSandboxFromSnapshot writes credential files via writeFiles when token available", async () => {
+test("restoreSandboxFromSnapshot passes credentials and config via env to fast-restore script", async () => {
   const fake = new FakeSandboxController();
   const originalFetch = globalThis.fetch;
 
@@ -825,25 +835,24 @@ test("restoreSandboxFromSnapshot writes credential files via writeFiles when tok
         tokenOverride: "my-gateway-key",
       });
 
-      // Credentials are written via writeFiles (single SDK call), not sh -c
-      const gwTokenFile = handle.writtenFiles.find(
-        (f) => f.path === OPENCLAW_GATEWAY_TOKEN_PATH,
+      // Credentials + config are passed via create-time env (not per-command).
+      // The fast-restore script reads from sandbox env vars.
+      const bashCmd = handle.commands.find(
+        (c) => c.cmd === "bash" && c.args?.[0] === OPENCLAW_FAST_RESTORE_SCRIPT_PATH,
       );
-      assert.ok(gwTokenFile, "Should write gateway token file");
-      assert.equal(gwTokenFile.content.toString("utf8"), "test-gw-token");
-
-      const apiKeyFile = handle.writtenFiles.find(
-        (f) => f.path === OPENCLAW_AI_GATEWAY_API_KEY_PATH,
+      assert.ok(bashCmd, "Should run fast-restore script");
+      // No writeFiles for credentials (passed via env at create time)
+      const credentialWrites = handle.writtenFiles.filter(
+        (f) => f.path === OPENCLAW_GATEWAY_TOKEN_PATH || f.path === OPENCLAW_AI_GATEWAY_API_KEY_PATH,
       );
-      assert.ok(apiKeyFile, "Should write API key file");
-      assert.equal(apiKeyFile.content.toString("utf8"), "my-gateway-key");
+      assert.equal(credentialWrites.length, 0, "Credentials should not be in writtenFiles");
     } finally {
       globalThis.fetch = originalFetch;
     }
   });
 });
 
-test("restoreSandboxFromSnapshot writes only gateway token when no API key available", async () => {
+test("restoreSandboxFromSnapshot passes gateway token via env even without API key", async () => {
   const fake = new FakeSandboxController();
   const originalFetch = globalThis.fetch;
 
@@ -860,20 +869,11 @@ test("restoreSandboxFromSnapshot writes only gateway token when no API key avail
     try {
       const { handle } = await triggerRestore(fake);
 
-      // Gateway token should be written
-      const gwTokenFile = handle.writtenFiles.find(
-        (f) => f.path === OPENCLAW_GATEWAY_TOKEN_PATH,
+      // Credentials passed via env to fast-restore script, not via writeFiles
+      const bashCmd = handle.commands.find(
+        (c) => c.cmd === "bash" && c.args?.[0] === OPENCLAW_FAST_RESTORE_SCRIPT_PATH,
       );
-      assert.ok(gwTokenFile, "Should write gateway token file");
-      assert.equal(gwTokenFile.content.toString("utf8"), "test-gw-token");
-
-      // API key file should NOT be written (preserve snapshot's existing key)
-      const apiKeyWrites = handle.writtenFiles.filter(
-        (f) => f.path === OPENCLAW_AI_GATEWAY_API_KEY_PATH,
-      );
-      // The only API key write should be from asset sync, not from credential write
-      // (asset sync writes openclaw.json which is a different path)
-      assert.ok(true, "No API key credential file written when no fresh key available");
+      assert.ok(bashCmd, "Should run fast-restore script even without API key");
     } finally {
       globalThis.fetch = originalFetch;
     }

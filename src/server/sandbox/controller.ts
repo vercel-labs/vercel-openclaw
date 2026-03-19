@@ -25,17 +25,25 @@ export type CreateParams = {
   resources?: { vcpus: number };
   source?: { type: "snapshot"; snapshotId: string };
   env?: Record<string, string>;
+  networkPolicy?: NetworkPolicy;
 };
 
 // ---------------------------------------------------------------------------
 // SandboxHandle — the instance-level surface lifecycle.ts touches
 // ---------------------------------------------------------------------------
 
+export type RunCommandOptions = {
+  cmd: string;
+  args?: string[];
+  env?: Record<string, string>;
+  signal?: AbortSignal;
+};
+
 export interface SandboxHandle {
   sandboxId: string;
   readonly timeout: number;
   runCommand(
-    command: string,
+    commandOrOptions: string | RunCommandOptions,
     args?: string[],
     opts?: { signal?: AbortSignal },
   ): Promise<CommandResult>;
@@ -68,11 +76,27 @@ function wrapSandbox(sandbox: Sandbox): SandboxHandle {
     get timeout() {
       return sandbox.timeout;
     },
-    async runCommand(command, args, opts) {
-      const result = await sandbox.runCommand(command, args ?? [], opts);
+    async runCommand(
+      commandOrOpts: string | RunCommandOptions,
+      args?: string[],
+      opts?: { signal?: AbortSignal },
+    ) {
+      if (typeof commandOrOpts === "object") {
+        const result = await sandbox.runCommand({
+          cmd: commandOrOpts.cmd,
+          args: commandOrOpts.args ?? [],
+          env: commandOrOpts.env,
+          signal: commandOrOpts.signal,
+        });
+        return {
+          exitCode: result.exitCode,
+          output: (stream?: "stdout" | "stderr" | "both") => result.output(stream),
+        };
+      }
+      const result = await sandbox.runCommand(commandOrOpts, args ?? [], opts);
       return {
         exitCode: result.exitCode,
-        output: (stream) => result.output(stream),
+        output: (stream?: "stdout" | "stderr" | "both") => result.output(stream),
       };
     },
     async writeFiles(files) {

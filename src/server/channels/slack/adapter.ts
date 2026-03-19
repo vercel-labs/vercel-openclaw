@@ -1102,6 +1102,70 @@ export function createSlackAdapter(
       };
     },
 
+    async sendBootMessage(message, text) {
+      const runFetch = fetchFn;
+      let response: Response;
+
+      try {
+        response = await runFetch(SLACK_POST_MESSAGE_URL, {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${config.botToken}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            channel: message.channel,
+            thread_ts: message.threadTs,
+            text,
+          }),
+          signal: AbortSignal.timeout(SLACK_REQUEST_TIMEOUT_MS),
+        });
+      } catch {
+        // Non-fatal — fall through to return a no-op handle
+        return { async update() {}, async clear() {} };
+      }
+
+      let payload: SlackSendResponse | null = null;
+      try {
+        payload = (await response.json()) as SlackSendResponse;
+      } catch {
+        payload = null;
+      }
+
+      const bootTs = payload?.ok === true && typeof payload.ts === "string" ? payload.ts : null;
+      if (!bootTs) {
+        return { async update() {}, async clear() {} };
+      }
+
+      return {
+        async update(newText: string) {
+          try {
+            await updateProcessingPlaceholder(
+              config.botToken,
+              message.channel,
+              bootTs,
+              newText,
+              fetchFn,
+            );
+          } catch {
+            // Non-fatal — boot message updates are cosmetic
+          }
+        },
+        async clear() {
+          try {
+            await deleteProcessingPlaceholder(
+              config.botToken,
+              message.channel,
+              bootTs,
+              fetchFn,
+            );
+          } catch {
+            // Non-fatal — message may already be gone
+          }
+        },
+      };
+    },
+
     getSessionKey(message) {
       return `slack:channel:${message.channel}:thread:${message.threadTs}`;
     },

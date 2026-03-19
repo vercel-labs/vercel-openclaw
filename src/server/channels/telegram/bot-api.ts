@@ -233,6 +233,30 @@ export type TelegramPhotoInput =
   | { kind: "url"; url: string }
   | { kind: "buffer"; buffer: Buffer; filename: string; mimeType: string };
 
+export async function editMessageText(
+  botToken: string,
+  chatId: number | string,
+  messageId: number,
+  text: string,
+): Promise<void> {
+  await callTelegramApi(botToken, "editMessageText", {
+    chat_id: chatId,
+    message_id: messageId,
+    text: clampTelegramText(text),
+  });
+}
+
+export async function deleteMessage(
+  botToken: string,
+  chatId: number | string,
+  messageId: number,
+): Promise<void> {
+  await callTelegramApi(botToken, "deleteMessage", {
+    chat_id: chatId,
+    message_id: messageId,
+  });
+}
+
 export async function sendPhoto(
   botToken: string,
   chatId: number | string,
