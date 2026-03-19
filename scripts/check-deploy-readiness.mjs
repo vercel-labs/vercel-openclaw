@@ -16,21 +16,30 @@
  *   3 — fetch-fail (network error reaching the endpoint)
  *   4 — bad-response (non-OK HTTP status or non-JSON response)
  *
- * Secrets:
- *   --protection-bypass flag or VERCEL_AUTOMATION_BYPASS_SECRET env var.
+ * Auth:
+ *   --admin-secret or ADMIN_SECRET env var (bearer token auth).
+ *   --auth-cookie or SMOKE_AUTH_COOKIE env var (cookie auth).
+ *   --protection-bypass or VERCEL_AUTOMATION_BYPASS_SECRET env var (deployment bypass).
+ *   At least --admin-secret or --auth-cookie is required.
  *   Never passed as positional args, never logged unredacted.
  *
  * Usage:
- *   node scripts/check-deploy-readiness.mjs --base-url <url> [--json-only]
- *   node scripts/check-deploy-readiness.mjs --base-url <url> --preflight-only [--json-only]
- *   node scripts/check-deploy-readiness.mjs --base-url <url> --mode destructive [--json-only]
+ *   node scripts/check-deploy-readiness.mjs --base-url <url> --admin-secret <secret> [--json-only]
+ *   node scripts/check-deploy-readiness.mjs --base-url <url> --auth-cookie <cookie> [--json-only]
+ *   node scripts/check-deploy-readiness.mjs --base-url <url> --admin-secret <secret> --preflight-only [--json-only]
+ *   node scripts/check-deploy-readiness.mjs --base-url <url> --admin-secret <secret> --mode destructive [--json-only]
  */
 
+import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { parseArgs } from "node:util";
 
 const { values } = parseArgs({
   options: {
     "base-url": { type: "string" },
+    "admin-secret": { type: "string" },
+    "auth-cookie": { type: "string" },
     "protection-bypass": { type: "string" },
     "timeout-ms": { type: "string", default: "180000" },
     mode: { type: "string", default: "safe" },
@@ -64,6 +73,7 @@ function fail(code, message, details = {}) {
   console.error(rendered);
   switch (code) {
     case "MISSING_BASE_URL":
+    case "MISSING_CREDENTIALS":
     case "INVALID_TIMEOUT":
     case "INVALID_MODE":
       process.exit(2);
@@ -104,10 +114,86 @@ if (mode !== "safe" && mode !== "destructive") {
   fail("INVALID_MODE", "--mode must be 'safe' or 'destructive'.");
 }
 
+const adminSecret =
+  values["admin-secret"]?.trim() ||
+  process.env.ADMIN_SECRET?.trim() ||
+  "";
+
+const authCookie =
+  values["auth-cookie"]?.trim() ||
+  process.env.SMOKE_AUTH_COOKIE?.trim() ||
+  "";
+
+if (!adminSecret && !authCookie) {
+  fail(
+    "MISSING_CREDENTIALS",
+    "Provide --admin-secret or --auth-cookie (or set ADMIN_SECRET / SMOKE_AUTH_COOKIE env vars).",
+  );
+}
+
 const bypass =
   values["protection-bypass"]?.trim() ||
   process.env.VERCEL_AUTOMATION_BYPASS_SECRET?.trim() ||
   "";
+
+// --- Build auth headers used by all requests ---
+
+function buildAuthHeaders() {
+  const headers = {
+    "content-type": "application/json",
+    origin: new URL(baseUrl).origin,
+    "x-requested-with": "XMLHttpRequest",
+  };
+  if (adminSecret) {
+    headers.authorization = `Bearer ${adminSecret}`;
+  }
+  if (authCookie) {
+    headers.cookie = authCookie;
+  }
+  return headers;
+}
+
+// --- Manifest regeneration ---
+
+function regenerateManifest() {
+  const manifestScriptPath = join(
+    process.cwd(),
+    "scripts",
+    "generate-protected-route-manifest.mjs",
+  );
+  const run = spawnSync(process.execPath, [manifestScriptPath], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+  });
+  const lastLine = (run.stdout ?? "")
+    .trim()
+    .split(/\n+/)
+    .filter(Boolean)
+    .at(-1);
+  let event;
+  try {
+    event = JSON.parse(lastLine ?? "");
+  } catch {
+    event = null;
+  }
+  return { exitCode: run.status ?? 1, event };
+}
+
+function readManifest() {
+  const manifestPath = join(
+    process.cwd(),
+    "src",
+    "app",
+    "api",
+    "auth",
+    "protected-route-manifest.json",
+  );
+  try {
+    return JSON.parse(readFileSync(manifestPath, "utf8"));
+  } catch {
+    return null;
+  }
+}
 
 // --- Run check ---
 
@@ -120,6 +206,39 @@ if (preflightOnly) {
 // --- Launch-verify flow ---
 
 async function runLaunchVerify() {
+  // --- Step 1: regenerate protected-route manifest ---
+  log("regenerating protected-route manifest...");
+  const { exitCode: manifestExitCode, event: manifestEvent } =
+    regenerateManifest();
+  const manifest = readManifest();
+
+  if (manifestExitCode !== 0) {
+    log(`manifest generation failed (exit ${manifestExitCode})`);
+  } else {
+    log(
+      `manifest: ${manifestEvent?.discoveredRouteCount ?? "?"} routes, ${manifestEvent?.unauthenticatedRouteCount ?? "?"} unauthenticated`,
+    );
+  }
+
+  const bootstrapExposure = {
+    enforced: true,
+    manifestGeneratedAt: manifest?.generatedAt ?? null,
+    manifestRouteCount: Array.isArray(manifest?.routes)
+      ? manifest.routes.length
+      : 0,
+    manifestDiffStatus: manifestEvent?.diffStatus ?? "unknown",
+    unauthenticatedRouteCount:
+      manifestEvent?.unauthenticatedRouteCount ??
+      (Array.isArray(manifest?.unauthenticatedRoutes)
+        ? manifest.unauthenticatedRoutes.length
+        : 0),
+    unauthenticatedRoutes:
+      manifestEvent?.unauthenticatedRoutes ??
+      manifest?.unauthenticatedRoutes ??
+      [],
+  };
+
+  // --- Step 2: call launch-verify ---
   const url = new URL("/api/admin/launch-verify", baseUrl);
   if (bypass) {
     url.searchParams.set("x-vercel-protection-bypass", bypass);
@@ -131,7 +250,7 @@ async function runLaunchVerify() {
   try {
     response = await fetch(url, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: buildAuthHeaders(),
       body: JSON.stringify({ mode }),
       signal: AbortSignal.timeout(timeoutMs),
     });
@@ -167,6 +286,16 @@ async function runLaunchVerify() {
   const phases = Array.isArray(payload.phases) ? payload.phases : [];
   const failures = [];
 
+  if (manifestExitCode !== 0) {
+    failures.push("manifest generation failed");
+  }
+
+  if (bootstrapExposure.unauthenticatedRouteCount > 0) {
+    failures.push(
+      `unauthenticatedRouteCount=${bootstrapExposure.unauthenticatedRouteCount}`,
+    );
+  }
+
   if (values["expect-ok"] && payload.ok !== true) {
     failures.push("payload.ok !== true");
   }
@@ -178,23 +307,28 @@ async function runLaunchVerify() {
   }
 
   const result = {
+    schemaVersion: 1,
+    type: "deploy-readiness",
+    generatedAt: new Date().toISOString(),
+    baseUrl,
     ok: failures.length === 0,
-    url: redactedUrl,
-    status: response.status,
-    mode: payload.mode ?? mode,
-    summary: {
-      ok: payload.ok ?? null,
+    bootstrapExposure,
+    launchVerify: {
+      url: redactedUrl,
+      status: response.status,
+      ok: payload.ok === true,
+      mode: payload.mode ?? mode,
       startedAt: payload.startedAt ?? null,
       completedAt: payload.completedAt ?? null,
       phaseCount: phases.length,
+      phases: phases.map((p) => ({
+        id: p.id,
+        status: p.status,
+        durationMs: p.durationMs,
+        message: p.message,
+        error: p.error ?? null,
+      })),
     },
-    phases: phases.map((p) => ({
-      id: p.id,
-      status: p.status,
-      durationMs: p.durationMs,
-      message: p.message,
-      ...(p.error ? { error: p.error } : {}),
-    })),
     failures,
   };
 
@@ -223,10 +357,13 @@ async function runPreflightCheck() {
   const redactedUrl = redactSecret(url.toString(), bypass);
   log(`GET ${redactedUrl}`);
 
+  const preflightHeaders = buildAuthHeaders();
+  // GET requests don't need mutation CSRF headers, but auth is still required
   let response;
   try {
     response = await fetch(url, {
       method: "GET",
+      headers: preflightHeaders,
       signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (error) {

@@ -1,10 +1,12 @@
 {
-  "version": 1,
-  "generatedAt": "2026-03-19T03:46:26.059Z",
+  "version": 2,
+  "generatedAt": "2026-03-19T06:03:46.712Z",
   "roots": [
     "src/app/api/admin",
     "src/app/api/firewall"
   ],
+  "discoveredRouteCount": 29,
+  "unauthenticatedRouteCount": 0,
   "routes": [
     {
       "method": "DELETE",
@@ -122,5 +124,6 @@
       "method": "PUT",
       "path": "/api/firewall"
     }
-  ]
+  ],
+  "unauthenticatedRoutes": []
 }

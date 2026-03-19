@@ -529,8 +529,8 @@ test("preflight checks do not include launch-verification (config-only guarantee
       // Verify the canonical set of config-only check IDs
       assert.deepEqual(
         checkIds.sort(),
-        ["ai-gateway", "drain-recovery", "public-origin", "store", "webhook-bypass"],
-        "preflight checks should be exactly the 5 config-only checks",
+        ["ai-gateway", "bootstrap-exposure", "drain-recovery", "public-origin", "store", "webhook-bypass"],
+        "preflight checks should be exactly the 6 config-only checks",
       );
     },
   );
