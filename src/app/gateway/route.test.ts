@@ -815,7 +815,8 @@ test("Gateway: OPTIONS is forwarded to upstream and returns response", async () 
 // ===========================================================================
 
 for (const method of ["PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"] as const) {
-  test(`Gateway: unauthenticated ${method} returns 401 when no bearer token`, async () => {
+  const isMutation = ["PUT", "PATCH", "DELETE"].includes(method);
+  test(`Gateway: unauthenticated ${method} returns ${isMutation ? "403 (CSRF)" : "401"} when no bearer token`, async () => {
     const h = createScenarioHarness();
     try {
       const mod = getGatewayRoute();
@@ -828,7 +829,8 @@ for (const method of ["PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"] as const) {
       const response = await handler(request, {
         params: Promise.resolve({ path: undefined }),
       });
-      assert.equal(response.status, 401);
+      // Mutation methods hit CSRF check first → 403; safe methods → 401
+      assert.equal(response.status, isMutation ? 403 : 401);
     } finally {
       h.teardown();
     }

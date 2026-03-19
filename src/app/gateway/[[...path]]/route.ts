@@ -1,6 +1,6 @@
 import { after } from "next/server";
 
-import { requireAdminAuth } from "@/server/auth/admin-auth";
+import { requireAdminAuth, requireAdminMutationAuth } from "@/server/auth/admin-auth";
 import { getPublicOrigin } from "@/server/public-url";
 import { extractRequestId, logError, logInfo, logWarn } from "@/server/log";
 import { injectWrapperScript } from "@/server/proxy/htmlInjection";
@@ -26,8 +26,40 @@ import { getSandboxHeartbeatIntervalMs } from "@/server/sandbox/timeout";
 export const maxDuration = 300;
 
 const NO_BODY_RESPONSE_STATUSES = new Set([204, 304]);
+const SAFE_GATEWAY_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+
+type AdminAuthResult = Exclude<
+  Awaited<ReturnType<typeof requireAdminAuth>>,
+  Response
+>;
 
 type Params = Promise<{ path?: string[] }>;
+
+async function requireGatewayAuth(
+  request: Request,
+  reqCtx: Record<string, unknown>,
+): Promise<AdminAuthResult | Response> {
+  const method = request.method.toUpperCase();
+  const authMode = SAFE_GATEWAY_METHODS.has(method) ? "read" : "mutation";
+
+  logInfo("gateway.auth_check", { ...reqCtx, authMode });
+
+  const auth = SAFE_GATEWAY_METHODS.has(method)
+    ? await requireAdminAuth(request)
+    : await requireAdminMutationAuth(request);
+
+  if (auth instanceof Response) {
+    logWarn("gateway.auth_blocked", {
+      ...reqCtx,
+      authMode,
+      status: auth.status,
+    });
+    return auth;
+  }
+
+  logInfo("gateway.auth_ok", { ...reqCtx, authMode });
+  return auth;
+}
 
 function buildTargetPath(path?: string[]): string {
   return normalizeProxyTargetPath(`/${path?.join("/") ?? ""}`);
@@ -50,9 +82,8 @@ async function handleProxy(request: Request, path: string): Promise<Response> {
     return new Response("Invalid path", { status: 400 });
   }
 
-  const auth = await requireAdminAuth(request);
+  const auth = await requireGatewayAuth(request, reqCtx);
   if (auth instanceof Response) {
-    logWarn("gateway.auth_failure", { ...reqCtx, status: auth.status });
     return auth;
   }
 

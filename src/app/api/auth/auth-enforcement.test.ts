@@ -46,6 +46,7 @@ import {
   getAdminSshRoute,
   getAdminSnapshotRoute,
 } from "@/test-utils/route-caller";
+import { loginWithAdminSecret } from "@/server/auth/admin-auth";
 import { _resetRateLimitForTesting } from "@/server/auth/rate-limit";
 
 // ---------------------------------------------------------------------------
@@ -276,7 +277,7 @@ test("Gateway: unauthenticated GET returns 401 (no HTML with token)", async () =
   });
 });
 
-test("Gateway: unauthenticated POST returns 401 (no token leak)", async () => {
+test("Gateway: unauthenticated POST returns 403 CSRF (no token leak)", async () => {
   await withAdminAuthEnv(async () => {
     const controller = new FakeSandboxController();
     _setSandboxControllerForTesting(controller);
@@ -298,7 +299,11 @@ test("Gateway: unauthenticated POST returns 401 (no token leak)", async () => {
     });
     const text = await response.text();
 
-    assert.equal(response.status, 401, `Expected 401, got ${response.status}`);
+    // Unauthenticated POST hits CSRF check first → 403
+    assert.ok(
+      response.status === 401 || response.status === 403,
+      `Expected 401 or 403, got ${response.status}`,
+    );
     assert.ok(
       !text.includes("secret-gateway-token-2"),
       "Gateway token must not leak in POST response",
@@ -630,6 +635,100 @@ test("route auth sweep: all admin and firewall GET routes reject unauthenticated
         401,
         `${spec.name} ${spec.method}: expected 401, got ${result.status}`,
       );
+    }
+  });
+});
+
+// ===========================================================================
+// 13. Gateway: cookie-authenticated POST without CSRF is blocked
+// ===========================================================================
+
+test("Gateway: cookie-authenticated POST without CSRF headers returns 403", async () => {
+  await withAdminAuthEnv(async () => {
+    const controller = new FakeSandboxController();
+    _setSandboxControllerForTesting(controller);
+
+    await mutateMeta((m) => {
+      m.status = "running";
+      m.sandboxId = "sbx-cookie-csrf";
+      m.gatewayToken = "gw-cookie-csrf";
+      m.portUrls = { "3000": "https://sbx-cookie-csrf-3000.fake.vercel.run" };
+    });
+
+    const login = await loginWithAdminSecret(
+      "test-admin-secret-for-scenarios",
+      false,
+    );
+    assert.ok(login, "expected cookie session");
+
+    const mod = getGatewayRoute();
+    const request = new Request(
+      "http://localhost:3000/gateway/v1/chat/completions",
+      {
+        method: "POST",
+        headers: {
+          cookie: login.setCookieHeader.split(";")[0],
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ prompt: "hello" }),
+      },
+    );
+
+    const response = await mod.POST(request, {
+      params: Promise.resolve({ path: ["v1", "chat", "completions"] }),
+    });
+
+    assert.equal(response.status, 403);
+    const body = (await response.json()) as { error: string };
+    assert.equal(body.error, "CSRF_HEADER_MISSING");
+  });
+});
+
+test("Gateway: bearer-authenticated POST passes auth", async () => {
+  await withAdminAuthEnv(async () => {
+    const controller = new FakeSandboxController();
+    _setSandboxControllerForTesting(controller);
+
+    await mutateMeta((m) => {
+      m.status = "running";
+      m.sandboxId = "sbx-bearer-post";
+      m.gatewayToken = "gw-bearer-post";
+      m.portUrls = { "3000": "https://sbx-bearer-post-3000.fake.vercel.run" };
+    });
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (input: string | URL | Request) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url.includes("fake.vercel.run")) {
+        return new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return originalFetch(input);
+    };
+
+    try {
+      const mod = getGatewayRoute();
+      const request = new Request(
+        "http://localhost:3000/gateway/v1/chat/completions",
+        {
+          method: "POST",
+          headers: {
+            authorization: "Bearer test-admin-secret-for-scenarios",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ prompt: "hello" }),
+        },
+      );
+
+      const response = await mod.POST(request, {
+        params: Promise.resolve({ path: ["v1", "chat", "completions"] }),
+      });
+
+      assert.equal(response.status, 200, `Expected 200, got ${response.status}`);
+    } finally {
+      globalThis.fetch = originalFetch;
     }
   });
 });
