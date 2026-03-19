@@ -73,7 +73,10 @@ export function buildSlackWebhookUrl(request?: Request): string {
 }
 
 export function buildTelegramWebhookUrl(request?: Request): string {
-  return buildPublicUrl("/api/channels/telegram/webhook", request);
+  // Telegram validates webhooks via the x-telegram-bot-api-secret-token
+  // header, not URL query params.  Including the bypass secret in the URL
+  // causes Telegram's setWebhook to silently drop the registration.
+  return buildPublicDisplayUrl("/api/channels/telegram/webhook", request);
 }
 
 export function buildDiscordPublicWebhookUrl(request?: Request): string {

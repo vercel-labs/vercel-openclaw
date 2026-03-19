@@ -5,6 +5,24 @@ import { setTelegramChannelConfig } from "@/server/channels/state";
 import { logInfo, logWarn } from "@/server/log";
 import { getInitializedMeta, getStore } from "@/server/store/store";
 
+/**
+ * Strip the Vercel protection bypass query parameter from a URL.
+ * Telegram's setWebhook silently drops registrations when the URL
+ * contains this parameter.
+ */
+function stripBypassParam(url: string): string {
+  try {
+    const parsed = new URL(url);
+    if (parsed.searchParams.has("x-vercel-protection-bypass")) {
+      parsed.searchParams.delete("x-vercel-protection-bypass");
+      return parsed.toString();
+    }
+  } catch {
+    // Not a valid URL — return as-is.
+  }
+  return url;
+}
+
 export const TELEGRAM_RECONCILE_KEY =
   "telegram:integration:last-reconciled-at";
 export const TELEGRAM_WEBHOOK_RECONCILE_KEY = TELEGRAM_RECONCILE_KEY;
@@ -55,7 +73,10 @@ export async function reconcileTelegramIntegration(options?: {
     }
   }
 
-  await setWebhook(config.botToken, config.webhookUrl, config.webhookSecret);
+  // Strip the bypass query param if present — Telegram silently rejects
+  // webhook URLs that contain it.
+  const webhookUrl = stripBypassParam(config.webhookUrl);
+  await setWebhook(config.botToken, webhookUrl, config.webhookSecret);
 
   let commandsSynced = false;
   let commandCount = 0;
