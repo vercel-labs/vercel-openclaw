@@ -682,8 +682,8 @@ export function FirewallPanel({
             </div>
           </div>
 
-          {/* Known limitations */}
-          {report && report.limitations.length > 0 && (
+          {/* Known limitations — always render container to avoid CLS when report loads */}
+          {report?.limitations && report.limitations.length > 0 ? (
             <div className="limitations-section">
               <button
                 type="button"
@@ -711,6 +711,8 @@ export function FirewallPanel({
                 </ul>
               )}
             </div>
+          ) : (
+            <div className="limitations-section limitations-placeholder" />
           )}
         </article>
 

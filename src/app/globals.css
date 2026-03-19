@@ -391,7 +391,11 @@ a[href]:focus-visible {
 
 .stack {
   display: grid;
-  gap: 10px;
+  gap: 6px;
+}
+
+.stack .field-label + .muted-copy {
+  margin-top: -2px;
 }
 
 .field-label {
@@ -482,6 +486,7 @@ a[href]:focus-visible {
   color: var(--foreground-subtle);
   font-size: 12px;
   line-height: 1.5;
+  text-wrap: pretty;
 }
 
 /* ────── Event list ────── */
@@ -760,6 +765,10 @@ a[href]:focus-visible {
   margin-top: 16px;
   border-top: 1px solid var(--border);
   padding-top: 12px;
+}
+
+.limitations-placeholder {
+  min-height: 44px;
 }
 
 .limitations-list {
@@ -1124,6 +1133,10 @@ a[href]:focus-visible {
   background: var(--background);
 }
 
+.queue-channel-card.queue-skeleton {
+  opacity: 0.4;
+}
+
 .queue-channel-head {
   display: flex;
   align-items: center;
@@ -1267,7 +1280,7 @@ a[href]:focus-visible {
 
 .channel-wizard {
   display: grid;
-  gap: 12px;
+  gap: 14px;
 }
 
 .channel-wizard-title {
@@ -1277,15 +1290,25 @@ a[href]:focus-visible {
   font-weight: 500;
 }
 
+.channel-wizard > .stack + .stack {
+  padding-top: 2px;
+  border-top: 1px solid var(--border);
+}
+
 .channel-wizard-steps {
   display: grid;
-  gap: 10px;
+  gap: 12px;
 }
 
 .channel-wizard-step {
   display: flex;
   align-items: flex-start;
   gap: 10px;
+}
+
+.channel-wizard-step > .muted-copy {
+  padding-top: 2px;
+  text-wrap: balance;
 }
 
 .channel-step-number {
@@ -1329,6 +1352,10 @@ a[href]:focus-visible {
   gap: 4px;
 }
 
+.channel-connected-view > .channel-detail-row + .channel-detail-row {
+  padding-top: 6px;
+}
+
 .channel-copy-row {
   display: flex;
   align-items: stretch;
@@ -1368,7 +1395,7 @@ a[href]:focus-visible {
 }
 
 .channel-card .inline-actions {
-  margin-top: 12px;
+  margin-top: 4px;
   gap: 8px;
 }
 

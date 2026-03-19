@@ -107,7 +107,7 @@ export function ChannelsPanel({
           <p className="eyebrow">Channels</p>
           <h2>External entry points</h2>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, minHeight: 36 }}>
           {totalQueue > 0 && (
             <ChannelPill variant="good">{totalQueue} queued</ChannelPill>
           )}
