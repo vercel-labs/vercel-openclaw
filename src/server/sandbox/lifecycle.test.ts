@@ -899,7 +899,6 @@ test("restoreSandboxFromSnapshot runs bash fast-restore-script and checks exit c
         (c) => c.cmd === "bash" && c.args?.[0] === OPENCLAW_FAST_RESTORE_SCRIPT_PATH,
       );
       assert.ok(bashCmd, "Should run bash with fast-restore script path");
-      assert.ok(bashCmd?.args?.[1], "Should pass readiness timeout argument");
 
       // Should NOT have a separate force-pair step — it's inlined
       const forcePairCmd = handle.commands.find(

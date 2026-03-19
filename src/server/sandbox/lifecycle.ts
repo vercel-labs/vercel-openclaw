@@ -1311,62 +1311,52 @@ async function restoreSandboxFromSnapshot(
       meta.lastError = null;
     });
 
-    // Config, credentials, and firewall policy are all passed via create-time
-    // env.  The fast-restore script reads them from env and writes locally.
-    // No per-command env needed — everything is in the sandbox env.
-    const READINESS_TIMEOUT_SECONDS = 30;
+    // Launch-only: fire the fast-restore script (which exits immediately
+    // after backgrounding the gateway) and don't block on readiness.
+    // Readiness is detected by host-side HTTP probing, which avoids the
+    // ~6s runCommand API round-trip overhead.
     const bootOverlapStart = Date.now();
     let firewallSyncMs = 0;
     let startupScriptMs = 0;
     let localReadyMs = 0;
 
-    // Apply firewall after create (networkPolicy on create returns 400).
-    const firewallPromise = (async () => {
-      const t0 = Date.now();
-      await applyFirewallPolicyToSandbox(sandbox, next);
-      firewallSyncMs = Date.now() - t0;
-    })();
+    logInfo("sandbox.restore.fast_restore_start", { sandboxId: sandbox.sandboxId });
+    const launchStart = Date.now();
 
-    {
-      const t0 = Date.now();
-      logInfo("sandbox.restore.fast_restore_start", { sandboxId: sandbox.sandboxId });
-      const restoreResult = await sandbox.runCommand("bash", [
-        OPENCLAW_FAST_RESTORE_SCRIPT_PATH,
-        String(READINESS_TIMEOUT_SECONDS),
-      ]);
+    // Fire-and-forget: script backgrounds the gateway and exits immediately.
+    // We don't await for readiness — that's done via host-side HTTP probe below.
+    const launchResult = await sandbox.runCommand("bash", [
+      OPENCLAW_FAST_RESTORE_SCRIPT_PATH,
+    ]);
+    startupScriptMs = Date.now() - launchStart;
 
-        startupScriptMs = Date.now() - t0;
-
-        if (restoreResult.exitCode !== 0) {
-          const output = await restoreResult.output("both");
-          throw new CommandFailedError({
-            command: "fast-restore-script",
-            exitCode: restoreResult.exitCode,
-            output,
-          });
-        }
-
-        // Parse the JSON readiness report from stdout.
-        const stdout = await restoreResult.output("stdout");
-        try {
-          const parsed = JSON.parse(stdout.trim());
-          localReadyMs = typeof parsed.readyMs === "number" ? parsed.readyMs : startupScriptMs;
-        } catch {
-          // Fallback: script exited 0 so gateway is ready.
-          localReadyMs = startupScriptMs;
-        }
-
-        logInfo("sandbox.restore.fast_restore_complete", {
-          startupScriptMs,
-          localReadyMs,
-          sandboxId: sandbox.sandboxId,
-        });
+    if (launchResult.exitCode !== 0) {
+      const output = await launchResult.output("both");
+      throw new CommandFailedError({
+        command: "fast-restore-script",
+        exitCode: launchResult.exitCode,
+        output,
+      });
     }
+    logInfo("sandbox.restore.launch_complete", { startupScriptMs, sandboxId: sandbox.sandboxId });
+
+    // Host-side readiness probe + firewall sync run concurrently.
+    // The gateway is already booting inside the sandbox.
+    const [, firewallResult] = await Promise.all([
+      (async () => {
+        const t0 = Date.now();
+        await waitForGatewayReady(sandbox, { maxAttempts: 120, delayMs: 250 });
+        localReadyMs = Date.now() - t0;
+        logInfo("sandbox.restore.local_ready", { localReadyMs, sandboxId: sandbox.sandboxId });
+      })(),
+      (async () => {
+        const t0 = Date.now();
+        await applyFirewallPolicyToSandbox(sandbox, next);
+        firewallSyncMs = Date.now() - t0;
+      })(),
+    ]);
 
     const bootOverlapMs = Date.now() - bootOverlapStart;
-    // Wait for firewall sync to complete (runs concurrently with boot).
-    await firewallPromise;
-
     logInfo("sandbox.restore.boot_overlap_complete", {
       bootOverlapMs,
       firewallSyncMs,
