@@ -1,6 +1,6 @@
 {
-  "version": 2,
-  "generatedAt": "2026-03-20T06:03:18.495Z",
+  "version": 3,
+  "generatedAt": "2026-03-20T07:03:01.490Z",
   "roots": [
     "src/app/api/admin",
     "src/app/api/firewall",
@@ -8,6 +8,7 @@
   ],
   "discoveredRouteCount": 38,
   "unauthenticatedRouteCount": 0,
+  "violationCount": 0,
   "routes": [
     {
       "method": "DELETE",
@@ -162,5 +163,6 @@
       "path": "/api/firewall"
     }
   ],
-  "unauthenticatedRoutes": []
+  "unauthenticatedRoutes": [],
+  "violations": []
 }

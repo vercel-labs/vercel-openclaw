@@ -1,11 +1,13 @@
-import { logInfo } from "@/server/log";
+import { extractRequestId, logInfo } from "@/server/log";
+
+export type DebugGuardContext = {
+  routeSource?: string;
+};
 
 /**
  * Check whether debug routes are explicitly enabled.
  *
- * Only "1", "true", "yes", and "on" (case-insensitive, trimmed) count as
- * enabled. Everything else — including "false", "0", "", and undefined —
- * evaluates to disabled.
+ * Only "1", "true", "yes", and "on" count as enabled.
  */
 export function isDebugRoutesEnabled(
   raw: string | undefined = process.env.ENABLE_DEBUG_ROUTES,
@@ -23,12 +25,28 @@ export function isDebugRoutesEnabled(
 
 /**
  * Gate debug routes behind the ENABLE_DEBUG_ROUTES env var.
- * Returns a 404 response when the guard is not satisfied, or null to proceed.
+ * Returns a 404 response when disabled, or null to proceed.
  */
-export function requireDebugEnabled(): Response | null {
-  if (!isDebugRoutesEnabled()) {
-    logInfo("debug_guard.blocked", { reason: "debug_routes_disabled" });
-    return Response.json({ error: "Not found" }, { status: 404 });
+export function requireDebugEnabled(
+  request?: Request,
+  context: DebugGuardContext = {},
+): Response | null {
+  if (isDebugRoutesEnabled()) {
+    return null;
   }
-  return null;
+
+  const path = request ? new URL(request.url).pathname : undefined;
+  const method = request?.method;
+  const requestId = request ? extractRequestId(request) : undefined;
+
+  logInfo("debug_guard.blocked", {
+    code: "DEBUG_ROUTES_DISABLED",
+    reason: "debug_routes_disabled",
+    path,
+    method,
+    requestId,
+    routeSource: context.routeSource ?? "debug-route",
+  });
+
+  return Response.json({ error: "Not found" }, { status: 404 });
 }
