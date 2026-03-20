@@ -275,6 +275,7 @@ export function AdminShell({
                 <StatusPanel
                   status={status}
                   busy={busy}
+                  pendingAction={pendingAction}
                   runAction={runAction}
                 />
               )}

@@ -7,6 +7,7 @@ import type { StatusPayload, RunAction } from "@/components/admin-types";
 type StatusPanelProps = {
   status: StatusPayload;
   busy: boolean;
+  pendingAction: string | null;
   runAction: RunAction;
 };
 
@@ -45,7 +46,7 @@ function friendlyError(raw: string): { headline: string; detail: string } {
   };
 }
 
-export function StatusPanel({ status, busy, runAction }: StatusPanelProps) {
+export function StatusPanel({ status, busy, pendingAction, runAction }: StatusPanelProps) {
   const { confirm: confirmStop, dialogProps: stopDialogProps } = useConfirm();
   const { confirm: confirmSnapshot, dialogProps: snapshotDialogProps } =
     useConfirm();
@@ -89,12 +90,11 @@ export function StatusPanel({ status, busy, runAction }: StatusPanelProps) {
     });
   }
 
-  // Always show the real server status — no client-side overrides.
-  // The `busy` flag disables buttons while actions are in-flight,
-  // and runAction triggers an immediate refresh on completion.
+  const isStopping = pendingAction === "Stop sandbox";
+  const displayStatus = isStopping ? "stopping" : status.status;
   const showRestart = NEEDS_RESTART.has(status.status);
-  const showRunningActions = status.status === "running";
-  const isTransitional = IS_TRANSITIONAL.has(status.status);
+  const showRunningActions = status.status === "running" && !isStopping;
+  const isTransitional = IS_TRANSITIONAL.has(status.status) || isStopping;
 
   return (
     <article className="panel-card">
@@ -103,7 +103,7 @@ export function StatusPanel({ status, busy, runAction }: StatusPanelProps) {
           <p className="eyebrow">Sandbox</p>
           <h2>Sandbox status</h2>
         </div>
-        <StatusBadge status={status.status} />
+        <StatusBadge status={displayStatus} />
       </div>
 
       <dl className="metrics-grid">
@@ -184,7 +184,7 @@ export function StatusPanel({ status, busy, runAction }: StatusPanelProps) {
         )}
         {isTransitional && (
           <button className="button ghost" disabled>
-            Starting&hellip;
+            {isStopping ? "Stopping\u2026" : "Starting\u2026"}
           </button>
         )}
       </div>
