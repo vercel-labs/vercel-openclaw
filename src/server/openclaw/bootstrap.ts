@@ -123,12 +123,18 @@ export async function setupOpenClaw(
 
   logInfo("openclaw.setup.start", { sandboxId: sandbox.sandboxId, packageSpec, onVercel });
 
-  const installResult = await sandbox.runCommand("npm", [
-    "install",
-    "-g",
-    packageSpec,
-    "--ignore-scripts",
-  ]);
+  const installResult = await sandbox.runCommand({
+    cmd: "npm",
+    args: [
+      "install",
+      "-g",
+      packageSpec,
+      "--ignore-scripts",
+    ],
+    env: {
+      NPM_CONFIG_CACHE: "/tmp/openclaw-npm-cache",
+    },
+  });
   await assertCommandSuccess("npm install", installResult);
 
   // Install Bun for faster gateway startup on snapshot restore.
@@ -163,6 +169,13 @@ export async function setupOpenClaw(
       stderr: stderr.slice(-500),
     });
   }
+
+  const npmCacheCleanup = await sandbox.runCommand("bash", [
+    "-lc",
+    "rm -rf /home/vercel-sandbox/.npm /root/.npm /tmp/openclaw-npm-cache",
+  ]);
+  await assertCommandSuccess("npm cache cleanup", npmCacheCleanup);
+  logInfo("openclaw.setup.npm_cache_cleared", { sandboxId: sandbox.sandboxId });
 
   await sandbox.writeFiles([
     {
