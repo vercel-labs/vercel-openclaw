@@ -911,7 +911,20 @@ test("restoreSandboxFromSnapshot skips static files on second restore when manif
         meta.sandboxId = null;
         meta.portUrls = null;
         meta.lastRestoreMetrics = {
-          ...(meta.lastRestoreMetrics ?? {}),
+          ...(meta.lastRestoreMetrics ?? {
+            sandboxCreateMs: 0,
+            tokenWriteMs: 0,
+            assetSyncMs: 0,
+            startupScriptMs: 0,
+            forcePairMs: 0,
+            firewallSyncMs: 0,
+            localReadyMs: 0,
+            publicReadyMs: 0,
+            totalMs: 0,
+            skippedStaticAssetSync: false,
+            vcpus: 1,
+            recordedAt: Date.now(),
+          }),
           assetSha256: currentManifestHash,
         };
       });
