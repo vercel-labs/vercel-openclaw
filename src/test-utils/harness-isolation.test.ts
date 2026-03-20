@@ -173,6 +173,49 @@ test("harness teardown: vars that were undefined before are undefined after", ()
   assert.equal(process.env.UPSTASH_REDIS_REST_TOKEN, undefined);
 });
 
+test("harness installs fakeFetch for the full harness lifetime and restores it on teardown", async () => {
+  const originalFetch = globalThis.fetch;
+  const h = createScenarioHarness();
+
+  assert.equal(globalThis.fetch, h.fakeFetch.fetch);
+
+  const unhandledFetch = h.fakeFetch.fetch("https://example.com/unmocked");
+  await assert.rejects(
+    unhandledFetch,
+    /Unhandled fetch in test: https:\/\/example\.com\/unmocked/,
+  );
+
+  h.fakeFetch.onGet("example.com/handled", () => new Response("ok"));
+  const handledResponse = await globalThis.fetch("https://example.com/handled");
+  assert.equal(await handledResponse.text(), "ok");
+
+  h.teardown();
+
+  assert.equal(globalThis.fetch, originalFetch);
+});
+
+test("harness clears Vercel deployment marker env vars during its lifetime", () => {
+  process.env.VERCEL_ENV = "preview";
+  process.env.VERCEL_URL = "branch-openclaw.vercel.app";
+  process.env.VERCEL_PROJECT_PRODUCTION_URL = "openclaw.vercel.app";
+
+  const h = createScenarioHarness();
+
+  assert.equal(process.env.VERCEL_ENV, undefined);
+  assert.equal(process.env.VERCEL_URL, undefined);
+  assert.equal(process.env.VERCEL_PROJECT_PRODUCTION_URL, undefined);
+
+  h.teardown();
+
+  assert.equal(process.env.VERCEL_ENV, "preview");
+  assert.equal(process.env.VERCEL_URL, "branch-openclaw.vercel.app");
+  assert.equal(process.env.VERCEL_PROJECT_PRODUCTION_URL, "openclaw.vercel.app");
+
+  delete process.env.VERCEL_ENV;
+  delete process.env.VERCEL_URL;
+  delete process.env.VERCEL_PROJECT_PRODUCTION_URL;
+});
+
 // ---------------------------------------------------------------------------
 // after() callback queue is empty after drainAfterCallbacks()
 // ---------------------------------------------------------------------------

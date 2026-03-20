@@ -3,6 +3,7 @@ import { afterEach, test } from "node:test";
 
 import {
   _setAiGatewayTokenOverrideForTesting,
+  getAiGatewayBearerTokenOptional,
   getAiGatewayAuthMode,
   getOpenclawPackageSpec,
   getSessionSecret,
@@ -50,6 +51,34 @@ test("getAiGatewayAuthMode returns unavailable when no token source exists", asy
       _setAiGatewayTokenOverrideForTesting(undefined);
       const mode = await getAiGatewayAuthMode();
       assert.equal(mode, "unavailable");
+    },
+  );
+});
+
+test("getAiGatewayBearerTokenOptional skips OIDC in test mode and uses AI_GATEWAY_API_KEY when present", async () => {
+  await withEnv(
+    {
+      NODE_ENV: "test",
+      VERCEL: "1",
+      AI_GATEWAY_API_KEY: "test-api-key",
+    },
+    async () => {
+      const token = await getAiGatewayBearerTokenOptional();
+      assert.equal(token, "test-api-key");
+    },
+  );
+});
+
+test("getAiGatewayBearerTokenOptional returns undefined in test mode without AI_GATEWAY_API_KEY", async () => {
+  await withEnv(
+    {
+      NODE_ENV: "test",
+      VERCEL: "1",
+      AI_GATEWAY_API_KEY: undefined,
+    },
+    async () => {
+      const token = await getAiGatewayBearerTokenOptional();
+      assert.equal(token, undefined);
     },
   );
 });

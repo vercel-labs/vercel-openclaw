@@ -117,6 +117,9 @@ function createLogCollector(): LogCollector {
 const ENV_OVERRIDES: Record<string, string | undefined> = {
   NODE_ENV: "test",
   VERCEL: undefined,
+  VERCEL_ENV: undefined,
+  VERCEL_URL: undefined,
+  VERCEL_PROJECT_PRODUCTION_URL: undefined,
   UPSTASH_REDIS_REST_URL: undefined,
   UPSTASH_REDIS_REST_TOKEN: undefined,
   KV_REST_API_URL: undefined,
@@ -291,6 +294,11 @@ export function createScenarioHarness(options?: {
 
   // Create a fake fetch for gateway probes and upstream calls
   const fakeFetch = createFakeFetch();
+  const originalFetch = globalThis.fetch;
+  fakeFetch.otherwise((url) => {
+    throw new Error(`Unhandled fetch in test: ${url}`);
+  });
+  globalThis.fetch = fakeFetch.fetch;
 
   // Log collector
   const log = createLogCollector();
@@ -335,6 +343,9 @@ export function createScenarioHarness(options?: {
 
       // Clear after callbacks
       resetAfterCallbacks();
+
+      // Restore global fetch
+      globalThis.fetch = originalFetch;
 
       // Restore env
       for (const key of Object.keys(originals)) {
@@ -425,39 +436,32 @@ export function createScenarioHarness(options?: {
 
     async driveToRunning(): Promise<void> {
       fakeFetch.onGet(/fake\.vercel\.run/, () => gatewayReadyResponse());
-      const originalFetch = globalThis.fetch;
-      globalThis.fetch = fakeFetch.fetch;
+      let scheduledCallback: (() => Promise<void> | void) | null = null;
 
-      try {
-        let scheduledCallback: (() => Promise<void> | void) | null = null;
+      const result = await ensureSandboxRunning({
+        origin: "https://test.example.com",
+        reason: "harness-driveToRunning",
+        schedule(cb) {
+          scheduledCallback = cb;
+        },
+      });
 
-        const result = await ensureSandboxRunning({
-          origin: "https://test.example.com",
-          reason: "harness-driveToRunning",
-          schedule(cb) {
-            scheduledCallback = cb;
-          },
-        });
-
-        if (result.state === "waiting") {
-          assert.ok(
-            scheduledCallback,
-            "Background work should have been scheduled",
-          );
-          await (scheduledCallback as () => Promise<void>)();
-
-          const meta = await getInitializedMeta();
-          if (meta.status === "booting" || meta.status === "setup") {
-            await probeGatewayReady();
-          }
-        }
+      if (result.state === "waiting") {
+        assert.ok(
+          scheduledCallback,
+          "Background work should have been scheduled",
+        );
+        await (scheduledCallback as () => Promise<void>)();
 
         const meta = await getInitializedMeta();
-        assert.equal(meta.status, "running");
-        log.info("driveToRunning complete", { sandboxId: meta.sandboxId });
-      } finally {
-        globalThis.fetch = originalFetch;
+        if (meta.status === "booting" || meta.status === "setup") {
+          await probeGatewayReady();
+        }
       }
+
+      const meta = await getInitializedMeta();
+      assert.equal(meta.status, "running");
+      log.info("driveToRunning complete", { sandboxId: meta.sandboxId });
     },
 
     async stopToSnapshot(): Promise<string> {

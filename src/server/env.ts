@@ -132,6 +132,11 @@ export function decodeJwtExp(token: string): number | null {
 /**
  * Resolve an AI Gateway credential with source tracking and TTL info.
  *
+ * Priority in tests:
+ *  1. Explicit test overrides
+ *  2. Static `AI_GATEWAY_API_KEY` env var
+ *  3. Never fetch OIDC
+ *
  * Priority on Vercel deployments:
  *  1. Vercel OIDC token (`@vercel/oidc`)
  *  2. Static `AI_GATEWAY_API_KEY` env var (fallback)
@@ -140,9 +145,9 @@ export function decodeJwtExp(token: string): number | null {
  *  1. Static `AI_GATEWAY_API_KEY` env var
  *  2. Vercel OIDC token (when available, e.g. `vercel env pull`)
  *
- * Returns `null` when no credential is available.
+ * Returns `null` or `undefined` when no credential is available.
  */
-export async function resolveAiGatewayCredentialOptional(): Promise<AiGatewayCredential | null> {
+export async function resolveAiGatewayCredentialOptional(): Promise<AiGatewayCredential | null | undefined> {
   // Test credential override takes highest priority.
   if (_aiGatewayCredentialOverride !== undefined) {
     return _aiGatewayCredentialOverride;
@@ -152,6 +157,15 @@ export async function resolveAiGatewayCredentialOptional(): Promise<AiGatewayCre
   if (_aiGatewayTokenOverride !== null) {
     if (_aiGatewayTokenOverride === undefined) return null;
     return { token: _aiGatewayTokenOverride, source: "oidc", expiresAt: decodeJwtExp(_aiGatewayTokenOverride) };
+  }
+
+  // Skip real OIDC lookups in tests. Use the static key when provided.
+  if (process.env.NODE_ENV === "test") {
+    const staticKey = process.env.AI_GATEWAY_API_KEY?.trim();
+    if (staticKey) {
+      return { token: staticKey, source: "api-key", expiresAt: null };
+    }
+    return undefined;
   }
 
   const onVercel = isVercelDeployment();
