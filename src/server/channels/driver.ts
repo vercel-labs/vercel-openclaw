@@ -29,6 +29,7 @@ import {
   ensureFreshGatewayToken,
   ensureSandboxReady,
   getSandboxDomain,
+  reconcileSandboxHealth,
   touchRunningSandbox,
 } from "@/server/sandbox/lifecycle";
 import { getInitializedMeta, getStore } from "@/server/store/store";
@@ -480,6 +481,25 @@ export async function processChannelJob<
       });
 
       if (!recoveryResult.ok) {
+        // A 410 from the gateway means the sandbox is gone (timed out /
+        // reclaimed) even though metadata still says "running".  Trigger
+        // the same health reconciliation the gateway proxy uses so we
+        // actually restore instead of retrying against a dead sandbox.
+        if (recoveryResult.status === 410) {
+          logWarn("channels.gateway_410_reconcile", {
+            channel: options.channel,
+            sandboxId: readyMeta.sandboxId,
+            error: recoveryResult.error,
+          });
+          await reconcileSandboxHealth({
+            origin: resolveAppOrigin(job.origin),
+            reason: `channel:${options.channel}:gateway_410`,
+          });
+          throw new RetryableChannelError(
+            `sandbox_gone_410: reconciliation scheduled`,
+            DEFAULT_CHANNEL_WAKE_RETRY_AFTER_SECONDS,
+          );
+        }
         if (recoveryResult.retryable) {
           throw new RetryableChannelError(
             recoveryResult.error,

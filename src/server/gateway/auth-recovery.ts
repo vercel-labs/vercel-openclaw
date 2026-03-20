@@ -234,5 +234,5 @@ export async function callGatewayWithAuthRecovery<T>(
     bodySnippet: retryBody.slice(0, 200),
   });
 
-  return { ok: false, error: retryErrorMsg, retryable: true };
+  return { ok: false, error: retryErrorMsg, retryable: true, status: retryResponse.status };
 }
