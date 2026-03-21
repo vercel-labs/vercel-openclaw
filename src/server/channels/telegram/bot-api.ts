@@ -190,10 +190,16 @@ export async function sendMessage(
   botToken: string,
   chatId: number | string,
   text: string,
+  options?: {
+    messageThreadId?: number | null;
+    parseMode?: "Markdown" | "MarkdownV2" | "HTML";
+  },
 ): Promise<TelegramSendMessageResult> {
   return callTelegramApi<TelegramSendMessageResult>(botToken, "sendMessage", {
     chat_id: chatId,
     text: clampTelegramText(text),
+    message_thread_id: options?.messageThreadId ?? undefined,
+    parse_mode: options?.parseMode,
   });
 }
 

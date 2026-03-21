@@ -171,6 +171,36 @@ test("sendMessage: clamps long text before sending", async () => {
   }
 });
 
+test("sendMessage: includes optional thread id and parse mode", async () => {
+  const originalFetch = globalThis.fetch;
+  let capturedBody = "";
+
+  globalThis.fetch = async (_input, init) => {
+    capturedBody = init?.body as string;
+    return new Response(
+      JSON.stringify({
+        ok: true,
+        result: { message_id: 7, chat: { id: 123 } },
+      }),
+    );
+  };
+
+  try {
+    await sendMessage("token", "123", "*Hello*", {
+      messageThreadId: 99,
+      parseMode: "Markdown",
+    });
+
+    const body = JSON.parse(capturedBody);
+    assert.equal(body.chat_id, "123");
+    assert.equal(body.text, "*Hello*");
+    assert.equal(body.message_thread_id, 99);
+    assert.equal(body.parse_mode, "Markdown");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 // ---------------------------------------------------------------------------
 // sendChatAction – correct payload
 // ---------------------------------------------------------------------------
