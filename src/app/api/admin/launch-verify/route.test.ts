@@ -362,3 +362,118 @@ test("launch-verify POST: response includes sandboxHealth when preflight fails",
     await drainAfterCallbacks();
   });
 });
+
+// ===========================================================================
+// Webhook-bypass contract: missing bypass must not block runtime phases
+// ===========================================================================
+
+/**
+ * Shared setup for webhook-bypass regression tests (JSON and NDJSON paths).
+ * Sets admin-secret mode with a public origin but no bypass secret, drives
+ * the sandbox to running, and stubs chat completions.
+ */
+async function setupWebhookBypassScenario(
+  h: Parameters<Parameters<typeof withHarness>[0]>[0],
+): Promise<() => void> {
+  const previousAppUrl = process.env.NEXT_PUBLIC_APP_URL;
+  const previousBypassSecret = process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
+
+  process.env.NEXT_PUBLIC_APP_URL = "https://test.example";
+  delete process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
+
+  await h.driveToRunning();
+
+  h.fakeFetch.on("POST", /v1\/chat\/completions/, () => {
+    return Response.json({
+      choices: [{ message: { content: "launch-verify-ok" } }],
+    });
+  });
+
+  return () => {
+    if (previousAppUrl === undefined) {
+      delete process.env.NEXT_PUBLIC_APP_URL;
+    } else {
+      process.env.NEXT_PUBLIC_APP_URL = previousAppUrl;
+    }
+
+    if (previousBypassSecret === undefined) {
+      delete process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
+    } else {
+      process.env.VERCEL_AUTOMATION_BYPASS_SECRET = previousBypassSecret;
+    }
+  };
+}
+
+/**
+ * Shared assertions: preflight must not fail and runtime phases must not
+ * be skipped solely because webhook bypass is missing.
+ */
+function assertBypassNonBlocking(phases: LaunchVerificationPayload["phases"]): void {
+  const preflightPhase = phases.find((p) => p.id === "preflight");
+  assert.ok(preflightPhase, "expected preflight phase");
+  assert.notEqual(
+    preflightPhase.status,
+    "fail",
+    "preflight must not fail solely because webhook bypass is missing",
+  );
+
+  const ensurePhase = phases.find((p) => p.id === "ensureRunning");
+  assert.ok(ensurePhase, "expected ensureRunning phase");
+  assert.notEqual(
+    ensurePhase.status,
+    "skip",
+    "ensureRunning must not be skipped when only webhook bypass is missing",
+  );
+}
+
+test("launch-verify POST (JSON): missing webhook bypass does not block runtime phases", async () => {
+  await withHarness(async (h) => {
+    const restoreEnv = await setupWebhookBypassScenario(h);
+    try {
+      const route = getAdminLaunchVerifyRoute();
+      const req = buildAuthPostRequest("/api/admin/launch-verify", "{}");
+      const result = await callRoute(route.POST, req);
+      await drainAfterCallbacks();
+
+      const body = result.json as LaunchVerificationPayload;
+      assertBypassNonBlocking(body.phases);
+    } finally {
+      restoreEnv();
+    }
+  });
+});
+
+test("launch-verify POST (NDJSON): missing webhook bypass does not block runtime phases", async () => {
+  await withHarness(async (h) => {
+    const restoreEnv = await setupWebhookBypassScenario(h);
+    try {
+      const route = getAdminLaunchVerifyRoute();
+      const req = buildAuthPostRequest("/api/admin/launch-verify", "{}", {
+        accept: "application/x-ndjson",
+      });
+      const result = await callRoute(route.POST, req);
+      await drainAfterCallbacks();
+
+      // NDJSON response: parse each line as a separate JSON event
+      const events = result.text
+        .split("\n")
+        .filter((line: string) => line.trim().length > 0)
+        .map((line: string) => JSON.parse(line) as { type: string; phase?: LaunchVerificationPayload["phases"][number]; payload?: LaunchVerificationPayload });
+
+      // Extract phases from streamed phase events
+      const phaseEvents = events
+        .filter((e) => e.type === "phase" && e.phase)
+        .map((e) => e.phase!);
+
+      // The final result event should contain the full payload
+      const resultEvent = events.find((e) => e.type === "result");
+      assert.ok(resultEvent?.payload, "expected a result event with payload");
+
+      // Assert on both the streamed phases and the final payload
+      assertBypassNonBlocking(phaseEvents);
+      assertBypassNonBlocking(resultEvent.payload!.phases);
+    } finally {
+      restoreEnv();
+    }
+  });
+});

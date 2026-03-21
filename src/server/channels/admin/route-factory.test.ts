@@ -18,22 +18,33 @@ afterEach(() => {
 });
 
 // ---------------------------------------------------------------------------
-// Route-factory regression: blocked connectability returns 409
+// Route-factory regression: blocked connectability returns 409 with zero
+// channel-side effects. The PUT handler must return before spec.put() and
+// before any post-mutation state reads/writes.
 // ---------------------------------------------------------------------------
 
-test("PUT handler returns 409 when connectability blocks", async () => {
+test("PUT handler returns 409 when connectability blocks — spec.put and spec.delete are never called", async () => {
   await withHarness(async () => {
     _setAiGatewayTokenOverrideForTesting("oidc-token");
     // Ensure no public origin is configured so localhost fails the check
     delete process.env.NEXT_PUBLIC_APP_URL;
 
+    let putCalls = 0;
+    let deleteCalls = 0;
+    let selectStateCalls = 0;
+
     const { PUT } = createChannelAdminRouteHandlers({
       channel: "slack",
-      selectState: (s) => s.slack,
-      async put() {
-        assert.fail("put should not be called when connectability blocks");
+      selectState: (s) => {
+        selectStateCalls++;
+        return s.slack;
       },
-      async delete() {},
+      async put() {
+        putCalls++;
+      },
+      async delete() {
+        deleteCalls++;
+      },
     });
 
     // localhost origin → connectability returns canConnect:false → 409
@@ -52,6 +63,11 @@ test("PUT handler returns 409 when connectability blocks", async () => {
     assert.equal(body.error.code, "CHANNEL_CONNECT_BLOCKED");
     assert.equal(body.connectability.channel, "slack");
     assert.equal(body.connectability.canConnect, false);
+
+    // Zero side effects: no spec methods called after the connectability guard
+    assert.equal(putCalls, 0, "spec.put must not be called when blocked");
+    assert.equal(deleteCalls, 0, "spec.delete must not be called when blocked");
+    assert.equal(selectStateCalls, 0, "selectState (post-mutation read) must not be called when blocked");
   });
 });
 

@@ -166,7 +166,7 @@ function buildActions(input: {
   if (input.webhookBypassRequired && !input.webhookBypassEnabled) {
     actions.push({
       id: "configure-webhook-bypass",
-      status: "required",
+      status: "recommended",
       message:
         "Enable Protection Bypass for Automation and set VERCEL_AUTOMATION_BYPASS_SECRET so Slack, Telegram, and Discord can reach the protected deployment.",
       remediation:
@@ -444,18 +444,20 @@ export async function buildDeployPreflight(
       message: contractOriginReq?.message ??
         "Could not resolve a canonical public origin. Set NEXT_PUBLIC_APP_URL, NEXT_PUBLIC_BASE_DOMAIN, or BASE_DOMAIN.",
     },
-    // webhook-bypass — diagnostic-only in both the contract and preflight.
-    // The contract emits a pass/warn requirement for webhook-bypass (never
-    // fail), but preflight computes its own check from
-    // getWebhookBypassRequirement() because the preflight check needs the
-    // richer required/configured/reason structure that the contract does not
-    // carry. Neither surface treats a missing bypass secret as a hard blocker.
+    // webhook-bypass — diagnostic-only, never a hard blocker.
+    // A missing bypass secret is a warning (not fail) because admin-secret
+    // auth handles webhooks without bypass, and even sign-in-with-vercel
+    // deployments can work when Deployment Protection is disabled.
+    // This is the single source of truth for webhook-bypass blocking
+    // semantics — getLaunchVerifyBlocking() derives skip behavior from
+    // check statuses, so "warn" here means launch-verify runtime phases
+    // are never skipped solely because of a missing bypass secret.
     {
       id: "webhook-bypass",
       status:
         !webhookBypassRequirement.required || webhookBypassRequirement.configured
           ? "pass"
-          : "fail",
+          : "warn",
       message: getWebhookBypassStatusMessage(webhookBypassRequirement),
     },
     // store — derived from contract (warn locally, fail on Vercel)

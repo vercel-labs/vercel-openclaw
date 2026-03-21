@@ -182,3 +182,39 @@ test("paginateItems — exactly EVENTS_PER_PAGE items on page 0 returns all", ()
   const page = paginateItems(items, 0);
   assert.equal(page.length, EVENTS_PER_PAGE);
 });
+
+// ---------------------------------------------------------------------------
+// Regression: page clamp after filter/data shrink
+// ---------------------------------------------------------------------------
+
+test("pagination clamp — shrinking data set yields last valid page, not empty", () => {
+  // Simulate: user is on page 2 of 3 pages (50 events), then a filter
+  // reduces the set to 15 events (1 page). The clamped page should be 0
+  // and paginateItems should return those 15 events, not an empty slice.
+  const allEvents = makeEvents(50);
+  const currentPage = 2;
+
+  // Apply a filter that keeps only 15 events
+  const filtered = allEvents.slice(0, 15);
+
+  const pageCount = computePageCount(filtered.length);
+  const clamped = clampPage(currentPage, pageCount);
+  const result = paginateItems(filtered, clamped);
+
+  assert.equal(pageCount, 1, "15 items fit in 1 page");
+  assert.equal(clamped, 0, "page 2 clamps to page 0 when only 1 page exists");
+  assert.equal(result.length, 15, "all 15 items are returned on the clamped page");
+});
+
+test("pagination clamp — in-range page is unchanged after filter", () => {
+  // Page 1 stays valid when 25 items remain (2 pages)
+  const allEvents = makeEvents(25);
+  const currentPage = 1;
+
+  const pageCount = computePageCount(allEvents.length);
+  const clamped = clampPage(currentPage, pageCount);
+  const result = paginateItems(allEvents, clamped);
+
+  assert.equal(clamped, 1, "page 1 is still valid");
+  assert.equal(result.length, 5, "last page has the 5 remaining items");
+});

@@ -1185,6 +1185,91 @@ test("getLaunchVerifyBlocking returns blocking with skip phase IDs when checks f
   );
 });
 
+test("webhook-bypass check is never 'fail' — missing bypass is warn, not a blocker", async () => {
+  // This test verifies the core contract: webhook-bypass is diagnostic-only.
+  // Even though getWebhookBypassRequirement() currently always returns
+  // required: false, the preflight check must use "warn" (not "fail") for the
+  // required-but-missing branch so that payload.ok and getLaunchVerifyBlocking
+  // never treat a missing bypass secret as a hard blocker.
+  await withEnv(
+    {
+      VERCEL_AUTH_MODE: "admin-secret",
+      NEXT_PUBLIC_APP_URL: "https://app.example.com",
+      VERCEL_AUTOMATION_BYPASS_SECRET: undefined,
+      UPSTASH_REDIS_REST_URL: "https://example.upstash.io",
+      UPSTASH_REDIS_REST_TOKEN: "token",
+      OPENCLAW_PACKAGE_SPEC: "openclaw@1.0.0",
+      CRON_SECRET: "cron-secret",
+    },
+    async () => {
+      _setAiGatewayTokenOverrideForTesting("oidc-token");
+
+      const payload = await buildDeployPreflight(
+        new Request("https://app.example.com/api/admin/preflight"),
+      );
+
+      const bypassCheck = payload.checks.find((c) => c.id === "webhook-bypass");
+      assert.ok(bypassCheck, "expected webhook-bypass check");
+      assert.notEqual(
+        bypassCheck.status,
+        "fail",
+        "webhook-bypass must never be 'fail' — it is diagnostic-only",
+      );
+
+      // Verify this does not make preflight blocking
+      assert.equal(payload.ok, true, "missing bypass must not make payload.ok false");
+      const blocking = getLaunchVerifyBlocking(payload);
+      assert.equal(
+        blocking.blocking,
+        false,
+        "missing bypass must not block launch-verify runtime phases",
+      );
+
+      // Verify the action (if present) is recommended, not required
+      const bypassAction = payload.actions.find(
+        (a) => a.id === "configure-webhook-bypass",
+      );
+      if (bypassAction) {
+        assert.equal(
+          bypassAction.status,
+          "recommended",
+          "webhook-bypass action must be 'recommended', not 'required'",
+        );
+      }
+    },
+  );
+});
+
+test("getLaunchVerifyBlocking: synthetic webhook-bypass warn does not block", () => {
+  // Direct unit test of the blocking helper with a payload that has
+  // webhook-bypass as "warn" — proving the contract holds at the
+  // getLaunchVerifyBlocking boundary regardless of how the payload was built.
+  const syntheticPayload = {
+    ok: true,
+    authMode: "admin-secret" as const,
+    publicOrigin: "https://app.example.com",
+    webhookBypassEnabled: false,
+    webhookBypassRequired: true,
+    storeBackend: "upstash" as const,
+    aiGatewayAuth: "oidc" as const,
+    cronSecretConfigured: true,
+    publicOriginResolution: null,
+    webhookDiagnostics: { slack: null, telegram: null, discord: null },
+    channels: {} as never,
+    actions: [],
+    checks: [
+      { id: "public-origin" as const, status: "pass" as const, message: "ok" },
+      { id: "webhook-bypass" as const, status: "warn" as const, message: "bypass not configured" },
+      { id: "store" as const, status: "pass" as const, message: "ok" },
+      { id: "ai-gateway" as const, status: "pass" as const, message: "ok" },
+    ],
+    nextSteps: [],
+  };
+
+  const result = getLaunchVerifyBlocking(syntheticPayload);
+  assert.equal(result.blocking, false, "warn-level webhook-bypass must not block launch-verify");
+});
+
 test("getLaunchVerifyBlocking treats warn-only checks as non-blocking", async () => {
   await withEnv(
     {

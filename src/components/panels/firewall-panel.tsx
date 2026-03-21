@@ -115,7 +115,7 @@ export function FirewallPanel({
 
   const eventPageCount = computePageCount(filteredEvents.length);
   const clampedPage = clampPage(eventPage, eventPageCount);
-  const paginatedEvents = paginateItems(filteredEvents, eventPage);
+  const paginatedEvents = paginateItems(filteredEvents, clampedPage);
 
   const filteredLearned = useMemo(() => {
     const query = learnedSearch.trim().toLowerCase();
