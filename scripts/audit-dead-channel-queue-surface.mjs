@@ -3,11 +3,13 @@
  * Machine-readable audit: detect dead channel-queue surface left over
  * after the migration to Workflow DevKit.
  *
- * Exit 0 + JSON { schemaVersion: 1, ok: true, violations: [] } when clean.
- * Exit 1 + JSON { schemaVersion: 1, ok: false, violations: [...] } when drift detected.
+ * Exit 0 + JSON { schemaVersion: 2, ok: true, violations: [], allowedExceptions: [] }
+ * when clean.
+ * Exit 1 + JSON { schemaVersion: 2, ok: false, violations: [...], allowedExceptions: [...] }
+ * when drift detected.
  *
  * Launch-verify queue references (/api/queues/launch-verify,
- * src/server/launch-verify/queue-probe.ts) are intentionally excluded.
+ * src/server/launch-verify/queue-probe.ts) are intentionally allowlisted.
  */
 import { existsSync, lstatSync, readFileSync, readdirSync } from "node:fs";
 import { join, extname } from "node:path";
@@ -47,7 +49,7 @@ const TARGETS = [
   "vercel.json",
 ];
 
-/** Banned tokens — each hit outside the self-exclusion list is a violation. */
+/** Banned tokens — each hit outside exclusion lists is a violation. */
 const BANNED = [
   { id: "queueDepth", pattern: /\bqueueDepth\b/g },
   { id: "channel-store-drain", pattern: /\bchannel\.store\.drain\b/g },
@@ -57,7 +59,7 @@ const BANNED = [
     pattern: /\/api\/queues\/channels\/(?:slack|telegram|discord)\b/g,
   },
   { id: "channel-queue-health-card", pattern: /\bChannelQueueHealthCard\b/g },
-  { id: "vercel-queue-dependency", pattern: /\b@vercel\/queue\b/g },
+  { id: "vercel-queue-dependency", pattern: /@vercel\/queue\b/g },
   {
     id: "stale-channel-transport-docs",
     pattern:
@@ -67,6 +69,18 @@ const BANNED = [
 
 /** Files that legitimately reference banned tokens (meta-guards, this script). */
 const EXCLUDED_FILES = new Set([SELF_REL]);
+
+/**
+ * Launch-verify allowlist — files that are part of the intentional
+ * launch-verify queue surface. Matches in these files are reported
+ * as allowed exceptions, not violations.
+ */
+const LAUNCH_VERIFY_ALLOWLIST = new Set([
+  "src/app/api/queues/launch-verify/route.ts::vercel-queue-dependency",
+  "src/server/launch-verify/queue-probe.ts::vercel-queue-dependency",
+  "src/app/api/admin/launch-verify/route.test.ts::vercel-queue-dependency",
+  "scripts/check-queue-consumers.mjs::vercel-queue-dependency",
+]);
 
 function collectFiles(pathName) {
   const absolutePath = join(ROOT, pathName);
@@ -94,15 +108,15 @@ function lineAndColumn(text, index) {
   return { line: lines.length, column: (lines.at(-1)?.length ?? 0) + 1 };
 }
 
-function collectViolations(filePath, text) {
-  const violations = [];
+function collectHits(filePath, text) {
+  const hits = [];
   for (const rule of BANNED) {
     // Reset lastIndex for each file since patterns use /g
     rule.pattern.lastIndex = 0;
     for (const match of text.matchAll(rule.pattern)) {
       const at = match.index ?? 0;
       const { line, column } = lineAndColumn(text, at);
-      violations.push({
+      hits.push({
         id: rule.id,
         file: filePath,
         line,
@@ -111,23 +125,34 @@ function collectViolations(filePath, text) {
       });
     }
   }
-  return violations;
+  return hits;
 }
 
 // --- main ---
 
 const files = Array.from(new Set(TARGETS.flatMap(collectFiles))).sort();
 
-const violations = files
-  .filter((f) => !EXCLUDED_FILES.has(f))
-  .flatMap((file) =>
-    collectViolations(file, readFileSync(join(ROOT, file), "utf8")),
-  );
+const violations = [];
+const allowedExceptions = [];
+
+for (const file of files) {
+  if (EXCLUDED_FILES.has(file)) continue;
+  const hits = collectHits(file, readFileSync(join(ROOT, file), "utf8"));
+  for (const hit of hits) {
+    const allowlistKey = `${file}::${hit.id}`;
+    if (LAUNCH_VERIFY_ALLOWLIST.has(allowlistKey)) {
+      allowedExceptions.push({ ...hit, reason: "launch-verify-allowlist" });
+    } else {
+      violations.push(hit);
+    }
+  }
+}
 
 const report = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   ok: violations.length === 0,
   violations,
+  allowedExceptions,
 };
 
 console.log(JSON.stringify(report, null, 2));

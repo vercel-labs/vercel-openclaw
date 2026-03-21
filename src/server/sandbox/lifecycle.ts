@@ -1275,6 +1275,7 @@ async function createAndBootstrapSandbox(
       apiKey,
       proxyOrigin: origin,
       telegramBotToken: latest.channels.telegram?.botToken,
+      telegramWebhookSecret: latest.channels.telegram?.webhookSecret,
       slackCredentials: slackCfg ? { botToken: slackCfg.botToken, signingSecret: slackCfg.signingSecret } : undefined,
     });
 
