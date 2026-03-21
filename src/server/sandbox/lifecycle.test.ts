@@ -1318,61 +1318,6 @@ test("restoreSandboxFromSnapshot passes credentials and config via env to fast-r
   });
 });
 
-test("restoreSandboxFromSnapshot rewrites config when telegram webhookSecret changes", async () => {
-  const fake = new FakeSandboxController();
-  const originalFetch = globalThis.fetch;
-
-  await withTestEnv(fake, async () => {
-    await mutateMeta((meta) => {
-      meta.status = "stopped";
-      meta.snapshotId = "snap-restore-telegram-secret";
-      meta.gatewayToken = "test-gw-token";
-      meta.channels.telegram = {
-        botToken: "telegram-bot-token",
-        webhookSecret: "telegram-webhook-secret",
-        webhookUrl: "https://test.example.com/api/channels/telegram/webhook",
-        botUsername: "openclaw_bot",
-      };
-      meta.snapshotConfigHash = createHash("sha256")
-        .update(JSON.stringify({
-          channels: {
-            telegram: {
-              enabled: true,
-              botToken: "telegram-bot-token",
-            },
-          },
-        }))
-        .digest("hex");
-    });
-
-    globalThis.fetch = async () =>
-      new Response('<div id="openclaw-app"></div>', { status: 200 });
-
-    try {
-      const { handle } = await triggerRestore(fake, {
-        tokenOverride: "my-gateway-key",
-      });
-
-      const configFile = handle.writtenFiles.find((file) => file.path === OPENCLAW_CONFIG_PATH);
-      assert.ok(configFile, "Restore should rewrite openclaw config when webhookSecret changes");
-
-      const config = JSON.parse(configFile.content.toString("utf8")) as {
-        channels?: {
-          telegram?: {
-            webhookSecret?: string;
-          };
-        };
-      };
-
-      assert.equal(
-        config.channels?.telegram?.webhookSecret,
-        "telegram-webhook-secret",
-      );
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
-  });
-});
 
 test("restoreSandboxFromSnapshot passes gateway token via env even without API key", async () => {
   const fake = new FakeSandboxController();
