@@ -563,6 +563,149 @@ export async function syncGatewayConfigToSandbox(): Promise<{ synced: boolean; r
   }
 }
 
+// ---------------------------------------------------------------------------
+// Dynamic config reconciliation
+// ---------------------------------------------------------------------------
+
+export type DynamicConfigReconcileResult = {
+  verified: boolean;
+  changed: boolean;
+  reason:
+    | "already-fresh"
+    | "rewritten-and-restarted"
+    | "rewrite-failed"
+    | "restart-failed"
+    | "sandbox-unavailable";
+};
+
+/**
+ * Verify that the running sandbox's gateway config matches the expected hash
+ * computed from current channel state.  When stale, rewrite dynamic config
+ * files and restart the gateway, then re-verify.
+ *
+ * Idempotent — safe to call on every launch-verify or watchdog cycle.
+ */
+export async function ensureRunningSandboxDynamicConfigFresh(input: {
+  origin: string;
+  op?: OperationContext;
+}): Promise<DynamicConfigReconcileResult> {
+  const meta = await getInitializedMeta();
+  if (meta.status !== "running" || !meta.sandboxId) {
+    logInfo("sandbox.config_reconcile.skipped", {
+      reason: "sandbox_unavailable",
+      status: meta.status,
+      sandboxId: meta.sandboxId,
+    });
+    return { verified: false, changed: false, reason: "sandbox-unavailable" };
+  }
+
+  const sandboxId = meta.sandboxId;
+
+  // Compute expected hash from current channel state.
+  const configHashInput: GatewayConfigHashInput = {
+    telegramBotToken: meta.channels.telegram?.botToken,
+    telegramWebhookSecret: meta.channels.telegram?.webhookSecret,
+    slackCredentials: meta.channels.slack
+      ? {
+          botToken: meta.channels.slack.botToken,
+          signingSecret: meta.channels.slack.signingSecret,
+        }
+      : undefined,
+  };
+  const expectedHash = computeGatewayConfigHash(configHashInput);
+
+  logInfo("sandbox.config_reconcile.checkpoint_before", {
+    sandboxId,
+    snapshotConfigHash: meta.snapshotConfigHash,
+    expectedHash,
+    hashVersion: GATEWAY_CONFIG_HASH_VERSION,
+  });
+
+  // Already fresh — no work needed.
+  if (meta.snapshotConfigHash === expectedHash) {
+    logInfo("sandbox.config_reconcile.already_fresh", {
+      sandboxId,
+      configHash: expectedHash,
+    });
+    return { verified: true, changed: false, reason: "already-fresh" };
+  }
+
+  // Stale — rewrite dynamic config files.
+  const apiKey = await getAiGatewayBearerTokenOptional();
+  const slackConfig = meta.channels.slack;
+  const files = buildDynamicRestoreFiles({
+    proxyOrigin: input.origin,
+    apiKey,
+    telegramBotToken: meta.channels.telegram?.botToken,
+    telegramWebhookSecret: meta.channels.telegram?.webhookSecret,
+    slackCredentials: slackConfig
+      ? { botToken: slackConfig.botToken, signingSecret: slackConfig.signingSecret }
+      : undefined,
+  });
+
+  let sandbox: SandboxHandle;
+  try {
+    sandbox = await getSandboxController().get({ sandboxId });
+  } catch (error) {
+    logWarn("sandbox.config_reconcile.sandbox_lookup_failed", {
+      sandboxId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return { verified: false, changed: false, reason: "sandbox-unavailable" };
+  }
+
+  try {
+    await sandbox.writeFiles(files);
+    logInfo("sandbox.config_reconcile.checkpoint_after_rewrite", {
+      sandboxId,
+      fileCount: files.length,
+    });
+  } catch (error) {
+    logWarn("sandbox.config_reconcile.rewrite_failed", {
+      sandboxId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return { verified: false, changed: false, reason: "rewrite-failed" };
+  }
+
+  // Restart the gateway so it picks up the new config.
+  try {
+    const restartResult = await sandbox.runCommand("env", [
+      "-u", "AI_GATEWAY_API_KEY",
+      "-u", "OPENAI_API_KEY",
+      "bash", OPENCLAW_GATEWAY_RESTART_SCRIPT_PATH,
+    ]);
+    if (restartResult.exitCode !== 0) {
+      const output = await restartResult.output("both").catch(() => "");
+      logWarn("sandbox.config_reconcile.restart_nonzero", {
+        sandboxId,
+        exitCode: restartResult.exitCode,
+        output: output.slice(0, 300),
+      });
+      return { verified: false, changed: true, reason: "restart-failed" };
+    }
+    logInfo("sandbox.config_reconcile.checkpoint_after_restart", { sandboxId });
+  } catch (error) {
+    logWarn("sandbox.config_reconcile.restart_failed", {
+      sandboxId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return { verified: false, changed: true, reason: "restart-failed" };
+  }
+
+  // Update metadata with the new config hash.
+  await mutateMeta((next) => {
+    next.snapshotConfigHash = expectedHash;
+  });
+
+  logInfo("sandbox.config_reconcile.checkpoint_verified", {
+    sandboxId,
+    configHash: expectedHash,
+  });
+
+  return { verified: true, changed: true, reason: "rewritten-and-restarted" };
+}
+
 export async function touchRunningSandbox(): Promise<SingleMeta> {
   const meta = await getInitializedMeta();
   if (!meta.sandboxId || meta.status !== "running") {

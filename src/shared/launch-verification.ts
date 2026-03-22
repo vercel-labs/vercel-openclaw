@@ -27,6 +27,15 @@ export type LaunchVerificationRuntime = {
 
 export type LaunchVerificationSandboxHealth = {
   repaired: boolean;
+  configReconciled?: boolean | null;
+  configReconcileReason?:
+    | "already-fresh"
+    | "rewritten-and-restarted"
+    | "rewrite-failed"
+    | "restart-failed"
+    | "sandbox-unavailable"
+    | "error"
+    | "skipped";
 };
 
 export type LaunchVerificationDiagnostics = {
@@ -111,6 +120,8 @@ export type LaunchVerifyCompletionLog = {
   dynamicConfigVerified: boolean | null;
   dynamicConfigReason?: "hash-match" | "hash-miss" | "no-snapshot-hash";
   repaired: boolean | null;
+  configReconciled: boolean | null;
+  configReconcileReason?: string;
 };
 
 const REQUIRED_PHASE_IDS: LaunchVerificationPhaseId[] = [

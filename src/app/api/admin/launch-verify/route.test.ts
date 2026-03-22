@@ -1018,3 +1018,204 @@ test("launch-verify POST: runtime.dynamicConfigVerified is null when no restore 
     assert.ok(runtime.expectedConfigHash, "expectedConfigHash should always be computed");
   });
 });
+
+// ===========================================================================
+// Dynamic config reconcile: configReconciled in sandboxHealth
+// ===========================================================================
+
+test("launch-verify POST: configReconciled is true when snapshotConfigHash already matches", async () => {
+  await withHarness(async (h) => {
+    process.env.NEXT_PUBLIC_APP_URL = "https://test.example";
+
+    await h.driveToRunning();
+
+    // Set snapshotConfigHash to match expected (no channels = empty input)
+    const expectedHash = computeGatewayConfigHash({});
+    await h.mutateMeta((meta) => {
+      meta.snapshotConfigHash = expectedHash;
+    });
+
+    h.fakeFetch.on("POST", /v1\/chat\/completions/, () => {
+      return Response.json({
+        choices: [{ message: { content: "launch-verify-ok" } }],
+      });
+    });
+
+    const route = getAdminLaunchVerifyRoute();
+    const req = buildAuthPostRequest("/api/admin/launch-verify", "{}");
+    const result = await callRoute(route.POST, req);
+    await drainAfterCallbacks();
+
+    const body = result.json as LaunchVerificationPayload;
+    assert.ok(body.sandboxHealth, "expected sandboxHealth");
+    assert.equal(body.sandboxHealth.configReconciled, true);
+    assert.equal(body.sandboxHealth.configReconcileReason, "already-fresh");
+    // Config was already fresh, so reconcile should not degrade ok.
+    // (queuePing may fail in test env — that's independent of config freshness.)
+  });
+});
+
+test("launch-verify POST: configReconciled is true after successful rewrite when hash misses", async () => {
+  await withHarness(async (h) => {
+    process.env.NEXT_PUBLIC_APP_URL = "https://test.example";
+
+    await h.driveToRunning();
+
+    // Set a stale snapshotConfigHash so reconcile triggers rewrite+restart
+    await h.mutateMeta((meta) => {
+      meta.snapshotConfigHash = "stale-hash";
+    });
+
+    h.fakeFetch.on("POST", /v1\/chat\/completions/, () => {
+      return Response.json({
+        choices: [{ message: { content: "launch-verify-ok" } }],
+      });
+    });
+
+    const route = getAdminLaunchVerifyRoute();
+    const req = buildAuthPostRequest("/api/admin/launch-verify", "{}");
+    const result = await callRoute(route.POST, req);
+    await drainAfterCallbacks();
+
+    const body = result.json as LaunchVerificationPayload;
+    assert.ok(body.sandboxHealth, "expected sandboxHealth");
+    assert.equal(body.sandboxHealth.configReconciled, true);
+    assert.equal(body.sandboxHealth.configReconcileReason, "rewritten-and-restarted");
+  });
+});
+
+test("launch-verify POST: ok is false when config reconcile fails (writeFiles throws)", async () => {
+  await withHarness(async (h) => {
+    process.env.NEXT_PUBLIC_APP_URL = "https://test.example";
+
+    await h.driveToRunning();
+
+    // Set a stale snapshotConfigHash
+    await h.mutateMeta((meta) => {
+      meta.snapshotConfigHash = "stale-hash";
+    });
+
+    // Make writeFiles throw to simulate reconcile failure.
+    // Must set on the existing handle (already created by driveToRunning).
+    const handle = h.controller.lastCreated();
+    assert.ok(handle, "expected a sandbox handle from driveToRunning");
+    handle.writeFilesHook = () => {
+      throw new Error("Simulated writeFiles failure");
+    };
+
+    h.fakeFetch.on("POST", /v1\/chat\/completions/, () => {
+      return Response.json({
+        choices: [{ message: { content: "launch-verify-ok" } }],
+      });
+    });
+
+    const route = getAdminLaunchVerifyRoute();
+    const req = buildAuthPostRequest("/api/admin/launch-verify", "{}");
+    const result = await callRoute(route.POST, req);
+    await drainAfterCallbacks();
+
+    const body = result.json as LaunchVerificationPayload;
+    assert.ok(body.sandboxHealth, "expected sandboxHealth");
+    assert.equal(body.sandboxHealth.configReconciled, false);
+    assert.equal(body.sandboxHealth.configReconcileReason, "rewrite-failed");
+    assert.equal(body.ok, false, "ok must be false when config reconcile fails");
+  });
+});
+
+test("launch-verify POST: configReconciled is null when ensure phase fails (reconcile skipped)", async () => {
+  await withHarness(async () => {
+    makePreflightFail();
+
+    const route = getAdminLaunchVerifyRoute();
+    const req = buildAuthPostRequest("/api/admin/launch-verify", "{}");
+    const result = await callRoute(route.POST, req);
+    await drainAfterCallbacks();
+
+    const body = result.json as LaunchVerificationPayload;
+    // When preflight fails, sandboxHealth may not be present or configReconciled should be null
+    if (body.sandboxHealth) {
+      assert.equal(body.sandboxHealth.configReconciled, null);
+      assert.equal(body.sandboxHealth.configReconcileReason, "skipped");
+    }
+  });
+});
+
+// ===========================================================================
+// NDJSON parity: configReconciled
+// ===========================================================================
+
+test("launch-verify POST (NDJSON): configReconciled appears in result payload", async () => {
+  await withHarness(async (h) => {
+    process.env.NEXT_PUBLIC_APP_URL = "https://test.example";
+
+    await h.driveToRunning();
+
+    const expectedHash = computeGatewayConfigHash({});
+    await h.mutateMeta((meta) => {
+      meta.snapshotConfigHash = expectedHash;
+    });
+
+    h.fakeFetch.on("POST", /v1\/chat\/completions/, () => {
+      return Response.json({
+        choices: [{ message: { content: "launch-verify-ok" } }],
+      });
+    });
+
+    const route = getAdminLaunchVerifyRoute();
+    const req = buildAuthPostRequest("/api/admin/launch-verify", "{}", {
+      accept: "application/x-ndjson",
+    });
+    const result = await callRoute(route.POST, req);
+    await drainAfterCallbacks();
+
+    const events = result.text
+      .split("\n")
+      .filter((line: string) => line.trim().length > 0)
+      .map((line: string) => JSON.parse(line) as
+        | { type: "result"; payload: LaunchVerificationPayload });
+
+    const resultEvent = events.find(
+      (event): event is { type: "result"; payload: LaunchVerificationPayload } =>
+        event.type === "result",
+    );
+
+    assert.ok(resultEvent?.payload.sandboxHealth, "expected sandboxHealth in NDJSON result");
+    assert.equal(resultEvent.payload.sandboxHealth.configReconciled, true);
+    assert.equal(resultEvent.payload.sandboxHealth.configReconcileReason, "already-fresh");
+  });
+});
+
+// ===========================================================================
+// Canonical diagnostics field: failingChannelIds
+// ===========================================================================
+
+test("launch-verify POST: new code reads failingChannelIds as canonical field", async () => {
+  await withHarness(async (h) => {
+    process.env.NEXT_PUBLIC_APP_URL = "https://test.example";
+
+    await h.driveToRunning();
+
+    h.fakeFetch.on("POST", /v1\/chat\/completions/, () => {
+      return Response.json({
+        choices: [{ message: { content: "launch-verify-ok" } }],
+      });
+    });
+
+    const route = getAdminLaunchVerifyRoute();
+    const req = buildAuthPostRequest("/api/admin/launch-verify", "{}");
+    const result = await callRoute(route.POST, req);
+    await drainAfterCallbacks();
+
+    const body = result.json as LaunchVerificationPayload;
+    assert.ok(body.diagnostics, "expected diagnostics");
+
+    // failingChannelIds is the canonical field
+    assert.ok(Array.isArray(body.diagnostics.failingChannelIds), "failingChannelIds must be an array");
+    // warningChannelIds is a compatibility mirror — same data
+    assert.deepEqual(
+      body.diagnostics.failingChannelIds,
+      body.diagnostics.warningChannelIds,
+      "failingChannelIds must equal warningChannelIds (compat mirror)",
+    );
+  });
+});

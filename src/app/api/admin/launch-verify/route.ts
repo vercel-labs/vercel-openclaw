@@ -13,9 +13,11 @@ import {
 import { logInfo, logError } from "@/server/log";
 import { getPublicOrigin } from "@/server/public-url";
 import {
+  ensureRunningSandboxDynamicConfigFresh,
   getSandboxDomain,
   stopSandbox,
   waitForSandboxReady,
+  type DynamicConfigReconcileResult,
   type SandboxReadyAction,
 } from "@/server/sandbox/lifecycle";
 import { getOpenclawPackageSpec } from "@/server/env";
@@ -123,6 +125,25 @@ function buildLaunchVerifyCompletionLog(input: {
     dynamicConfigVerified: input.payload.runtime?.dynamicConfigVerified ?? null,
     dynamicConfigReason: input.payload.runtime?.dynamicConfigReason,
     repaired: input.payload.sandboxHealth?.repaired ?? null,
+    configReconciled: input.payload.sandboxHealth?.configReconciled ?? null,
+    configReconcileReason: input.payload.sandboxHealth?.configReconcileReason,
+  };
+}
+
+function buildSandboxHealth(input: {
+  ensureReadyAction: SandboxReadyAction | null;
+  configReconcile: DynamicConfigReconcileResult | null;
+  configReconcileError: boolean;
+}): LaunchVerificationSandboxHealth {
+  return {
+    repaired: input.ensureReadyAction !== null &&
+      input.ensureReadyAction !== "already-running",
+    configReconciled: input.configReconcileError
+      ? false
+      : (input.configReconcile?.verified ?? null),
+    configReconcileReason: input.configReconcileError
+      ? "error"
+      : (input.configReconcile?.reason ?? "skipped"),
   };
 }
 
@@ -458,22 +479,48 @@ function buildStreamingResponse(
         emitPhase(s, true);
       }
 
+      // Run dynamic config reconcile after ensure and before final payload.
+      let configReconcile: DynamicConfigReconcileResult | null = null;
+      let configReconcileError = false;
+      if (ensurePhase.status === "pass") {
+        try {
+          configReconcile = await ensureRunningSandboxDynamicConfigFresh({
+            origin,
+          });
+          logInfo("launch_verify.config_reconcile", {
+            verified: configReconcile.verified,
+            changed: configReconcile.changed,
+            reason: configReconcile.reason,
+          });
+        } catch (error) {
+          configReconcileError = true;
+          logError("launch_verify.config_reconcile_error", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+
       let runtime: LaunchVerificationRuntime | undefined;
       let sandboxHealth: LaunchVerificationSandboxHealth | undefined;
       try {
         const runtimeMeta = await getInitializedMeta();
         runtime = buildLaunchVerificationRuntime(runtimeMeta);
-        sandboxHealth = {
-          repaired: ensureReadyAction !== null &&
-            ensureReadyAction !== "already-running",
-        };
+        sandboxHealth = buildSandboxHealth({
+          ensureReadyAction,
+          configReconcile,
+          configReconcileError,
+        });
       } catch (error) {
         logInfo("launch_verify.runtime_metadata_unavailable", {
           error: error instanceof Error ? error.message : String(error),
         });
       }
 
-      const ok = phases.every((p) => p.status === "pass" || p.status === "skip");
+      const phasesOk = phases.every((p) => p.status === "pass" || p.status === "skip");
+      // Stale config that could not be reconciled is a hard fail.
+      const configFresh = ensurePhase.status !== "pass" ||
+        (!configReconcileError && configReconcile !== null && configReconcile.verified);
+      const ok = phasesOk && configFresh;
       const payload: LaunchVerificationPayload = {
         ok, mode, startedAt,
         completedAt: new Date().toISOString(),
@@ -601,22 +648,48 @@ async function buildJsonResponse(
     phases.push(skipPhase("wakeFromSleep", "Not run in safe mode."));
   }
 
+  // Run dynamic config reconcile after ensure and before final payload.
+  let configReconcile: DynamicConfigReconcileResult | null = null;
+  let configReconcileError = false;
+  if (ensurePhase.status === "pass") {
+    try {
+      configReconcile = await ensureRunningSandboxDynamicConfigFresh({
+        origin,
+      });
+      logInfo("launch_verify.config_reconcile", {
+        verified: configReconcile.verified,
+        changed: configReconcile.changed,
+        reason: configReconcile.reason,
+      });
+    } catch (error) {
+      configReconcileError = true;
+      logError("launch_verify.config_reconcile_error", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   let runtime: LaunchVerificationRuntime | undefined;
   let sandboxHealth: LaunchVerificationSandboxHealth | undefined;
   try {
     const runtimeMeta = await getInitializedMeta();
     runtime = buildLaunchVerificationRuntime(runtimeMeta);
-    sandboxHealth = {
-      repaired: ensureReadyAction !== null &&
-        ensureReadyAction !== "already-running",
-    };
+    sandboxHealth = buildSandboxHealth({
+      ensureReadyAction,
+      configReconcile,
+      configReconcileError,
+    });
   } catch (error) {
     logInfo("launch_verify.runtime_metadata_unavailable", {
       error: error instanceof Error ? error.message : String(error),
     });
   }
 
-  const ok = phases.every((p) => p.status === "pass" || p.status === "skip");
+  const phasesOk = phases.every((p) => p.status === "pass" || p.status === "skip");
+  // Stale config that could not be reconciled is a hard fail.
+  const configFresh = ensurePhase.status !== "pass" ||
+    (!configReconcileError && configReconcile !== null && configReconcile.verified);
+  const ok = phasesOk && configFresh;
   const payload: LaunchVerificationPayload = {
     ok, mode, startedAt,
     completedAt: new Date().toISOString(),

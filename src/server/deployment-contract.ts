@@ -76,7 +76,7 @@ const PUBLIC_ORIGIN_ENV = [
   "VERCEL_URL",
 ];
 const CRON_SECRET_ENV = ["CRON_SECRET"];
-const CRON_SECRET_REQUIREMENT_ID = "cron-secret" as DeploymentRequirementId;
+const CRON_SECRET_REQUIREMENT_ID: DeploymentRequirementId = "cron-secret";
 
 function checkPublicOrigin(
   onVercel: boolean,

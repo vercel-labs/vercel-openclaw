@@ -9,6 +9,7 @@ import {
   ensureUsableAiGatewayCredential,
   ensureSandboxRunning,
   ensureSandboxReady,
+  ensureRunningSandboxDynamicConfigFresh,
   getRunningSandboxTimeoutRemainingMs,
   probeGatewayReady,
   reconcileSandboxHealth,
@@ -3798,5 +3799,149 @@ test("restoreSandboxFromSnapshot keeps skippedStaticAssetSync=false after backgr
     } finally {
       globalThis.fetch = originalFetch;
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ensureRunningSandboxDynamicConfigFresh
+// ---------------------------------------------------------------------------
+
+test("ensureRunningSandboxDynamicConfigFresh returns already-fresh when hash matches", async () => {
+  await withHarness(async (h) => {
+    await h.driveToRunning();
+
+    // Compute the expected hash from current (empty) channel state and set it.
+    const expectedHash = computeGatewayConfigHash({});
+    await h.mutateMeta((meta) => {
+      meta.snapshotConfigHash = expectedHash;
+    });
+
+    const result = await ensureRunningSandboxDynamicConfigFresh({
+      origin: "https://test.example.com",
+    });
+
+    assert.equal(result.verified, true, "Should be verified");
+    assert.equal(result.changed, false, "Should not have changed anything");
+    assert.equal(result.reason, "already-fresh");
+
+    // No gateway restart should have happened.
+    const meta = await h.getMeta();
+    const handle = h.controller.created.find(
+      (c) => c.sandboxId === meta.sandboxId,
+    ) as FakeSandboxHandle | undefined;
+    const restartCommands = handle?.commands.filter(
+      (c) => c.args?.includes(OPENCLAW_GATEWAY_RESTART_SCRIPT_PATH),
+    );
+    assert.equal(restartCommands?.length ?? 0, 0, "No gateway restart should happen on hash match");
+  });
+});
+
+test("ensureRunningSandboxDynamicConfigFresh rewrites and restarts on hash miss", async () => {
+  await withHarness(async (h) => {
+    await h.driveToRunning();
+
+    // Set a stale hash so reconcile detects a miss.
+    await h.mutateMeta((meta) => {
+      meta.snapshotConfigHash = "stale-hash-from-previous-deploy";
+    });
+
+    const result = await ensureRunningSandboxDynamicConfigFresh({
+      origin: "https://test.example.com",
+    });
+
+    assert.equal(result.verified, true, "Should be verified after reconcile");
+    assert.equal(result.changed, true, "Should have changed config");
+    assert.equal(result.reason, "rewritten-and-restarted");
+
+    // Verify the metadata hash was updated.
+    const meta = await h.getMeta();
+    const expectedHash = computeGatewayConfigHash({});
+    assert.equal(meta.snapshotConfigHash, expectedHash, "Hash should be updated in metadata");
+
+    // Verify restart command was issued.
+    const handle = h.controller.created.find(
+      (c) => c.sandboxId === meta.sandboxId,
+    ) as FakeSandboxHandle | undefined;
+    const restartCommands = handle?.commands.filter(
+      (c) => c.args?.includes(OPENCLAW_GATEWAY_RESTART_SCRIPT_PATH),
+    );
+    assert.ok(
+      restartCommands && restartCommands.length > 0,
+      "Gateway restart should have been issued",
+    );
+  });
+});
+
+test("ensureRunningSandboxDynamicConfigFresh returns rewrite-failed on writeFiles error", async () => {
+  await withHarness(async (h) => {
+    await h.driveToRunning();
+
+    await h.mutateMeta((meta) => {
+      meta.snapshotConfigHash = "stale-hash";
+    });
+
+    // Install a hook that throws on writeFiles to simulate failure.
+    const meta = await h.getMeta();
+    const handle = h.controller.created.find(
+      (c) => c.sandboxId === meta.sandboxId,
+    ) as FakeSandboxHandle | undefined;
+    assert.ok(handle, "Should have a sandbox handle");
+
+    handle.writeFilesHook = () => {
+      throw new Error("Simulated writeFiles failure");
+    };
+
+    const result = await ensureRunningSandboxDynamicConfigFresh({
+      origin: "https://test.example.com",
+    });
+
+    assert.equal(result.verified, false);
+    assert.equal(result.changed, false);
+    assert.equal(result.reason, "rewrite-failed");
+  });
+});
+
+test("ensureRunningSandboxDynamicConfigFresh returns restart-failed on nonzero exit", async () => {
+  await withHarness(async (h) => {
+    await h.driveToRunning();
+
+    await h.mutateMeta((meta) => {
+      meta.snapshotConfigHash = "stale-hash";
+    });
+
+    // Install a command responder that fails the restart script.
+    const meta = await h.getMeta();
+    const handle = h.controller.created.find(
+      (c) => c.sandboxId === meta.sandboxId,
+    ) as FakeSandboxHandle | undefined;
+    assert.ok(handle, "Should have a sandbox handle");
+
+    handle.responders.push((cmd, args) => {
+      if (args?.includes(OPENCLAW_GATEWAY_RESTART_SCRIPT_PATH)) {
+        return { exitCode: 1, output: async () => "restart failed" };
+      }
+      return undefined;
+    });
+
+    const result = await ensureRunningSandboxDynamicConfigFresh({
+      origin: "https://test.example.com",
+    });
+
+    assert.equal(result.verified, false);
+    assert.equal(result.changed, true, "Files were written before restart failed");
+    assert.equal(result.reason, "restart-failed");
+  });
+});
+
+test("ensureRunningSandboxDynamicConfigFresh returns sandbox-unavailable when not running", async () => {
+  await withHarness(async (h) => {
+    // Do not drive to running — stay in uninitialized state.
+    const result = await ensureRunningSandboxDynamicConfigFresh({
+      origin: "https://test.example.com",
+    });
+
+    assert.equal(result.verified, false);
+    assert.equal(result.changed, false);
+    assert.equal(result.reason, "sandbox-unavailable");
   });
 });

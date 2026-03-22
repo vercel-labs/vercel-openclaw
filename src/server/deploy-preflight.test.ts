@@ -403,6 +403,7 @@ test("preflight passes when Upstash is configured and AI Gateway auth resolves t
       UPSTASH_REDIS_REST_TOKEN: "redis-token",
       AI_GATEWAY_API_KEY: undefined,
       OPENCLAW_PACKAGE_SPEC: "openclaw@1.0.0",
+      CRON_SECRET: "cron-secret",
     },
     async () => {
       _setAiGatewayTokenOverrideForTesting("oidc-token");
@@ -530,8 +531,8 @@ test("preflight checks do not include launch-verification (config-only guarantee
       // Verify the canonical set of config-only check IDs
       assert.deepEqual(
         checkIds.sort(),
-        ["ai-gateway", "bootstrap-exposure", "public-origin", "store", "webhook-bypass"],
-        "preflight checks should be exactly the 5 config-only checks",
+        ["ai-gateway", "bootstrap-exposure", "cron-secret", "public-origin", "store", "webhook-bypass"],
+        "preflight checks should be exactly the 6 config-only checks",
       );
     },
   );
@@ -1335,6 +1336,149 @@ test("getLaunchVerifyBlocking treats warn-only checks as non-blocking", async ()
       assert.equal(payload.ok, true);
       const result = getLaunchVerifyBlocking(payload);
       assert.equal(result.blocking, false, "warn-only checks should not block launch-verify");
+    },
+  );
+});
+
+// ===========================================================================
+// Cron secret as a first-class preflight and launch-verify blocker
+// ===========================================================================
+
+test("preflight fails on Vercel when CRON_SECRET is missing", async () => {
+  await withEnv(
+    {
+      VERCEL: "1",
+      VERCEL_AUTH_MODE: "admin-secret",
+      NEXT_PUBLIC_APP_URL: "https://app.example.com",
+      UPSTASH_REDIS_REST_URL: "https://example.upstash.io",
+      UPSTASH_REDIS_REST_TOKEN: "token",
+      OPENCLAW_PACKAGE_SPEC: "openclaw@1.0.0",
+      CRON_SECRET: undefined,
+    },
+    async () => {
+      _setAiGatewayTokenOverrideForTesting("oidc-token");
+
+      const payload = await buildDeployPreflight(
+        new Request("https://app.example.com/api/admin/preflight"),
+      );
+
+      assert.equal(payload.ok, false, "preflight.ok should be false when CRON_SECRET is missing on Vercel");
+
+      const cronCheck = payload.checks.find((c) => c.id === "cron-secret");
+      assert.ok(cronCheck, "expected cron-secret check");
+      assert.equal(cronCheck.status, "fail", "cron-secret check should fail on Vercel without CRON_SECRET");
+
+      const cronAction = payload.actions.find((a) => a.id === "configure-cron-secret");
+      assert.ok(cronAction, "expected configure-cron-secret action");
+      assert.equal(cronAction.status, "required", "configure-cron-secret should be required on Vercel");
+      assert.ok(cronAction.remediation.length > 0, "remediation should be non-empty");
+      assert.ok(cronAction.env.includes("CRON_SECRET"), "env should include CRON_SECRET");
+    },
+  );
+});
+
+test("getLaunchVerifyBlocking blocks when cron-secret is failing on Vercel", async () => {
+  await withEnv(
+    {
+      VERCEL: "1",
+      VERCEL_AUTH_MODE: "admin-secret",
+      NEXT_PUBLIC_APP_URL: "https://app.example.com",
+      UPSTASH_REDIS_REST_URL: "https://example.upstash.io",
+      UPSTASH_REDIS_REST_TOKEN: "token",
+      OPENCLAW_PACKAGE_SPEC: "openclaw@1.0.0",
+      CRON_SECRET: undefined,
+    },
+    async () => {
+      _setAiGatewayTokenOverrideForTesting("oidc-token");
+
+      const payload = await buildDeployPreflight(
+        new Request("https://app.example.com/api/admin/preflight"),
+      );
+
+      const result = getLaunchVerifyBlocking(payload);
+      assert.equal(result.blocking, true, "should block when cron-secret is failing");
+      assert.ok(
+        result.failingCheckIds.includes("cron-secret"),
+        "failingCheckIds should include cron-secret",
+      );
+      assert.ok(
+        result.requiredActionIds.includes("configure-cron-secret"),
+        "requiredActionIds should include configure-cron-secret",
+      );
+      assert.ok(result.errorMessage, "should have an error message");
+      assert.ok(
+        result.errorMessage!.includes("cron-secret"),
+        "error message should mention cron-secret",
+      );
+    },
+  );
+});
+
+test("preflight does not hard-fail on cron-secret outside Vercel", async () => {
+  await withEnv(
+    {
+      VERCEL: undefined,
+      VERCEL_ENV: undefined,
+      VERCEL_URL: undefined,
+      VERCEL_PROJECT_PRODUCTION_URL: undefined,
+      VERCEL_AUTH_MODE: "admin-secret",
+      NEXT_PUBLIC_APP_URL: "https://local.example.com",
+      UPSTASH_REDIS_REST_URL: "https://example.upstash.io",
+      UPSTASH_REDIS_REST_TOKEN: "token",
+      CRON_SECRET: undefined,
+    },
+    async () => {
+      _setAiGatewayTokenOverrideForTesting("oidc-token");
+
+      const payload = await buildDeployPreflight(
+        new Request("https://local.example.com/api/admin/preflight"),
+      );
+
+      assert.equal(payload.ok, true, "preflight.ok should be true outside Vercel even without CRON_SECRET");
+
+      const cronCheck = payload.checks.find((c) => c.id === "cron-secret");
+      assert.ok(cronCheck, "expected cron-secret check");
+      assert.notEqual(
+        cronCheck.status,
+        "fail",
+        "cron-secret check should not fail outside Vercel",
+      );
+
+      const cronAction = payload.actions.find((a) => a.id === "configure-cron-secret");
+      assert.equal(cronAction, undefined, "no configure-cron-secret action expected outside Vercel");
+
+      const result = getLaunchVerifyBlocking(payload);
+      assert.equal(result.blocking, false, "should not block outside Vercel without CRON_SECRET");
+    },
+  );
+});
+
+test("preflight passes cron-secret check when CRON_SECRET is configured on Vercel", async () => {
+  await withEnv(
+    {
+      VERCEL: "1",
+      VERCEL_AUTH_MODE: "admin-secret",
+      NEXT_PUBLIC_APP_URL: "https://app.example.com",
+      UPSTASH_REDIS_REST_URL: "https://example.upstash.io",
+      UPSTASH_REDIS_REST_TOKEN: "token",
+      OPENCLAW_PACKAGE_SPEC: "openclaw@1.0.0",
+      CRON_SECRET: "my-secret",
+    },
+    async () => {
+      _setAiGatewayTokenOverrideForTesting("oidc-token");
+
+      const payload = await buildDeployPreflight(
+        new Request("https://app.example.com/api/admin/preflight"),
+      );
+
+      assert.equal(payload.ok, true);
+
+      const cronCheck = payload.checks.find((c) => c.id === "cron-secret");
+      assert.ok(cronCheck, "expected cron-secret check");
+      assert.equal(cronCheck.status, "pass", "cron-secret check should pass when configured");
+
+      const cronAction = payload.actions.find((a) => a.id === "configure-cron-secret");
+      assert.equal(cronAction, undefined, "no action needed when CRON_SECRET is configured");
     },
   );
 });

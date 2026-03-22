@@ -11,6 +11,7 @@ export type DeploymentRequirementId =
   | "openclaw-package-spec"
   | "oauth-client-id"
   | "oauth-client-secret"
-  | "session-secret";
+  | "session-secret"
+  | "cron-secret";
 
 export type DeploymentRequirementStatus = "pass" | "warn" | "fail";

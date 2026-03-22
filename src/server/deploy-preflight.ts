@@ -32,7 +32,8 @@ export type PreflightCheckId =
   | "ai-gateway"
   | "openclaw-package-spec"
   | "auth-config"
-  | "bootstrap-exposure";
+  | "bootstrap-exposure"
+  | "cron-secret";
 
 export type PreflightActionId =
   | "configure-public-origin"
@@ -40,7 +41,8 @@ export type PreflightActionId =
   | "configure-upstash"
   | "configure-ai-gateway-auth"
   | "configure-openclaw-package-spec"
-  | "configure-oauth";
+  | "configure-oauth"
+  | "configure-cron-secret";
 
 export type PreflightCheck = {
   id: PreflightCheckId;
@@ -200,6 +202,20 @@ function buildActions(input: {
       message: contractGatewayReq.message,
       remediation: contractGatewayReq.remediation,
       env: contractGatewayReq.env,
+    });
+  }
+
+  // Derive cron-secret action from contract requirement
+  const contractCronReq = input.contract.requirements.find(
+    (r) => r.id === "cron-secret",
+  );
+  if (contractCronReq && contractCronReq.status !== "pass") {
+    actions.push({
+      id: "configure-cron-secret",
+      status: contractCronReq.status === "fail" ? "required" : "recommended",
+      message: contractCronReq.message,
+      remediation: contractCronReq.remediation,
+      env: contractCronReq.env,
     });
   }
 
@@ -470,6 +486,10 @@ export async function buildDeployPreflight(
       ? "warn"
       : "pass";
 
+  const cronSecretReq = contract.requirements.find(
+    (r) => r.id === "cron-secret",
+  );
+
   const bootstrapCheck = await buildBootstrapExposureCheck();
 
   const checks: PreflightCheck[] = [
@@ -529,6 +549,16 @@ export async function buildDeployPreflight(
                     .filter((r) => r.status === "fail")
                     .map((r) => r.message)
                     .join(" "),
+          },
+        ]
+      : []),
+    // cron-secret — derived from contract (fail on Vercel when missing, pass otherwise)
+    ...(cronSecretReq
+      ? [
+          {
+            id: "cron-secret" as const,
+            status: cronSecretReq.status as PreflightStatus,
+            message: cronSecretReq.message,
           },
         ]
       : []),
