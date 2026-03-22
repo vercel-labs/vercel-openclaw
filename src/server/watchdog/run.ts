@@ -225,10 +225,14 @@ export async function runSandboxWatchdog(
       }
     }
 
-    // Cron wake: if sandbox is stopped and OpenClaw has a cron job due, wake it.
-    // OpenClaw's native cron scheduler handles everything once the sandbox is running.
+    // Cron wake: if sandbox is stopped or recoverable from an error snapshot and
+    // OpenClaw has a cron job due, wake it. OpenClaw's native cron scheduler
+    // handles everything once the sandbox is running.
     const cronCheckStartedAt = deps.now();
-    if (meta.status === "stopped" && meta.snapshotId) {
+    if (
+      (meta.status === "stopped" && meta.snapshotId) ||
+      (meta.status === "error" && meta.snapshotId)
+    ) {
       const cronNextWakeMs = await deps.getCronNextWakeMs();
       if (cronNextWakeMs && cronNextWakeMs <= deps.now()) {
         try {

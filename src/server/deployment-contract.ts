@@ -1,6 +1,7 @@
 import {
   getAiGatewayAuthMode,
   getAuthMode,
+  getCronSecret,
   getOpenclawPackageSpec,
   getStoreEnv,
   isVercelDeployment,
@@ -74,6 +75,8 @@ const PUBLIC_ORIGIN_ENV = [
   "VERCEL_BRANCH_URL",
   "VERCEL_URL",
 ];
+const CRON_SECRET_ENV = ["CRON_SECRET"];
+const CRON_SECRET_REQUIREMENT_ID = "cron-secret" as DeploymentRequirementId;
 
 function checkPublicOrigin(
   onVercel: boolean,
@@ -155,6 +158,39 @@ function checkStore(onVercel: boolean): DeploymentRequirement {
     remediation:
       "Add Upstash Redis so sandbox metadata, queue state, and channel/session history survive restarts.",
     env: ["UPSTASH_REDIS_REST_URL", "UPSTASH_REDIS_REST_TOKEN"],
+  };
+}
+
+function checkCronSecret(onVercel: boolean): DeploymentRequirement {
+  const configured = Boolean(getCronSecret());
+
+  if (configured) {
+    return {
+      id: CRON_SECRET_REQUIREMENT_ID,
+      status: "pass",
+      message: "CRON_SECRET is configured.",
+      remediation: "",
+      env: CRON_SECRET_ENV,
+    };
+  }
+
+  if (onVercel) {
+    return {
+      id: CRON_SECRET_REQUIREMENT_ID,
+      status: "fail",
+      message: "CRON_SECRET is required on Vercel deployments.",
+      remediation:
+        "Set CRON_SECRET so deployed cron requests can authenticate before waking the sandbox.",
+      env: CRON_SECRET_ENV,
+    };
+  }
+
+  return {
+    id: CRON_SECRET_REQUIREMENT_ID,
+    status: "pass",
+    message: "CRON_SECRET is optional outside Vercel deployments.",
+    remediation: "",
+    env: CRON_SECRET_ENV,
   };
 }
 
@@ -318,6 +354,7 @@ export async function buildDeploymentContract(
     checkPublicOrigin(onVercel, options.request),
     checkWebhookBypass(),
     checkStore(onVercel),
+    checkCronSecret(onVercel),
     checkAiGateway(onVercel, aiGatewayAuth),
     checkOpenclawPackageSpec(onVercel),
     checkOauthClientId(authMode),
