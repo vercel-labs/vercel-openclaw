@@ -155,10 +155,10 @@ export function buildGatewayConfig(
   config.agents = {
     defaults: {
       model: {
-        primary: "vercel-ai-gateway/openai/gpt-5.3-chat",
+        primary: "vercel-ai-gateway/anthropic/claude-sonnet-4.6",
         fallbacks: [
+          "vercel-ai-gateway/openai/gpt-5.3-chat",
           "vercel-ai-gateway/anthropic/claude-haiku-4.5",
-          "vercel-ai-gateway/anthropic/claude-sonnet-4.6",
           "vercel-ai-gateway/openai/gpt-5.2",
           "vercel-ai-gateway/google/gemini-2.5-flash",
         ],
