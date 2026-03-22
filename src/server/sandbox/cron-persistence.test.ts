@@ -4,9 +4,12 @@
  * Exercises the full lifecycle: create → write cron jobs → stop (persist) →
  * restore (recover) → verify jobs loaded by cron module.
  *
- * This catches the OpenClaw behavior where jobs.json is reset to empty on
- * every gateway startup. The persistence flow saves jobs to the store before
- * snapshot and restores them after the gateway boots.
+ * OpenClaw normally preserves jobs.json across gateway restarts, but edge
+ * cases (partial writes during restart, config re-init, snapshots taken
+ * after a transient empty state) can cause job loss. The store-based
+ * persistence acts as a safety net — these tests verify that recovery works
+ * when jobs are lost, and that the common case (jobs already present) skips
+ * the unnecessary gateway restart.
  *
  * Run: npm test -- src/server/sandbox/cron-persistence.test.ts
  */

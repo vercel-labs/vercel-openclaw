@@ -92,21 +92,21 @@ OpenClaw has a built-in cron scheduler (`croner` library) that persists jobs to 
 1. **Before snapshot** (`stopSandbox()`): reads `jobs.json` from the sandbox, extracts the earliest `nextRunAtMs` across all enabled jobs, and saves it to the host store as `openclaw-single:cron-next-wake-ms`. Also persists the full `jobs.json` content to `openclaw-single:cron-jobs-json`.
 2. **On heartbeat** (`touchRunningSandbox()`): keeps both the wake time and jobs JSON fresh in the store, so they survive even when the sandbox times out naturally without an explicit stop.
 3. **Every 5 minutes** (`/api/cron/watchdog`): if the sandbox is stopped and the saved wake time has passed, calls `ensureSandboxReady()` to restore the sandbox. OpenClaw's native cron handles everything from there.
-4. **After restore**: checks if OpenClaw wiped `jobs.json` during startup (it resets to empty on every boot). If jobs were lost, writes the stored copy back and restarts the gateway so the cron module loads them.
+4. **After restore**: checks if `jobs.json` is empty on the restored sandbox. If jobs were lost but the store has a copy, writes the stored jobs back and restarts the gateway so the cron module loads them.
 5. **After wake**: the wake time is cleared. OpenClaw reschedules the next run internally, and the next heartbeat/snapshot will persist the updated time.
 
 The watchdog never runs chat completions, delivers messages, or interacts with Telegram/Slack/Discord. It only wakes the sandbox — OpenClaw handles the rest.
 
 ### Cron jobs persistence (important)
 
-**OpenClaw resets `jobs.json` to empty on every gateway startup**, backing up the previous file to `jobs.json.bak`. This means cron jobs are silently lost on every snapshot restore unless the host app preserves them. The persistence flow addresses this:
+Cron jobs can be lost during snapshot restore in edge cases: partial writes during gateway restarts, config-triggered re-initialization, or snapshots taken after a transient empty state. OpenClaw's gateway normally preserves `jobs.json` across restarts (it reads, normalizes, and writes back with a `.bak` safety backup), but the store-based persistence acts as a belt-and-suspenders safety net.
 
 - **Store keys**: `openclaw-single:cron-next-wake-ms` (wake timestamp) and `openclaw-single:cron-jobs-json` (full jobs payload)
 - **Save path**: `stopSandbox()` and `touchRunningSandbox()` both persist to the store
-- **Restore path**: after gateway readiness in `restoreSandboxFromSnapshot()`, if the store has jobs and the sandbox has none, the jobs are written back and the gateway is restarted via `OPENCLAW_GATEWAY_RESTART_SCRIPT_PATH`
+- **Restore path**: after gateway readiness in `restoreSandboxFromSnapshot()`, if the store has jobs and the sandbox has none, the jobs are written back and the gateway is restarted via `OPENCLAW_GATEWAY_RESTART_SCRIPT_PATH`. When the snapshot already preserved the jobs (the common case), no restart is needed.
 - **Metrics**: `RestorePhaseMetrics.cronJobsRestored` indicates whether jobs were restored on a given restore cycle
 
-If you change the restore flow, ensure cron jobs are restored **after** the gateway is ready (so the initial wipe has already happened) and **before** marking the sandbox as `running`.
+If you change the restore flow, ensure the cron check happens **after** the gateway is ready and **before** marking the sandbox as `running`.
 
 To use cron in OpenClaw, the `tools.profile` must be `"full"` (not the default `"coding"`) so the `cron` tool is available to the agent. The gateway must also have `OPENCLAW_GATEWAY_PORT` set to match the `--port` flag so internal tools can connect.
 

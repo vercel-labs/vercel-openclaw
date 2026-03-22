@@ -436,9 +436,9 @@ export async function stopSandbox(): Promise<SingleMeta> {
         await getStore().deleteValue(CRON_NEXT_WAKE_KEY);
       }
 
-      // Persist full cron jobs JSON so it survives snapshot restores.
-      // OpenClaw resets jobs.json on every gateway startup — without this,
-      // cron jobs are silently lost when the snapshot captures the empty state.
+      // Persist full cron jobs JSON as a safety net for snapshot restores.
+      // Edge cases (partial writes, config re-init) can cause job loss;
+      // the store copy ensures we can always recover.
       const rawJobs = cronWakeRead.status !== "error" ? cronWakeRead.rawJobsJson : undefined;
       if (rawJobs) {
         await getStore().setValue(CRON_JOBS_KEY, rawJobs);
@@ -792,8 +792,8 @@ export async function touchRunningSandbox(): Promise<SingleMeta> {
     } else if (cronWakeRead.status === "no-jobs") {
       await getStore().deleteValue(CRON_NEXT_WAKE_KEY);
     }
-    // Also persist full cron jobs JSON — OpenClaw resets jobs.json on
-    // gateway startup, so the store copy is the durable source of truth.
+    // Also persist full cron jobs JSON — the store copy acts as a safety
+    // net in case jobs are lost during a future restore edge case.
     const rawJobs = cronWakeRead.status !== "error" ? cronWakeRead.rawJobsJson : undefined;
     if (rawJobs) {
       await getStore().setValue(CRON_JOBS_KEY, rawJobs);
@@ -2117,11 +2117,13 @@ async function restoreSandboxFromSnapshot(
       return getInitializedMeta();
     }
 
-    // Restore cron jobs if OpenClaw wiped them during gateway startup.
-    // OpenClaw resets jobs.json to empty on every boot (backing up to
-    // jobs.json.bak).  We persist the full jobs JSON to the store before
-    // each snapshot and heartbeat.  After the gateway is ready, write the
-    // stored jobs back and restart the gateway so its cron module loads them.
+    // Restore cron jobs if they were lost during the snapshot/restore cycle.
+    // OpenClaw normally preserves jobs.json across restarts, but edge cases
+    // (partial writes during gateway restart, config-triggered re-init, or
+    // snapshots taken after a transient empty state) can cause job loss.
+    // We persist the full jobs JSON to the store before each snapshot and
+    // heartbeat as a safety net.  If the restored sandbox has no jobs but
+    // the store does, write them back and restart the gateway to reload.
     let cronJobsRestored = false;
     try {
       const storedJobsJson = await getStore().getValue<string>(CRON_JOBS_KEY);
