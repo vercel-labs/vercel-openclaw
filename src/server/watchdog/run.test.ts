@@ -208,3 +208,63 @@ test("stopped sandbox with null cron wake skips correctly", async () => {
   assert.equal(findCheck(report, "cron.wake")?.status, "skip");
   assert.ok(findCheck(report, "cron.wake")?.message?.includes("No cron wake"));
 });
+
+test("stuck-busy recovery passes schedule callback to reconcile", async () => {
+  let receivedSchedule: unknown = undefined;
+  const fakeSchedule = () => {};
+  const baseTime = Date.now();
+
+  const report = await runSandboxWatchdog(
+    {
+      request: new Request("https://app.test/api/cron/watchdog"),
+      schedule: fakeSchedule,
+    },
+    makeDeps({
+      now: () => baseTime,
+      getMeta: async () =>
+        ({
+          status: "restoring",
+          sandboxId: null,
+          updatedAt: baseTime - 120_000, // 2 minutes ago — past the 90s threshold
+        }) as SingleMeta,
+      reconcile: async (options) => {
+        receivedSchedule = options.schedule;
+        return {
+          status: "recovering" as const,
+          repaired: false,
+          meta: { status: "restoring" } as SingleMeta,
+        };
+      },
+    }),
+  );
+
+  assert.equal(receivedSchedule, fakeSchedule, "schedule callback must be forwarded to reconcile");
+  assert.equal(report.status, "repairing");
+  assert.equal(findCheck(report, "reconcile")?.status, "pass");
+});
+
+test("probe-failed recovery passes schedule callback to reconcile", async () => {
+  let receivedSchedule: unknown = undefined;
+  const fakeSchedule = () => {};
+
+  const report = await runSandboxWatchdog(
+    {
+      request: new Request("https://app.test/api/cron/watchdog"),
+      schedule: fakeSchedule,
+    },
+    makeDeps({
+      probe: async () => ({ ready: false, error: "ECONNREFUSED" }),
+      reconcile: async (options) => {
+        receivedSchedule = options.schedule;
+        return {
+          status: "recovering" as const,
+          repaired: true,
+          meta: { status: "booting" } as SingleMeta,
+        };
+      },
+    }),
+  );
+
+  assert.equal(receivedSchedule, fakeSchedule, "schedule callback must be forwarded to reconcile");
+  assert.equal(report.status, "repairing");
+});

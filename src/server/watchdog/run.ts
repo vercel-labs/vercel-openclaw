@@ -28,6 +28,7 @@ import {
 export type RunSandboxWatchdogOptions = {
   request: Request;
   repair?: boolean;
+  schedule?: (callback: () => Promise<void> | void) => void;
 };
 
 export type WatchdogDeps = {
@@ -37,6 +38,7 @@ export type WatchdogDeps = {
   reconcile: (options: {
     origin: string;
     reason: string;
+    schedule?: (callback: () => Promise<void> | void) => void;
     op?: OperationContext;
   }) => Promise<SandboxHealthResult>;
   ensureReady: (options: {
@@ -145,6 +147,7 @@ export async function runSandboxWatchdog(
             const result = await deps.reconcile({
               origin: getPublicOrigin(options.request),
               reason: "watchdog:stuck_busy",
+              schedule: options.schedule,
               op: watchdogOp,
             });
             triggeredRepair = true;
@@ -208,6 +211,7 @@ export async function runSandboxWatchdog(
           const reconciliation = await deps.reconcile({
             origin: getPublicOrigin(options.request),
             reason: "watchdog",
+            schedule: options.schedule,
             op: watchdogOp,
           });
 

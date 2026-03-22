@@ -1,3 +1,4 @@
+import { after } from "next/server";
 import {
   authJsonOk,
   requireJsonRouteAuth,
@@ -22,6 +23,6 @@ export async function POST(request: Request): Promise<Response> {
     return auth;
   }
 
-  const report = await runSandboxWatchdog({ request });
+  const report = await runSandboxWatchdog({ request, schedule: after });
   return authJsonOk({ ok: report.status !== "failed", report }, auth);
 }

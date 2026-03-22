@@ -1,3 +1,4 @@
+import { after } from "next/server";
 import { ApiError, jsonError, jsonOk } from "@/shared/http";
 import { getCronSecret } from "@/server/env";
 import { runSandboxWatchdog } from "@/server/watchdog/run";
@@ -22,7 +23,7 @@ async function handle(request: Request): Promise<Response> {
     return jsonError(new ApiError(401, "UNAUTHORIZED", "Unauthorized"));
   }
 
-  const report = await runSandboxWatchdog({ request });
+  const report = await runSandboxWatchdog({ request, schedule: after });
   return jsonOk({ ok: report.status !== "failed", report });
 }
 
