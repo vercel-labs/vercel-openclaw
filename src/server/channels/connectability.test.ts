@@ -92,6 +92,7 @@ test("passes with public origin, bypass, durable store, and OIDC", async () => {
   process.env.UPSTASH_REDIS_REST_URL = "https://upstash.example";
   process.env.UPSTASH_REDIS_REST_TOKEN = "token";
   process.env.OPENCLAW_PACKAGE_SPEC = "openclaw@1.0.0";
+  process.env.CRON_SECRET = "test-cron-secret";
   delete process.env.AI_GATEWAY_API_KEY;
   _setAiGatewayTokenOverrideForTesting("oidc-token");
 
@@ -199,6 +200,7 @@ test("webhook URL never includes bypass secret even when bypass secret is set", 
   process.env.UPSTASH_REDIS_REST_URL = "https://upstash.example";
   process.env.UPSTASH_REDIS_REST_TOKEN = "token";
   process.env.OPENCLAW_PACKAGE_SPEC = "openclaw@1.0.0";
+  process.env.CRON_SECRET = "test-cron-secret";
   delete process.env.AI_GATEWAY_API_KEY;
   _setAiGatewayTokenOverrideForTesting("oidc-token");
 
@@ -264,6 +266,7 @@ test("Vercel deployment missing OPENCLAW_PACKAGE_SPEC does not block channels", 
   process.env.VERCEL_AUTOMATION_BYPASS_SECRET = "bypass";
   process.env.UPSTASH_REDIS_REST_URL = "https://upstash.example";
   process.env.UPSTASH_REDIS_REST_TOKEN = "token";
+  process.env.CRON_SECRET = "test-cron-secret";
   delete process.env.OPENCLAW_PACKAGE_SPEC;
   delete process.env.AI_GATEWAY_API_KEY;
   _setAiGatewayTokenOverrideForTesting("oidc-token");
@@ -285,6 +288,7 @@ test("Vercel deployment with pinned OPENCLAW_PACKAGE_SPEC passes channel connect
   process.env.UPSTASH_REDIS_REST_URL = "https://upstash.example";
   process.env.UPSTASH_REDIS_REST_TOKEN = "token";
   process.env.OPENCLAW_PACKAGE_SPEC = "openclaw@1.2.3";
+  process.env.CRON_SECRET = "test-cron-secret";
   delete process.env.AI_GATEWAY_API_KEY;
   _setAiGatewayTokenOverrideForTesting("oidc-token");
 

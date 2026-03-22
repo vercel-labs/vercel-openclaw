@@ -191,6 +191,7 @@ test("sign-in-with-vercel on Vercel with all config passes", async () => {
   process.env.UPSTASH_REDIS_REST_URL = "https://test.upstash.io";
   process.env.UPSTASH_REDIS_REST_TOKEN = "test-upstash-token";
   process.env.VERCEL_AUTOMATION_BYPASS_SECRET = "bypass-secret";
+  process.env.CRON_SECRET = "test-cron-secret";
   _setAiGatewayTokenOverrideForTesting("test-token");
 
   const contract = await buildDeploymentContract();
@@ -296,6 +297,7 @@ test("deployed protected env fails store when missing (pinned spec passes)", asy
   delete process.env.KV_REST_API_TOKEN;
   delete process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
   delete process.env.AI_GATEWAY_API_KEY;
+  process.env.CRON_SECRET = "test-cron-secret";
   _setAiGatewayTokenOverrideForTesting("oidc-token");
 
   const contract = await buildDeploymentContract();

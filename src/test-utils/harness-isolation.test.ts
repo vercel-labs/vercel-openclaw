@@ -54,7 +54,7 @@ test("harness isolation: two sequential instances have independent controllers",
   h2.teardown();
 });
 
-test("harness isolation: controller is unset after teardown (reverts to real)", () => {
+test("harness isolation: controller is unset after teardown (throws without active controller)", () => {
   const h = createScenarioHarness();
   const fakeController = h.controller;
 
@@ -63,8 +63,11 @@ test("harness isolation: controller is unset after teardown (reverts to real)", 
 
   h.teardown();
 
-  // After teardown, it should NOT be the fake controller anymore
-  assert.notEqual(getSandboxController(), fakeController);
+  // After teardown, getSandboxController should throw (no active controller in test mode)
+  assert.throws(
+    () => getSandboxController(),
+    { message: /not initialized for testing/ },
+  );
 });
 
 // ---------------------------------------------------------------------------

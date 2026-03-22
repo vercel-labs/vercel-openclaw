@@ -52,7 +52,7 @@ args.push(...testFiles);
 
 const result = spawnSync(process.execPath, args, {
   stdio: "inherit",
-  env: process.env,
+  env: { ...process.env, NODE_ENV: "test" },
 });
 
 process.exit(result.status ?? 1);

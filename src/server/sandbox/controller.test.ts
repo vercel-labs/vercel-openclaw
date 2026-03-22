@@ -23,13 +23,14 @@ import {
   type SandboxEvent,
 } from "@/test-utils/fake-sandbox-controller";
 
-test("controller: getSandboxController returns real controller by default", () => {
-  // Reset to real controller first
+test("controller: getSandboxController throws when no test controller is set", () => {
+  // In NODE_ENV=test, getSandboxController() requires _setSandboxControllerForTesting() first
   _setSandboxControllerForTesting(null);
-  const controller = getSandboxController();
-  assert.ok(controller, "should return a controller");
-  assert.equal(typeof controller.create, "function", "create should be a function");
-  assert.equal(typeof controller.get, "function", "get should be a function");
+  assert.throws(
+    () => getSandboxController(),
+    { message: /not initialized for testing/ },
+    "should throw when no test controller is set",
+  );
 });
 
 test("controller: _setSandboxControllerForTesting swaps in fake controller", () => {
@@ -37,16 +38,17 @@ test("controller: _setSandboxControllerForTesting swaps in fake controller", () 
   _setSandboxControllerForTesting(fake);
   assert.strictEqual(getSandboxController(), fake);
   _setSandboxControllerForTesting(null);
-  assert.notStrictEqual(getSandboxController(), fake, "null should restore real controller");
 });
 
-test("controller: _setSandboxControllerForTesting(null) restores real controller", () => {
+test("controller: _setSandboxControllerForTesting(null) clears active controller", () => {
   const fake = new FakeSandboxController();
   _setSandboxControllerForTesting(fake);
   _setSandboxControllerForTesting(null);
-  const restored = getSandboxController();
-  // Real controller should not be the fake
-  assert.notStrictEqual(restored, fake);
+  // After clearing, getSandboxController should throw (no active controller in test mode)
+  assert.throws(
+    () => getSandboxController(),
+    { message: /not initialized for testing/ },
+  );
 });
 
 test("controller: FakeSandboxHandle conforms to SandboxHandle interface", async () => {

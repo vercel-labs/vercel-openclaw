@@ -113,6 +113,7 @@ function contractRequirementToIssue(
 const NON_CHANNEL_BLOCKING_REQUIREMENTS: Set<string> = new Set([
   "openclaw-package-spec",
   "webhook-bypass",
+  "cron-secret",
 ]);
 
 function collectContractIssues(
