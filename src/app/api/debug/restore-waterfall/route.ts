@@ -13,7 +13,9 @@ import {
 } from "@/server/env";
 import {
   buildGatewayConfig,
+  computeGatewayConfigHash,
   OPENCLAW_FAST_RESTORE_SCRIPT_PATH,
+  OPENCLAW_TELEGRAM_WEBHOOK_PORT,
 } from "@/server/openclaw/config";
 import {
   buildRestoreAssetManifest,
@@ -115,6 +117,7 @@ export async function POST(request: Request): Promise<Response> {
         slackConfig
           ? { botToken: slackConfig.botToken, signingSecret: slackConfig.signingSecret }
           : undefined,
+        latest.channels.telegram?.webhookSecret,
       ),
     );
 
@@ -141,7 +144,7 @@ export async function POST(request: Request): Promise<Response> {
     const sandbox = await step("Sandbox.create", async () => {
       const controller = getSandboxController();
       return controller.create({
-        ports: [3000],
+        ports: [3000, OPENCLAW_TELEGRAM_WEBHOOK_PORT],
         timeout: sleepAfterMs,
         resources: { vcpus },
         source: { type: "snapshot", snapshotId: meta.snapshotId! },
@@ -158,16 +161,13 @@ export async function POST(request: Request): Promise<Response> {
 
     // Phase 9: Config write check — skip if hash matches
     const currentConfigHash = stepSync("computeConfigHash", () => {
-      const hashSlackConfig = latest.channels.slack;
-      const hashConfigJson = buildGatewayConfig(
-        undefined,
-        "https://__config_hash_placeholder__",
-        latest.channels.telegram?.botToken,
-        hashSlackConfig
-          ? { botToken: hashSlackConfig.botToken, signingSecret: hashSlackConfig.signingSecret }
+      return computeGatewayConfigHash({
+        telegramBotToken: latest.channels.telegram?.botToken,
+        telegramWebhookSecret: latest.channels.telegram?.webhookSecret,
+        slackCredentials: slackConfig
+          ? { botToken: slackConfig.botToken, signingSecret: slackConfig.signingSecret }
           : undefined,
-      );
-      return createHash("sha256").update(hashConfigJson).digest("hex");
+      });
     });
     const skippedConfigWrite = latest.snapshotConfigHash === currentConfigHash;
 
@@ -178,6 +178,7 @@ export async function POST(request: Request): Promise<Response> {
             proxyOrigin: origin,
             apiKey: freshApiKey,
             telegramBotToken: latest.channels.telegram?.botToken,
+            telegramWebhookSecret: latest.channels.telegram?.webhookSecret,
             slackCredentials: slackConfig
               ? { botToken: slackConfig.botToken, signingSecret: slackConfig.signingSecret }
               : undefined,

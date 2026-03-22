@@ -20,6 +20,7 @@ import {
 } from "@/server/sandbox/lifecycle";
 import { getOpenclawPackageSpec } from "@/server/env";
 import { detectDrift } from "@/server/openclaw/bootstrap";
+import { computeGatewayConfigHash } from "@/server/openclaw/config";
 import { getInitializedMeta } from "@/server/store/store";
 import {
   publishLaunchVerifyQueueProbe,
@@ -374,10 +375,26 @@ function buildStreamingResponse(
         const runtimeMeta = await getInitializedMeta();
         const packageSpec = getOpenclawPackageSpec();
         if (packageSpec) {
+          const expectedConfigHash = computeGatewayConfigHash({
+            telegramBotToken: runtimeMeta.channels.telegram?.botToken,
+            telegramWebhookSecret: runtimeMeta.channels.telegram?.webhookSecret,
+            slackCredentials: runtimeMeta.channels.slack
+              ? {
+                botToken: runtimeMeta.channels.slack.botToken,
+                signingSecret: runtimeMeta.channels.slack.signingSecret,
+              }
+              : undefined,
+          });
           runtime = {
             packageSpec,
             installedVersion: runtimeMeta.openclawVersion,
             drift: detectDrift(packageSpec, runtimeMeta.openclawVersion),
+            expectedConfigHash,
+            lastRestoreConfigHash: runtimeMeta.lastRestoreMetrics?.dynamicConfigHash ?? null,
+            dynamicConfigVerified: runtimeMeta.lastRestoreMetrics?.dynamicConfigHash == null
+              ? null
+              : runtimeMeta.lastRestoreMetrics.dynamicConfigHash === expectedConfigHash,
+            dynamicConfigReason: runtimeMeta.lastRestoreMetrics?.dynamicConfigReason,
           };
         }
         sandboxHealth = {
@@ -524,10 +541,26 @@ async function buildJsonResponse(
     const runtimeMeta = await getInitializedMeta();
     const packageSpec = getOpenclawPackageSpec();
     if (packageSpec) {
+      const expectedConfigHash = computeGatewayConfigHash({
+        telegramBotToken: runtimeMeta.channels.telegram?.botToken,
+        telegramWebhookSecret: runtimeMeta.channels.telegram?.webhookSecret,
+        slackCredentials: runtimeMeta.channels.slack
+          ? {
+            botToken: runtimeMeta.channels.slack.botToken,
+            signingSecret: runtimeMeta.channels.slack.signingSecret,
+          }
+          : undefined,
+      });
       runtime = {
         packageSpec,
         installedVersion: runtimeMeta.openclawVersion,
         drift: detectDrift(packageSpec, runtimeMeta.openclawVersion),
+        expectedConfigHash,
+        lastRestoreConfigHash: runtimeMeta.lastRestoreMetrics?.dynamicConfigHash ?? null,
+        dynamicConfigVerified: runtimeMeta.lastRestoreMetrics?.dynamicConfigHash == null
+          ? null
+          : runtimeMeta.lastRestoreMetrics.dynamicConfigHash === expectedConfigHash,
+        dynamicConfigReason: runtimeMeta.lastRestoreMetrics?.dynamicConfigReason,
       };
     }
     sandboxHealth = {

@@ -201,6 +201,9 @@ export type RestorePhaseMetrics = {
   publicReadyMs: number;
   totalMs: number;
   skippedStaticAssetSync: boolean;
+  skippedDynamicConfigSync?: boolean;
+  dynamicConfigHash?: string | null;
+  dynamicConfigReason?: "hash-match" | "hash-miss" | "no-snapshot-hash";
   assetSha256: string | null;
   vcpus: number;
   recordedAt: number;
@@ -594,4 +597,3 @@ export function computePolicyHash(mode: FirewallMode, allowlist: string[]): stri
   const input = JSON.stringify({ mode, allowlist: sorted });
   return createHash("sha256").update(input).digest("hex");
 }
-

@@ -48,6 +48,7 @@ import {
   OPENCLAW_BUILTIN_IMAGE_GEN_SCRIPT_PATH,
   OPENCLAW_STARTUP_SCRIPT_PATH,
   OPENCLAW_TELEGRAM_WEBHOOK_PORT,
+  computeGatewayConfigHash,
 } from "@/server/openclaw/config";
 import { buildRestoreAssetManifest } from "@/server/openclaw/restore-assets";
 import {
@@ -814,6 +815,24 @@ test("restoreSandboxFromSnapshot writes all files + manifest on first restore (n
       // Verify manifest was written
       const manifestPath = writtenPaths.find((p) => p.includes(".restore-assets-manifest.json"));
       assert.ok(manifestPath, "Should write restore-assets manifest");
+
+      // Verify dynamic config metrics are recorded with no-snapshot-hash
+      const meta = await getInitializedMeta();
+      assert.ok(meta.lastRestoreMetrics, "Should have restore metrics");
+      assert.equal(
+        meta.lastRestoreMetrics.dynamicConfigReason,
+        "no-snapshot-hash",
+        "First restore without snapshotConfigHash should report no-snapshot-hash",
+      );
+      assert.equal(
+        meta.lastRestoreMetrics.skippedDynamicConfigSync,
+        false,
+        "Should not skip dynamic config sync when no snapshot hash exists",
+      );
+      assert.ok(
+        typeof meta.lastRestoreMetrics.dynamicConfigHash === "string",
+        "Should record the computed dynamic config hash",
+      );
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -954,6 +973,114 @@ test("restoreSandboxFromSnapshot skips static files on second restore when manif
     } finally {
       globalThis.fetch = originalFetch;
       _setSandboxControllerForTesting(null);
+    }
+  });
+});
+
+test("restoreSandboxFromSnapshot records hash-match when snapshotConfigHash matches current config", async () => {
+  const fake = new FakeSandboxController();
+  const originalFetch = globalThis.fetch;
+
+  await withTestEnv(fake, async () => {
+    // Pre-compute the config hash that the restore path will compute
+    const expectedHash = computeGatewayConfigHash({});
+
+    await mutateMeta((meta) => {
+      meta.status = "stopped";
+      meta.snapshotId = "snap-hash-match";
+      meta.gatewayToken = "test-gw-token";
+      meta.snapshotConfigHash = expectedHash;
+    });
+
+    globalThis.fetch = async () =>
+      new Response('<div id="openclaw-app"></div>', { status: 200 });
+
+    try {
+      const { handle } = await triggerRestore(fake, { tokenOverride: "test-ai-key" });
+
+      // Hot-path config write should be skipped on hash-match; background
+      // asset sync still writes config once. So expect exactly 1 config write
+      // (background only), not 2 (hot path + background).
+      const configWrites = handle.writtenFiles.filter((f) => f.path === OPENCLAW_CONFIG_PATH);
+      assert.equal(
+        configWrites.length,
+        1,
+        "Hash-match should skip hot-path config write; only background asset sync writes config (1 write total)",
+      );
+
+      const meta = await getInitializedMeta();
+      assert.ok(meta.lastRestoreMetrics, "Should have restore metrics");
+      assert.equal(
+        meta.lastRestoreMetrics.dynamicConfigReason,
+        "hash-match",
+        "Matching snapshotConfigHash should report hash-match",
+      );
+      assert.equal(
+        meta.lastRestoreMetrics.skippedDynamicConfigSync,
+        true,
+        "Should skip dynamic config sync when hashes match",
+      );
+      assert.equal(
+        meta.lastRestoreMetrics.dynamicConfigHash,
+        expectedHash,
+        "Should record the matching config hash",
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+test("restoreSandboxFromSnapshot records hash-miss when snapshotConfigHash differs from current config", async () => {
+  const fake = new FakeSandboxController();
+  const originalFetch = globalThis.fetch;
+
+  await withTestEnv(fake, async () => {
+    await mutateMeta((meta) => {
+      meta.status = "stopped";
+      meta.snapshotId = "snap-hash-miss";
+      meta.gatewayToken = "test-gw-token";
+      meta.snapshotConfigHash = "stale-hash-from-previous-snapshot";
+    });
+
+    globalThis.fetch = async () =>
+      new Response('<div id="openclaw-app"></div>', { status: 200 });
+
+    try {
+      const { handle } = await triggerRestore(fake, { tokenOverride: "test-ai-key" });
+
+      // Hash-miss: hot-path writes config + background asset sync also writes
+      // config = 2 total config writes.
+      const configWrites = handle.writtenFiles.filter((f) => f.path === OPENCLAW_CONFIG_PATH);
+      assert.equal(
+        configWrites.length,
+        2,
+        "Hash-miss should write config on hot path AND background sync (2 writes total)",
+      );
+
+      const meta = await getInitializedMeta();
+      assert.ok(meta.lastRestoreMetrics, "Should have restore metrics");
+      assert.equal(
+        meta.lastRestoreMetrics.dynamicConfigReason,
+        "hash-miss",
+        "Mismatched snapshotConfigHash should report hash-miss",
+      );
+      assert.equal(
+        meta.lastRestoreMetrics.skippedDynamicConfigSync,
+        false,
+        "Should not skip dynamic config sync when hashes differ",
+      );
+      assert.ok(
+        typeof meta.lastRestoreMetrics.dynamicConfigHash === "string",
+        "Should record the current config hash",
+      );
+      assert.notEqual(
+        meta.lastRestoreMetrics.dynamicConfigHash,
+        "stale-hash-from-previous-snapshot",
+        "Recorded hash should be the current config hash, not the stale one",
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
     }
   });
 });

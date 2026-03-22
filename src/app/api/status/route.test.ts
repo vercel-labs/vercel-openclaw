@@ -218,6 +218,9 @@ test("GET /api/status: includes lifecycle metadata with restore metrics and toke
         publicReadyMs: 600,
         totalMs: 1980,
         skippedStaticAssetSync: false,
+        skippedDynamicConfigSync: false,
+        dynamicConfigHash: "abc456def",
+        dynamicConfigReason: "hash-miss",
         assetSha256: "abc123",
         vcpus: 2,
         recordedAt: now,
@@ -254,7 +257,13 @@ test("GET /api/status: includes lifecycle metadata with restore metrics and toke
     assert.equal(result.status, 200);
     const body = result.json as {
       lifecycle: {
-        lastRestoreMetrics: { totalMs: number; vcpus: number };
+        lastRestoreMetrics: {
+          totalMs: number;
+          vcpus: number;
+          skippedDynamicConfigSync: boolean;
+          dynamicConfigHash: string | null;
+          dynamicConfigReason: string;
+        };
         restoreHistory: Array<{ totalMs: number }>;
         lastTokenRefreshAt: number;
         lastTokenSource: string | null;
@@ -268,6 +277,9 @@ test("GET /api/status: includes lifecycle metadata with restore metrics and toke
     assert.ok(body.lifecycle, "should include lifecycle block");
     assert.equal(body.lifecycle.lastRestoreMetrics.totalMs, 1980);
     assert.equal(body.lifecycle.lastRestoreMetrics.vcpus, 2);
+    assert.equal(body.lifecycle.lastRestoreMetrics.skippedDynamicConfigSync, false);
+    assert.equal(body.lifecycle.lastRestoreMetrics.dynamicConfigHash, "abc456def");
+    assert.equal(body.lifecycle.lastRestoreMetrics.dynamicConfigReason, "hash-miss");
     assert.equal(body.lifecycle.restoreHistory.length, 1);
     assert.equal(body.lifecycle.lastTokenSource, "oidc");
     assert.equal(body.lifecycle.lastTokenRefreshError, null);

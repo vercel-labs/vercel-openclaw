@@ -4,6 +4,8 @@ import test from "node:test";
 import {
   buildGatewayConfig,
   buildGatewayRestartScript,
+  computeGatewayConfigHash,
+  GATEWAY_CONFIG_HASH_VERSION,
   buildStartupScript,
   buildWebSearchSkill,
   buildWebSearchScript,
@@ -269,4 +271,119 @@ test("buildStartupScript clears pairing state while restart does not", () => {
 
   assert.ok(startup.includes("paired.json"), "startup should clear paired.json");
   assert.ok(!restart.includes("paired.json"), "restart must not clear paired.json");
+});
+
+test("computeGatewayConfigHash returns a stable sha256 hex digest", () => {
+  const hash = computeGatewayConfigHash({});
+
+  assert.match(hash, /^[a-f0-9]{64}$/);
+});
+
+test("computeGatewayConfigHash returns the same hash for identical inputs", () => {
+  const input = {
+    telegramBotToken: "telegram-token",
+    telegramWebhookSecret: "telegram-secret",
+    slackCredentials: {
+      botToken: "xoxb-test",
+      signingSecret: "slack-secret",
+    },
+  };
+
+  assert.equal(computeGatewayConfigHash(input), computeGatewayConfigHash(input));
+});
+
+test("computeGatewayConfigHash stays stable when buildGatewayConfig output varies by origin or api key", () => {
+  const configA = buildGatewayConfig(
+    "api-key-a",
+    "https://app-a.example.com",
+    "telegram-token",
+    { botToken: "xoxb-test", signingSecret: "slack-secret" },
+    "telegram-secret",
+  );
+  const configB = buildGatewayConfig(
+    "api-key-b",
+    "https://app-b.example.com",
+    "telegram-token",
+    { botToken: "xoxb-test", signingSecret: "slack-secret" },
+    "telegram-secret",
+  );
+
+  assert.notEqual(configA, configB);
+  assert.equal(
+    computeGatewayConfigHash({
+      telegramBotToken: "telegram-token",
+      telegramWebhookSecret: "telegram-secret",
+      slackCredentials: {
+        botToken: "xoxb-test",
+        signingSecret: "slack-secret",
+      },
+    }),
+    computeGatewayConfigHash({
+      telegramBotToken: "telegram-token",
+      telegramWebhookSecret: "telegram-secret",
+      slackCredentials: {
+        botToken: "xoxb-test",
+        signingSecret: "slack-secret",
+      },
+    }),
+  );
+});
+
+test("computeGatewayConfigHash changes when telegram bot token changes", () => {
+  const baseline = computeGatewayConfigHash({
+    telegramBotToken: "telegram-token-a",
+  });
+  const changed = computeGatewayConfigHash({
+    telegramBotToken: "telegram-token-b",
+  });
+
+  assert.notEqual(baseline, changed);
+});
+
+test("computeGatewayConfigHash changes when telegram webhook secret changes", () => {
+  const baseline = computeGatewayConfigHash({
+    telegramBotToken: "telegram-token",
+    telegramWebhookSecret: "secret-a",
+  });
+  const changed = computeGatewayConfigHash({
+    telegramBotToken: "telegram-token",
+    telegramWebhookSecret: "secret-b",
+  });
+
+  assert.notEqual(baseline, changed);
+});
+
+test("computeGatewayConfigHash changes when slack bot token changes", () => {
+  const baseline = computeGatewayConfigHash({
+    slackCredentials: {
+      botToken: "xoxb-a",
+      signingSecret: "slack-secret",
+    },
+  });
+  const changed = computeGatewayConfigHash({
+    slackCredentials: {
+      botToken: "xoxb-b",
+      signingSecret: "slack-secret",
+    },
+  });
+
+  assert.notEqual(baseline, changed);
+});
+
+test("computeGatewayConfigHash changes when slack signing secret changes and uses the current version", () => {
+  const baseline = computeGatewayConfigHash({
+    slackCredentials: {
+      botToken: "xoxb-test",
+      signingSecret: "secret-a",
+    },
+  });
+  const changed = computeGatewayConfigHash({
+    slackCredentials: {
+      botToken: "xoxb-test",
+      signingSecret: "secret-b",
+    },
+  });
+
+  assert.equal(GATEWAY_CONFIG_HASH_VERSION, 1);
+  assert.notEqual(baseline, changed);
 });

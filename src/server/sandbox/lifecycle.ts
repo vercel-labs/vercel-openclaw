@@ -17,7 +17,8 @@ import { applyFirewallPolicyToSandbox, toNetworkPolicy } from "@/server/firewall
 import { logError, logInfo, logWarn } from "@/server/log";
 import { setupOpenClaw, CommandFailedError, waitForGatewayReady } from "@/server/openclaw/bootstrap";
 import {
-  buildGatewayConfig,
+  computeGatewayConfigHash,
+  GATEWAY_CONFIG_HASH_VERSION,
   OPENCLAW_AI_GATEWAY_API_KEY_PATH,
   OPENCLAW_FAST_RESTORE_SCRIPT_PATH,
   OPENCLAW_GATEWAY_RESTART_SCRIPT_PATH,
@@ -25,6 +26,7 @@ import {
   OPENCLAW_LOG_FILE,
   OPENCLAW_STATE_DIR,
   OPENCLAW_TELEGRAM_WEBHOOK_PORT,
+  type GatewayConfigHashInput,
 } from "@/server/openclaw/config";
 import {
   OPENCLAW_RESTORE_ASSET_MANIFEST_PATH,
@@ -400,7 +402,17 @@ export async function stopSandbox(): Promise<SingleMeta> {
       // in buildGatewayConfig EXCEPT the proxy origin (which varies per
       // restore) and the API key (passed via env, not in config).  If the
       // hash matches at restore time, the writeFiles call is skipped.
-      const configHash = computeGatewayConfigHash(meta);
+      const configHashInput: GatewayConfigHashInput = {
+        telegramBotToken: meta.channels.telegram?.botToken,
+        telegramWebhookSecret: meta.channels.telegram?.webhookSecret,
+        slackCredentials: meta.channels.slack
+          ? {
+            botToken: meta.channels.slack.botToken,
+            signingSecret: meta.channels.slack.signingSecret,
+          }
+          : undefined,
+      };
+      const configHash = computeGatewayConfigHash(configHashInput);
 
       logInfo("sandbox.status_transition", {
         from: meta.status,
@@ -1639,22 +1651,6 @@ async function restoreSandboxFromSnapshot(
     // only — these values end up on the sandbox filesystem regardless.
     // Secrets (API key, bot tokens) are also passed as separate env vars for
     // the startup script; they appear in the config for OpenClaw's own use.
-    const configJson = buildGatewayConfig(
-      freshApiKey,
-      origin,
-      latest.channels.telegram?.botToken,
-      slackConfig ? { botToken: slackConfig.botToken, signingSecret: slackConfig.signingSecret } : undefined,
-      latest.channels.telegram?.webhookSecret,
-    );
-    const configJsonB64 = Buffer.from(configJson).toString("base64");
-
-    // Resolve firewall policy to pass at create time (avoids a post-create
-    // updateNetworkPolicy call that competes with boot for the serialized API).
-    const firewallPolicy = toNetworkPolicy(
-      latest.firewall.mode,
-      latest.firewall.allowlist,
-    );
-
     // External manifest hash comparison — avoids in-sandbox readFileToBuffer
     // (~2-3s) for the static asset skip check.
     const currentManifest = buildRestoreAssetManifest();
@@ -1698,8 +1694,31 @@ async function restoreSandboxFromSnapshot(
     const tokenWriteMs = 0;
     const forcePairMs = 0;
 
-    const currentConfigHash = computeGatewayConfigHash(latest);
-    const skippedConfigWrite = latest.snapshotConfigHash === currentConfigHash;
+    const currentConfigHashInput: GatewayConfigHashInput = {
+      telegramBotToken: latest.channels.telegram?.botToken,
+      telegramWebhookSecret: latest.channels.telegram?.webhookSecret,
+      slackCredentials: slackConfig
+        ? { botToken: slackConfig.botToken, signingSecret: slackConfig.signingSecret }
+        : undefined,
+    };
+    const currentConfigHash = computeGatewayConfigHash(currentConfigHashInput);
+    const skippedDynamicConfigSync =
+      latest.snapshotConfigHash !== null &&
+      latest.snapshotConfigHash === currentConfigHash;
+    const dynamicConfigReason: "hash-match" | "hash-miss" | "no-snapshot-hash" =
+      latest.snapshotConfigHash === null
+        ? "no-snapshot-hash"
+        : skippedDynamicConfigSync
+          ? "hash-match"
+          : "hash-miss";
+    logInfo("sandbox.restore.config_hash_checkpoint", {
+      snapshotConfigHash: latest.snapshotConfigHash,
+      currentConfigHash,
+      hashVersion: GATEWAY_CONFIG_HASH_VERSION,
+      dynamicConfigReason,
+      skippedDynamicConfigSync,
+    });
+    const skippedConfigWrite = skippedDynamicConfigSync;
 
     const assetSyncStart = Date.now();
     if (skippedConfigWrite) {
@@ -2033,6 +2052,9 @@ async function restoreSandboxFromSnapshot(
       publicReadyMs,
       totalMs,
       skippedStaticAssetSync,
+      skippedDynamicConfigSync,
+      dynamicConfigHash: currentConfigHash,
+      dynamicConfigReason,
       // Only record the new hash if sync was skipped (already matched) or
       // completed.  If background sync is pending, keep the old hash so
       // the next restore retries if it fails.
@@ -2120,26 +2142,6 @@ async function syncRestoreAssetsIfNeeded(
 // ---------------------------------------------------------------------------
 // Snapshot metadata
 // ---------------------------------------------------------------------------
-
-/**
- * Compute a hash of the gateway config inputs that are baked into a snapshot.
- * Excludes the proxy origin (varies per restore) and API key (passed via env).
- * When this hash matches at restore time, the writeFiles for openclaw.json
- * can be skipped — the snapshot already has the right config.
- */
-function computeGatewayConfigHash(meta: SingleMeta): string {
-  // Use a stable origin placeholder so the hash only changes when
-  // channel config or other gateway settings change.
-  const slackConfig = meta.channels.slack;
-  const configJson = buildGatewayConfig(
-    undefined,
-    "https://__config_hash_placeholder__",
-    meta.channels.telegram?.botToken,
-    slackConfig ? { botToken: slackConfig.botToken, signingSecret: slackConfig.signingSecret } : undefined,
-    meta.channels.telegram?.webhookSecret,
-  );
-  return createHash("sha256").update(configJson).digest("hex");
-}
 
 function recordSnapshotMetadata(
   meta: SingleMeta,

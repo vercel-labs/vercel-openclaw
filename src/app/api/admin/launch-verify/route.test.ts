@@ -19,8 +19,10 @@ import {
   getAdminLaunchVerifyRoute,
   drainAfterCallbacks,
 } from "@/test-utils/route-caller";
+import { computeGatewayConfigHash } from "@/server/openclaw/config";
 import type {
   LaunchVerificationPayload,
+  LaunchVerificationRuntime,
   LaunchVerificationSandboxHealth,
   ChannelReadiness,
 } from "@/shared/launch-verification";
@@ -512,5 +514,153 @@ test("launch-verify POST (NDJSON): missing webhook bypass does not block runtime
     } finally {
       restoreEnv();
     }
+  });
+});
+
+// ===========================================================================
+// Dynamic config verification in launch-verify runtime output
+// ===========================================================================
+
+test("launch-verify POST: runtime.dynamicConfigVerified is true when restore hash matches expected", async () => {
+  await withHarness(async (h) => {
+    process.env.NEXT_PUBLIC_APP_URL = "https://test.example";
+
+    await h.driveToRunning();
+
+    // Compute the expected hash (no channels configured = empty input)
+    const expectedHash = computeGatewayConfigHash({});
+
+    // Seed lastRestoreMetrics with a matching dynamicConfigHash
+    await h.mutateMeta((meta) => {
+      meta.lastRestoreMetrics = {
+        sandboxCreateMs: 100,
+        tokenWriteMs: 10,
+        assetSyncMs: 50,
+        startupScriptMs: 200,
+        forcePairMs: 30,
+        firewallSyncMs: 20,
+        localReadyMs: 300,
+        publicReadyMs: 400,
+        totalMs: 1000,
+        skippedStaticAssetSync: false,
+        skippedDynamicConfigSync: true,
+        dynamicConfigHash: expectedHash,
+        dynamicConfigReason: "hash-match",
+        assetSha256: null,
+        vcpus: 1,
+        recordedAt: Date.now(),
+      };
+    });
+
+    h.fakeFetch.on("POST", /v1\/chat\/completions/, () => {
+      return Response.json({
+        choices: [{ message: { content: "launch-verify-ok" } }],
+      });
+    });
+
+    const route = getAdminLaunchVerifyRoute();
+    const req = buildAuthPostRequest(
+      "/api/admin/launch-verify",
+      JSON.stringify({ mode: "safe" }),
+    );
+    const result = await callRoute(route.POST, req);
+    await drainAfterCallbacks();
+
+    const body = result.json as LaunchVerificationPayload;
+    assert.ok(body.runtime, "expected runtime in response");
+    const runtime = body.runtime as LaunchVerificationRuntime;
+
+    assert.equal(runtime.dynamicConfigVerified, true, "should be verified when hashes match");
+    assert.equal(runtime.expectedConfigHash, expectedHash);
+    assert.equal(runtime.lastRestoreConfigHash, expectedHash);
+    assert.equal(runtime.dynamicConfigReason, "hash-match");
+  });
+});
+
+test("launch-verify POST: runtime.dynamicConfigVerified is false when restore hash differs", async () => {
+  await withHarness(async (h) => {
+    process.env.NEXT_PUBLIC_APP_URL = "https://test.example";
+
+    await h.driveToRunning();
+
+    // Seed lastRestoreMetrics with a stale/mismatched dynamicConfigHash
+    await h.mutateMeta((meta) => {
+      meta.lastRestoreMetrics = {
+        sandboxCreateMs: 100,
+        tokenWriteMs: 10,
+        assetSyncMs: 50,
+        startupScriptMs: 200,
+        forcePairMs: 30,
+        firewallSyncMs: 20,
+        localReadyMs: 300,
+        publicReadyMs: 400,
+        totalMs: 1000,
+        skippedStaticAssetSync: false,
+        skippedDynamicConfigSync: false,
+        dynamicConfigHash: "stale-hash-from-previous-restore",
+        dynamicConfigReason: "hash-miss",
+        assetSha256: null,
+        vcpus: 1,
+        recordedAt: Date.now(),
+      };
+    });
+
+    h.fakeFetch.on("POST", /v1\/chat\/completions/, () => {
+      return Response.json({
+        choices: [{ message: { content: "launch-verify-ok" } }],
+      });
+    });
+
+    const route = getAdminLaunchVerifyRoute();
+    const req = buildAuthPostRequest(
+      "/api/admin/launch-verify",
+      JSON.stringify({ mode: "safe" }),
+    );
+    const result = await callRoute(route.POST, req);
+    await drainAfterCallbacks();
+
+    const body = result.json as LaunchVerificationPayload;
+    assert.ok(body.runtime, "expected runtime in response");
+    const runtime = body.runtime as LaunchVerificationRuntime;
+
+    assert.equal(runtime.dynamicConfigVerified, false, "should be false when hashes differ");
+    assert.equal(runtime.lastRestoreConfigHash, "stale-hash-from-previous-restore");
+    assert.equal(runtime.dynamicConfigReason, "hash-miss");
+    assert.notEqual(runtime.expectedConfigHash, runtime.lastRestoreConfigHash);
+  });
+});
+
+test("launch-verify POST: runtime.dynamicConfigVerified is null when no restore metrics exist", async () => {
+  await withHarness(async (h) => {
+    process.env.NEXT_PUBLIC_APP_URL = "https://test.example";
+
+    await h.driveToRunning();
+
+    // Ensure no lastRestoreMetrics (fresh create, never restored)
+    await h.mutateMeta((meta) => {
+      meta.lastRestoreMetrics = null;
+    });
+
+    h.fakeFetch.on("POST", /v1\/chat\/completions/, () => {
+      return Response.json({
+        choices: [{ message: { content: "launch-verify-ok" } }],
+      });
+    });
+
+    const route = getAdminLaunchVerifyRoute();
+    const req = buildAuthPostRequest(
+      "/api/admin/launch-verify",
+      JSON.stringify({ mode: "safe" }),
+    );
+    const result = await callRoute(route.POST, req);
+    await drainAfterCallbacks();
+
+    const body = result.json as LaunchVerificationPayload;
+    assert.ok(body.runtime, "expected runtime in response");
+    const runtime = body.runtime as LaunchVerificationRuntime;
+
+    assert.equal(runtime.dynamicConfigVerified, null, "should be null when no restore metrics");
+    assert.equal(runtime.lastRestoreConfigHash, null);
+    assert.ok(runtime.expectedConfigHash, "expectedConfigHash should always be computed");
   });
 });

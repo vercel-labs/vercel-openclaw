@@ -19,6 +19,10 @@ export type LaunchVerificationRuntime = {
   packageSpec: string;
   installedVersion: string | null;
   drift: boolean;
+  expectedConfigHash: string | null;
+  lastRestoreConfigHash: string | null;
+  dynamicConfigVerified: boolean | null;
+  dynamicConfigReason?: "hash-match" | "hash-miss" | "no-snapshot-hash";
 };
 
 export type LaunchVerificationSandboxHealth = {

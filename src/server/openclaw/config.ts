@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 const OPENCLAW_PORT = 3000;
 
 export const OPENCLAW_BIN = "/home/vercel-sandbox/.global/npm/bin/openclaw";
@@ -272,6 +274,29 @@ export function buildGatewayConfig(
   }
 
   return JSON.stringify(config);
+}
+
+export const GATEWAY_CONFIG_HASH_VERSION = 1;
+const GATEWAY_CONFIG_HASH_PROXY_ORIGIN = "https://proxy.invalid";
+
+export type GatewayConfigHashInput = {
+  telegramBotToken?: string;
+  telegramWebhookSecret?: string;
+  slackCredentials?: { botToken: string; signingSecret: string };
+};
+
+export function computeGatewayConfigHash(input: GatewayConfigHashInput): string {
+  const configJson = buildGatewayConfig(
+    undefined,
+    GATEWAY_CONFIG_HASH_PROXY_ORIGIN,
+    input.telegramBotToken,
+    input.slackCredentials,
+    input.telegramWebhookSecret,
+  );
+  return createHash("sha256")
+    .update(`gateway-config-hash:v${GATEWAY_CONFIG_HASH_VERSION}\0`)
+    .update(configJson)
+    .digest("hex");
 }
 
 export function buildForcePairScript(): string {
@@ -1276,4 +1301,3 @@ openclaw cron status                  # Scheduler status
 - Minimum interval for \\\`--every\\\` is 1 minute.
 `;
 }
-
