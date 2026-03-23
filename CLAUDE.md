@@ -19,7 +19,6 @@ The app does not handle:
 
 - multiple sandboxes
 - per-sandbox passwords
-- admin bearer tokens
 
 ## Commands
 
@@ -463,48 +462,6 @@ Run a subset of steps:
 ```bash
 node scripts/verify.mjs --steps=test,typecheck
 ```
-
-## Post-push remote verification
-
-After pushing changes that affect deployed behavior (routes, sandbox bootstrap, config, channels), **always run remote diagnostics** using the `/vercel-openclaw-testing` skill. This skill provides SSH access, admin endpoints, log queries, and smoke tests against the live deployment.
-
-Read `.env.agent` first for `OPENCLAW_BASE_URL` and `ADMIN_SECRET`.
-
-Standard post-push checklist:
-
-1. **Check deploy status** — `vercel ls` shows recent deployments with age, status (Ready/Error), and URLs. Don't proceed until the latest is `● Ready`.
-2. **Test new/changed endpoints** — curl the route with admin bearer auth
-3. **Trigger sandbox restore if bootstrap/config changed** — `POST /api/admin/stop` then `POST /api/admin/ensure` to get a fresh sandbox with updated files. Note: restores may skip config rewrites if the config hash hasn't changed (channel tokens etc.). Use `npx sandbox exec` to patch the config directly if needed.
-4. **Verify sandbox state with `npx sandbox exec`** — this is the fastest way to inspect the sandbox filesystem:
-   ```bash
-   # Get current sandbox ID
-   sbid=$(curl -s "$OPENCLAW_BASE_URL/api/status" -H "Authorization: Bearer $ADMIN_SECRET" | jq -r '.sandboxId')
-   # Run commands inside the sandbox
-   npx sandbox exec "$sbid" -- ls ~/.openclaw/skills/
-   npx sandbox exec "$sbid" -- cat /tmp/openclaw.log
-   npx sandbox exec "$sbid" -- python3 -c "import json; print(json.dumps(json.load(open('/home/vercel-sandbox/.openclaw/openclaw.json')), indent=2))"
-   ```
-   Requires `npx sandbox login` first. If the session expires, the user must re-login interactively.
-5. **Check logs for errors** — `GET /api/admin/logs?level=error` or `npx sandbox exec "$sbid" -- tail -50 /tmp/openclaw.log`
-6. **Run readiness gate** — `node scripts/check-deploy-readiness.mjs --base-url "$OPENCLAW_BASE_URL" --admin-secret "$ADMIN_SECRET"`
-
-### CLI tools for remote debugging
-
-| Tool | When to use | Example |
-|------|-------------|---------|
-| `vercel ls` | Check deploy status — is the latest build Ready or Error? | `vercel ls` |
-| `vercel inspect <url>` | Get deployment details (commit, build time) | `vercel inspect https://vercel-openclaw-xxx.labs.vercel.dev` |
-| `npx sandbox exec <id> -- <cmd>` | Run commands inside the live sandbox (faster than SSH endpoint) | `npx sandbox exec sbx_xxx -- cat /tmp/openclaw.log` |
-| `npx sandbox ls` | List all sandboxes for the project | `npx sandbox ls` |
-| Admin SSH endpoint | Alternative when `npx sandbox` session is expired | `curl -X POST "$OPENCLAW_BASE_URL/api/admin/ssh" -H "Authorization: Bearer $ADMIN_SECRET" -d '{"command":"..."}'` |
-
-### Known gotchas
-
-- **Config hash skip**: `buildDynamicRestoreFiles` is skipped on restore if `snapshotConfigHash` matches. Changes to `buildGatewayConfig()` output (like adding new fields) won't take effect until channel config changes. Workaround: patch the config directly via `npx sandbox exec` + restart gateway.
-- **OpenClaw strict config validation**: Unknown keys in `openclaw.json` cause gateway startup failure (e.g. `agents.defaults.instructions` is rejected). Always test config changes on a live sandbox before deploying.
-- **Force-push rebuild**: `git push --force-with-lease` to main may or may not trigger a new Vercel build. Always check `vercel ls` to confirm.
-
-The `/vercel-openclaw-testing` skill has full details: debug routes, SSH recipes, log filters, smoke test phases, failure patterns, and the complete test framework reference.
 
 ## AI Gateway auth helpers (`src/server/env.ts`)
 
