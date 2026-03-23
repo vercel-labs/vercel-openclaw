@@ -226,6 +226,15 @@ export function buildGatewayConfig(
       },
     },
   };
+  // Mark all senders as "owner" so owner-only tools (cron, gateway,
+  // nodes) are available through channel handlers (Telegram fast path,
+  // Slack).  Without this, OpenClaw strips these tools from non-admin
+  // senders on the native handler ports.  This is safe because the
+  // proxy already enforces auth before any traffic reaches the sandbox.
+  config.commands = {
+    ownerAllowFrom: ["*"],
+  };
+
   config.tools = {
     // Use "full" profile so all built-in tools are available, including
     // group:automation (cron, gateway).  The default "coding" profile

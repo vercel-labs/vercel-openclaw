@@ -7,7 +7,11 @@ import { extractTelegramChatId, isTelegramWebhookSecretValid } from "@/server/ch
 import { sendMessage } from "@/server/channels/telegram/bot-api";
 import { extractRequestId, logError, logInfo, logWarn } from "@/server/log";
 import { createOperationContext, withOperationContext } from "@/server/observability/operation-context";
+import { OPENCLAW_TELEGRAM_WEBHOOK_PORT } from "@/server/openclaw/config";
+import { getSandboxDomain } from "@/server/sandbox/lifecycle";
 import { getInitializedMeta, getStore } from "@/server/store/store";
+
+const FORWARD_TIMEOUT_MS = 10_000;
 
 function extractUpdateId(payload: unknown): string | null {
   if (!payload || typeof payload !== "object") {
@@ -66,16 +70,39 @@ export async function POST(request: Request): Promise<Response> {
 
     logInfo("channels.telegram_webhook_accepted", withOperationContext(op));
 
-    // --- Fast path disabled ---
-    // The native Telegram handler on port 8787 resolves senderIsOwner from
-    // client scopes, and Telegram webhook connections lack the admin scope.
-    // This causes owner-only tools (cron, gateway, nodes) to be stripped
-    // from the agent's tool set.  The completions API path on port 3000
-    // hardcodes senderIsOwner:true, so all tools are available.
-    //
-    // Tradeoff: we lose native Telegram slash-command handling and
-    // inline-keyboard features.  These are acceptable losses for a
-    // template where cron scheduling is a core feature.
+    // --- Fast path: forward raw update to OpenClaw's native Telegram handler ---
+    // When the sandbox is running, OpenClaw handles the full Telegram lifecycle
+    // natively (images, replies, Bot API calls) on port 8787.  This avoids the
+    // app-layer image download/re-upload pipeline.
+    if (meta.status === "running" && meta.sandboxId) {
+      try {
+        const sandboxWebhookUrl = await getSandboxDomain(OPENCLAW_TELEGRAM_WEBHOOK_PORT);
+        const forwardUrl = `${sandboxWebhookUrl}/telegram-webhook`;
+        const forwardResponse = await fetch(forwardUrl, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-telegram-bot-api-secret-token": secretHeader,
+          },
+          body: JSON.stringify(payload),
+          signal: AbortSignal.timeout(FORWARD_TIMEOUT_MS),
+        });
+        if (forwardResponse.ok) {
+          logInfo("channels.telegram_fast_path_ok", withOperationContext(op, { sandboxId: meta.sandboxId }));
+          return Response.json({ ok: true });
+        }
+        logWarn("channels.telegram_fast_path_non_ok", withOperationContext(op, {
+          status: forwardResponse.status,
+          sandboxId: meta.sandboxId,
+        }));
+      } catch (error) {
+        logWarn("channels.telegram_fast_path_failed", withOperationContext(op, {
+          error: error instanceof Error ? error.message : String(error),
+          sandboxId: meta.sandboxId,
+        }));
+      }
+      // Fall through to queue-based path
+    }
 
     // Send "Starting up" boot message from the webhook route (before workflow)
     // so the user gets immediate feedback. The message ID is passed to the

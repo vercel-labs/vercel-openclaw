@@ -7,6 +7,7 @@ import type {
   OperationContext,
   RestorePhaseMetrics,
   SingleMeta,
+  StoredCronRecord,
 } from "@/shared/types";
 import { MAX_RESTORE_HISTORY } from "@/shared/types";
 import {
@@ -59,6 +60,56 @@ const SANDBOX_PORTS = [OPENCLAW_PORT, OPENCLAW_TELEGRAM_WEBHOOK_PORT];
 export const CRON_NEXT_WAKE_KEY = "openclaw-single:cron-next-wake-ms";
 export const CRON_JOBS_KEY = "openclaw-single:cron-jobs-json";
 const CRON_JOBS_PATH = `${OPENCLAW_STATE_DIR}/cron/jobs.json`;
+const CRON_JOBS_MAX_BYTES = 256 * 1024; // 256 KB size cap for store value
+
+/** Build a structured cron record from raw jobs JSON. Returns null if invalid. */
+function buildCronRecord(
+  rawJobsJson: string,
+  source: "stop" | "heartbeat",
+): StoredCronRecord | null {
+  try {
+    const parsed = JSON.parse(rawJobsJson) as {
+      jobs?: Array<{ id?: string; enabled?: boolean }>;
+    };
+    if (!Array.isArray(parsed.jobs) || parsed.jobs.length === 0) return null;
+    if (rawJobsJson.length > CRON_JOBS_MAX_BYTES) return null;
+    return {
+      version: 1,
+      capturedAt: Date.now(),
+      source,
+      sha256: createHash("sha256").update(rawJobsJson).digest("hex"),
+      jobCount: parsed.jobs.length,
+      jobIds: parsed.jobs.map((j) => j.id ?? "").filter(Boolean).sort(),
+      jobsJson: rawJobsJson,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Parse a stored cron record, handling both structured and legacy raw string formats. */
+function parseStoredCronRecord(
+  raw: unknown,
+): StoredCronRecord | null {
+  if (!raw) return null;
+  // Structured record (has version field)
+  if (typeof raw === "object" && raw !== null && "version" in raw && "jobsJson" in raw) {
+    return raw as StoredCronRecord;
+  }
+  // Legacy: raw string or Upstash-deserialized object without version field
+  let jobsJson: string;
+  if (typeof raw === "string") {
+    jobsJson = raw;
+  } else if (typeof raw === "object" && raw !== null && "jobs" in raw) {
+    // Upstash double-deserialized the old raw string into an object
+    jobsJson = JSON.stringify(raw);
+  } else {
+    return null;
+  }
+  // Wrap legacy format into a structured record for uniform handling
+  return buildCronRecord(jobsJson, "stop") ?? null;
+}
+
 const LIFECYCLE_LOCK_KEY = "openclaw-single:lock:lifecycle";
 const START_LOCK_KEY = "openclaw-single:lock:start";
 const TOKEN_REFRESH_LOCK_KEY = "openclaw-single:lock:token-refresh";
@@ -441,18 +492,19 @@ export async function stopSandbox(): Promise<SingleMeta> {
         await getStore().deleteValue(CRON_NEXT_WAKE_KEY);
       }
 
-      // Persist full cron jobs JSON as a safety net for snapshot restores.
-      // Edge cases (partial writes, config re-init) can cause job loss;
-      // the store copy ensures we can always recover.
-      //
+      // Persist structured cron record as a safety net for snapshot restores.
       // The stop path is authoritative — if there are 0 jobs, the user
       // intentionally deleted them.  Clear the store so a future restore
-      // does not resurrect old jobs.  (The heartbeat path does NOT clear
-      // on empty reads because those can be transient.)
+      // does not resurrect old jobs.
       const rawJobs = cronWakeRead.status !== "error" ? cronWakeRead.rawJobsJson : undefined;
       if (rawJobs) {
-        await getStore().setValue(CRON_JOBS_KEY, rawJobs);
-        logInfo("sandbox.cron_jobs_persisted", { bytes: rawJobs.length });
+        const record = buildCronRecord(rawJobs, "stop");
+        if (record) {
+          await getStore().setValue(CRON_JOBS_KEY, record);
+          logInfo("sandbox.cron_jobs_persisted", {
+            source: "stop", jobCount: record.jobCount, sha256: record.sha256,
+          });
+        }
       } else if (cronWakeRead.status === "no-jobs") {
         await getStore().deleteValue(CRON_JOBS_KEY);
         logInfo("sandbox.cron_jobs_cleared", { reason: "no-jobs-on-stop" });
@@ -805,22 +857,23 @@ export async function touchRunningSandbox(): Promise<SingleMeta> {
     } else if (cronWakeRead.status === "no-jobs") {
       await getStore().deleteValue(CRON_NEXT_WAKE_KEY);
     }
-    // Persist full cron jobs JSON as a safety net.  IMPORTANT: only
-    // overwrite the store when we read valid, non-empty jobs.  A
-    // heartbeat can catch jobs.json during a transient empty/partial-
+    // Persist structured cron record as a safety net.  IMPORTANT: only
+    // overwrite the store when we read valid, non-empty, changed jobs.
+    // A heartbeat can catch jobs.json during a transient empty/partial-
     // write window — blindly writing that would clobber a good backup.
     const rawJobs = cronWakeRead.status !== "error" ? cronWakeRead.rawJobsJson : undefined;
     if (rawJobs) {
-      try {
-        const parsed = JSON.parse(rawJobs) as { jobs?: unknown[] };
-        if (Array.isArray(parsed.jobs) && parsed.jobs.length > 0) {
-          await getStore().setValue(CRON_JOBS_KEY, rawJobs);
+      const record = buildCronRecord(rawJobs, "heartbeat");
+      if (record) {
+        // Only write if the hash changed — avoids redundant Upstash writes.
+        const existing = parseStoredCronRecord(
+          await getStore().getValue<unknown>(CRON_JOBS_KEY),
+        );
+        if (!existing || existing.sha256 !== record.sha256) {
+          await getStore().setValue(CRON_JOBS_KEY, record);
         }
-        // If jobs array is empty, do NOT clear the store — the existing
-        // backup may be valid and the empty read may be transient.
-      } catch {
-        // Parse failed — do not overwrite a potentially good backup.
       }
+      // If record is null (empty/invalid), do NOT clear — may be transient.
     }
   } catch {
     // Non-critical — don't let cron-wake bookkeeping break the heartbeat.
@@ -2150,83 +2203,64 @@ async function restoreSandboxFromSnapshot(
     // the store does, write them back and restart the gateway to reload.
     let cronRestoreOutcome: CronRestoreOutcome = "no-store-jobs";
     try {
-      // getValue may return a string (memory store) or an already-parsed
-      // object (Upstash store double-deserializes via JSON.parse).  Handle both.
-      const storedRaw = await getStore().getValue<string | Record<string, unknown>>(CRON_JOBS_KEY);
-      if (storedRaw) {
-        const storedJobsJson = typeof storedRaw === "string" ? storedRaw : JSON.stringify(storedRaw);
-        // Verify the stored jobs actually have jobs (not an empty array).
-        let storedData: { jobs?: unknown[] };
-        try {
-          storedData = typeof storedRaw === "object" && storedRaw !== null
-            ? (storedRaw as { jobs?: unknown[] })
-            : (JSON.parse(storedJobsJson) as { jobs?: unknown[] });
-        } catch (error) {
-          cronRestoreOutcome = "store-invalid";
-          throw error;
-        }
-
-        if (!Array.isArray(storedData.jobs)) {
-          cronRestoreOutcome = "store-invalid";
-          throw new Error(`Invalid cron jobs payload in store: missing jobs array for ${CRON_JOBS_KEY}`);
-        }
-
-        if (storedData.jobs.length > 0) {
-          // Check current jobs.json — only restore if gateway wiped it.
-          const currentBuf = await sandbox.readFileToBuffer({ path: CRON_JOBS_PATH });
-          const currentData = currentBuf
-            ? (JSON.parse(currentBuf.toString("utf8")) as { jobs?: unknown[] })
+      const storedRecord = parseStoredCronRecord(
+        await getStore().getValue<unknown>(CRON_JOBS_KEY),
+      );
+      if (storedRecord && storedRecord.jobCount > 0) {
+        // Check current jobs.json — only restore if gateway wiped it.
+        const currentBuf = await sandbox.readFileToBuffer({ path: CRON_JOBS_PATH });
+        const currentData = currentBuf
+          ? (JSON.parse(currentBuf.toString("utf8")) as { jobs?: unknown[] })
+          : { jobs: [] };
+        if (!Array.isArray(currentData.jobs) || currentData.jobs.length === 0) {
+          await sandbox.writeFiles([{
+            path: CRON_JOBS_PATH,
+            content: Buffer.from(storedRecord.jobsJson),
+          }]);
+          // Restart gateway so cron module re-reads the restored jobs.
+          await sandbox.runCommand("bash", [OPENCLAW_GATEWAY_RESTART_SCRIPT_PATH]);
+          // Wait for the restarted gateway to become ready.
+          await pollUntil({
+            label: "cron-restore-gateway-ready",
+            timeoutMs: 15_000,
+            initialDelayMs: 200,
+            maxDelayMs: 500,
+            step: async () => {
+              const result = await sandbox.runCommand("bash", [
+                "-c",
+                `curl -s -f --max-time 1 http://localhost:${OPENCLAW_PORT}/ 2>/dev/null | grep -q 'openclaw-app' && echo ok || echo not-ready`,
+              ]);
+              const out = await result.output("stdout");
+              if (out.trim() === "ok") return { done: true, result: true };
+              return { done: false };
+            },
+            timeoutError: () => new Error("Gateway did not become ready after cron jobs restore"),
+          });
+          const restoredBuf = await sandbox.readFileToBuffer({ path: CRON_JOBS_PATH });
+          const restoredData = restoredBuf
+            ? (JSON.parse(restoredBuf.toString("utf8")) as { jobs?: unknown[] })
             : { jobs: [] };
-          if (!Array.isArray(currentData.jobs) || currentData.jobs.length === 0) {
-            await sandbox.writeFiles([{
-              path: CRON_JOBS_PATH,
-              content: Buffer.from(storedJobsJson),
-            }]);
-            // Restart gateway so cron module re-reads the restored jobs.
-            await sandbox.runCommand("bash", [OPENCLAW_GATEWAY_RESTART_SCRIPT_PATH]);
-            // Wait for the restarted gateway to become ready.
-            await pollUntil({
-              label: "cron-restore-gateway-ready",
-              timeoutMs: 15_000,
-              initialDelayMs: 200,
-              maxDelayMs: 500,
-              step: async () => {
-                const result = await sandbox.runCommand("bash", [
-                  "-c",
-                  `curl -s -f --max-time 1 http://localhost:${OPENCLAW_PORT}/ 2>/dev/null | grep -q 'openclaw-app' && echo ok || echo not-ready`,
-                ]);
-                const out = await result.output("stdout");
-                if (out.trim() === "ok") return { done: true, result: true };
-                return { done: false };
-              },
-              timeoutError: () => new Error("Gateway did not become ready after cron jobs restore"),
-            });
-            const restoredBuf = await sandbox.readFileToBuffer({ path: CRON_JOBS_PATH });
-            const restoredData = restoredBuf
-              ? (JSON.parse(restoredBuf.toString("utf8")) as { jobs?: unknown[] })
-              : { jobs: [] };
-            const restoredJobCount = Array.isArray(restoredData.jobs) ? restoredData.jobs.length : 0;
-            cronRestoreOutcome =
-              restoredJobCount === storedData.jobs.length
-                ? "restored-verified"
-                : "restore-unverified";
-            logInfo("sandbox.restore.cron_jobs_restored", {
-              sandboxId: sandbox.sandboxId,
-              jobCount: storedData.jobs.length,
-              restoredJobCount,
-              verified: cronRestoreOutcome === "restored-verified",
-            });
-          } else {
-            cronRestoreOutcome = "already-present";
-          }
+          const restoredJobCount = Array.isArray(restoredData.jobs) ? restoredData.jobs.length : 0;
+          cronRestoreOutcome =
+            restoredJobCount === storedRecord.jobCount
+              ? "restored-verified"
+              : "restore-unverified";
+          logInfo("sandbox.restore.cron_jobs_restored", {
+            sandboxId: sandbox.sandboxId,
+            jobCount: storedRecord.jobCount,
+            restoredJobCount,
+            storedSha256: storedRecord.sha256,
+            storedSource: storedRecord.source,
+            verified: cronRestoreOutcome === "restored-verified",
+          });
         } else {
-          cronRestoreOutcome = "no-store-jobs";
+          cronRestoreOutcome = "already-present";
         }
+      } else if (!storedRecord) {
+        cronRestoreOutcome = "no-store-jobs";
       }
     } catch (err) {
-      if (cronRestoreOutcome !== "store-invalid") {
-        cronRestoreOutcome = "restore-failed";
-      }
+      cronRestoreOutcome = "restore-failed";
       // Non-critical — cron jobs are a convenience, not a hard requirement.
       logWarn("sandbox.restore.cron_jobs_restore_failed", {
         sandboxId: sandbox.sandboxId,

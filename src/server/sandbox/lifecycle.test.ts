@@ -3980,11 +3980,12 @@ test("stopSandbox persists cron jobs JSON to store", async () => {
 
     await stopSandbox();
 
-    const storedJobs = await getStore().getValue<string>(CRON_JOBS_KEY);
-    assert.ok(storedJobs, "Cron jobs JSON should be persisted to store");
-    const parsed = JSON.parse(storedJobs);
-    assert.equal(parsed.jobs.length, 1);
-    assert.equal(parsed.jobs[0].id, "test-job");
+    const record = await getStore().getValue<{ version: number; jobCount: number; jobIds: string[]; source: string }>(CRON_JOBS_KEY);
+    assert.ok(record, "Structured cron record should be persisted to store");
+    assert.equal(record.version, 1);
+    assert.equal(record.jobCount, 1);
+    assert.deepEqual(record.jobIds, ["test-job"]);
+    assert.equal(record.source, "stop");
   });
 });
 

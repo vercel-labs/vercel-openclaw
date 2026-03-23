@@ -198,6 +198,28 @@ export type CronRestoreOutcome =
   | "restore-unverified"
   | "store-invalid";
 
+/**
+ * Structured record persisted to the store as `CRON_JOBS_KEY`.
+ * Wraps the raw jobs.json with metadata for change detection,
+ * staleness checks, and partial-loss detection.
+ */
+export type StoredCronRecord = {
+  /** Schema version for forward compatibility. */
+  version: 1;
+  /** When this record was captured (ms since epoch). */
+  capturedAt: number;
+  /** Which path wrote this record. */
+  source: "stop" | "heartbeat";
+  /** SHA-256 of the raw jobsJson for cheap equality checks. */
+  sha256: string;
+  /** Number of jobs at capture time. */
+  jobCount: number;
+  /** Sorted job IDs for semantic identity comparison. */
+  jobIds: string[];
+  /** The raw jobs.json content (the actual payload to restore). */
+  jobsJson: string;
+};
+
 export type RestorePhaseMetrics = {
   sandboxCreateMs: number;
   tokenWriteMs: number;
