@@ -384,7 +384,47 @@ test("cron-persistence: heartbeat persists jobs to store", async (t) => {
 });
 
 // ---------------------------------------------------------------------------
-// Phase 5: Failure resilience — cron restore failure doesn't block restore
+// Phase 5: Heartbeat guard — empty read must not clobber good store backup
+// ---------------------------------------------------------------------------
+
+test("cron-persistence: heartbeat with empty jobs does not clobber store", async (t) => {
+  const h = createScenarioHarness();
+
+  try {
+    await h.driveToRunning();
+
+    // Pre-populate store with valid jobs (as if a previous stop persisted them).
+    const goodJobsJson = buildTestCronJobs(Date.now() + 600_000);
+    await getStore().setValue(CRON_JOBS_KEY, goodJobsJson);
+
+    // Write EMPTY jobs.json to sandbox (simulating transient empty state).
+    const handle = h.controller.lastCreated()!;
+    await handle.writeFiles([{
+      path: CRON_JOBS_PATH,
+      content: Buffer.from(JSON.stringify({ version: 1, jobs: [] })),
+    }]);
+
+    // Clear throttle and trigger heartbeat.
+    const { mutateMeta } = await import("@/server/store/store");
+    await mutateMeta((m) => { m.lastAccessedAt = Date.now() - 600_000; });
+    const { touchRunningSandbox } = await import("@/server/sandbox/lifecycle");
+    await touchRunningSandbox();
+
+    // Store should still have the GOOD jobs — heartbeat must not clobber.
+    const storedJobs = await getStore().getValue<string>(CRON_JOBS_KEY);
+    assert.ok(storedJobs, "Store should still have jobs");
+    const parsed = JSON.parse(storedJobs);
+    assert.equal(parsed.jobs.length, 2, "Good backup must not be overwritten by empty heartbeat read");
+  } catch (err) {
+    await dumpDiagnostics(t, h);
+    throw err;
+  } finally {
+    h.teardown();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Phase 6: Failure resilience — cron restore failure doesn't block restore
 // ---------------------------------------------------------------------------
 
 test("cron-persistence: cron restore failure does not block sandbox restore", async (t) => {

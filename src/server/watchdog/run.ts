@@ -3,13 +3,14 @@ import {
   type DeploymentContract,
 } from "@/server/deployment-contract";
 import { getCurrentDeploymentId } from "@/server/launch-verify/state";
-import { logError, logInfo } from "@/server/log";
+import { logError, logInfo, logWarn } from "@/server/log";
 import {
   createOperationContext,
 } from "@/server/observability/operation-context";
 import { getPublicOrigin } from "@/server/public-url";
 import {
   CRON_NEXT_WAKE_KEY,
+  CRON_JOBS_KEY,
   ensureSandboxReady,
   isBusyStatus,
   probeGatewayReady,
@@ -49,6 +50,7 @@ export type WatchdogDeps = {
   writeReport: (report: WatchdogReport) => Promise<WatchdogReport>;
   getCronNextWakeMs: () => Promise<number | null>;
   clearCronNextWake: () => Promise<void>;
+  getCronJobsJson: () => Promise<string | null>;
   now: () => number;
 };
 
@@ -64,6 +66,7 @@ const defaultDeps: WatchdogDeps = {
   writeReport: writeWatchdogReport,
   getCronNextWakeMs: () => getStore().getValue<number>(CRON_NEXT_WAKE_KEY),
   clearCronNextWake: () => getStore().deleteValue(CRON_NEXT_WAKE_KEY),
+  getCronJobsJson: () => getStore().getValue<string>(CRON_JOBS_KEY),
   now: () => Date.now(),
 };
 
@@ -241,11 +244,42 @@ export async function runSandboxWatchdog(
       if (cronNextWakeMs && cronNextWakeMs <= deps.now()) {
         try {
           const origin = getPublicOrigin(options.request);
-          await deps.ensureReady({ origin, reason: "watchdog:cron-wake" });
-          await deps.clearCronNextWake();
+          const wakeMeta = await deps.ensureReady({ origin, reason: "watchdog:cron-wake" });
+
+          // Only clear the wake key when cron is confirmed healthy.
+          // If the store had jobs that needed restoring but restoration
+          // failed, keep the wake key so the next watchdog cycle retries.
+          const storedJobs = await deps.getCronJobsJson();
+          const storeHasJobs = (() => {
+            if (!storedJobs) return false;
+            try {
+              const parsed = JSON.parse(storedJobs) as { jobs?: unknown[] };
+              return Array.isArray(parsed.jobs) && parsed.jobs.length > 0;
+            } catch { return false; }
+          })();
+          const cronRestored = wakeMeta.lastRestoreMetrics?.cronJobsRestored;
+          // Safe to clear when: no stored jobs to worry about, OR cron
+          // was actively restored, OR sandbox already had jobs (common case).
+          // Unsafe: store has jobs AND cronJobsRestored is false AND the
+          // restore just happened (metrics were just recorded).
+          const restoredJustNow = wakeMeta.lastRestoreMetrics?.recordedAt
+            && (deps.now() - wakeMeta.lastRestoreMetrics.recordedAt) < 60_000;
+          const cronMayBeLost = storeHasJobs && cronRestored === false && restoredJustNow;
+
+          if (!cronMayBeLost) {
+            await deps.clearCronNextWake();
+          } else {
+            logWarn("watchdog.cron_wake_key_retained", {
+              reason: "Store has cron jobs but restore did not confirm recovery — retaining wake key",
+              cronJobsRestored: cronRestored,
+              storeHasJobs,
+            });
+          }
           triggeredRepair = true;
           addCheck(WATCHDOG_CRON_WAKE_CHECK_ID, "pass", cronCheckStartedAt,
-            "Cron job due — woke sandbox.");
+            cronMayBeLost
+              ? "Cron job due — woke sandbox but cron restore uncertain; wake key retained."
+              : "Cron job due — woke sandbox.");
           status = "repairing";
         } catch (err) {
           const errMsg = err instanceof Error ? err.message : String(err);

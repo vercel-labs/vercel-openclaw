@@ -792,11 +792,22 @@ export async function touchRunningSandbox(): Promise<SingleMeta> {
     } else if (cronWakeRead.status === "no-jobs") {
       await getStore().deleteValue(CRON_NEXT_WAKE_KEY);
     }
-    // Also persist full cron jobs JSON — the store copy acts as a safety
-    // net in case jobs are lost during a future restore edge case.
+    // Persist full cron jobs JSON as a safety net.  IMPORTANT: only
+    // overwrite the store when we read valid, non-empty jobs.  A
+    // heartbeat can catch jobs.json during a transient empty/partial-
+    // write window — blindly writing that would clobber a good backup.
     const rawJobs = cronWakeRead.status !== "error" ? cronWakeRead.rawJobsJson : undefined;
     if (rawJobs) {
-      await getStore().setValue(CRON_JOBS_KEY, rawJobs);
+      try {
+        const parsed = JSON.parse(rawJobs) as { jobs?: unknown[] };
+        if (Array.isArray(parsed.jobs) && parsed.jobs.length > 0) {
+          await getStore().setValue(CRON_JOBS_KEY, rawJobs);
+        }
+        // If jobs array is empty, do NOT clear the store — the existing
+        // backup may be valid and the empty read may be transient.
+      } catch {
+        // Parse failed — do not overwrite a potentially good backup.
+      }
     }
   } catch {
     // Non-critical — don't let cron-wake bookkeeping break the heartbeat.
