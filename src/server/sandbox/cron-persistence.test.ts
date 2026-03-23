@@ -183,9 +183,9 @@ test("cron-persistence: jobs survive a full stop → restore cycle", async (t) =
 
       // Verify restore metrics
       assert.equal(
-        meta.lastRestoreMetrics?.cronJobsRestored,
-        true,
-        "Metrics should record cronJobsRestored=true",
+        meta.lastRestoreMetrics?.cronRestoreOutcome,
+        "restored-verified",
+        "Metrics should record a verified cron restore",
       );
     });
 
@@ -239,7 +239,11 @@ test("cron-persistence: restore skips cron recovery when store has no jobs", asy
 
     const meta = await getInitializedMeta();
     assert.equal(meta.status, "running");
-    assert.equal(meta.lastRestoreMetrics?.cronJobsRestored, false, "Should not restore cron when store is empty");
+    assert.equal(
+      meta.lastRestoreMetrics?.cronRestoreOutcome,
+      "no-store-jobs",
+      "Should not restore cron when store is empty",
+    );
 
     // No cron jobs should have been written to the sandbox.
     const newHandle = h.controller.lastCreated()!;
@@ -318,8 +322,8 @@ test("cron-persistence: restore skips recovery when sandbox already has jobs", a
     const meta = await getInitializedMeta();
     assert.equal(meta.status, "running");
     assert.equal(
-      meta.lastRestoreMetrics?.cronJobsRestored,
-      false,
+      meta.lastRestoreMetrics?.cronRestoreOutcome,
+      "already-present",
       "Should not restore cron when sandbox already has jobs",
     );
 
@@ -458,9 +462,9 @@ test("cron-persistence: cron restore failure does not block sandbox restore", as
     const meta = await getInitializedMeta();
     assert.equal(meta.status, "running", "Sandbox should be running despite cron failure");
     assert.equal(
-      meta.lastRestoreMetrics?.cronJobsRestored,
-      false,
-      "Metrics should show cron was not restored",
+      meta.lastRestoreMetrics?.cronRestoreOutcome,
+      "store-invalid",
+      "Metrics should show the stored cron payload was invalid",
     );
   } catch (err) {
     await dumpDiagnostics(t, h);

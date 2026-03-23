@@ -190,6 +190,14 @@ export type FirewallReport = {
   policyHash: string;
 };
 
+export type CronRestoreOutcome =
+  | "no-store-jobs"
+  | "already-present"
+  | "restored-verified"
+  | "restore-failed"
+  | "restore-unverified"
+  | "store-invalid";
+
 export type RestorePhaseMetrics = {
   sandboxCreateMs: number;
   tokenWriteMs: number;
@@ -211,8 +219,8 @@ export type RestorePhaseMetrics = {
   bootOverlapMs?: number;
   /** Whether the public readiness probe was skipped (non-waiting callers). */
   skippedPublicReady?: boolean;
-  /** Whether cron jobs were restored from the store after gateway boot. */
-  cronJobsRestored?: boolean;
+  /** Outcome of the post-restore cron jobs recovery flow. */
+  cronRestoreOutcome?: CronRestoreOutcome;
 };
 
 /**
@@ -542,9 +550,26 @@ function isRestorePhaseMetrics(value: unknown): value is RestorePhaseMetrics {
     typeof v.publicReadyMs === "number" &&
     typeof v.totalMs === "number" &&
     typeof v.skippedStaticAssetSync === "boolean" &&
+    (v.cronRestoreOutcome === undefined || isCronRestoreOutcome(v.cronRestoreOutcome)) &&
     (v.assetSha256 === null || typeof v.assetSha256 === "string") &&
     typeof v.vcpus === "number" &&
     typeof v.recordedAt === "number"
+  );
+}
+
+const CRON_RESTORE_OUTCOMES: readonly CronRestoreOutcome[] = [
+  "no-store-jobs",
+  "already-present",
+  "restored-verified",
+  "restore-failed",
+  "restore-unverified",
+  "store-invalid",
+];
+
+function isCronRestoreOutcome(value: unknown): value is CronRestoreOutcome {
+  return (
+    typeof value === "string"
+    && CRON_RESTORE_OUTCOMES.includes(value as CronRestoreOutcome)
   );
 }
 

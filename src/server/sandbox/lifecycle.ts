@@ -2,7 +2,12 @@ import { createHash, randomUUID } from "node:crypto";
 
 import { pollUntil } from "@/server/async/poll";
 import { ApiError } from "@/shared/http";
-import type { OperationContext, RestorePhaseMetrics, SingleMeta } from "@/shared/types";
+import type {
+  CronRestoreOutcome,
+  OperationContext,
+  RestorePhaseMetrics,
+  SingleMeta,
+} from "@/shared/types";
 import { MAX_RESTORE_HISTORY } from "@/shared/types";
 import {
   withOperationContext,
@@ -2135,13 +2140,25 @@ async function restoreSandboxFromSnapshot(
     // We persist the full jobs JSON to the store before each snapshot and
     // heartbeat as a safety net.  If the restored sandbox has no jobs but
     // the store does, write them back and restart the gateway to reload.
-    let cronJobsRestored = false;
+    let cronRestoreOutcome: CronRestoreOutcome = "no-store-jobs";
     try {
       const storedJobsJson = await getStore().getValue<string>(CRON_JOBS_KEY);
       if (storedJobsJson) {
         // Verify the stored jobs actually have jobs (not an empty array).
-        const storedData = JSON.parse(storedJobsJson) as { jobs?: unknown[] };
-        if (Array.isArray(storedData.jobs) && storedData.jobs.length > 0) {
+        let storedData: { jobs?: unknown[] };
+        try {
+          storedData = JSON.parse(storedJobsJson) as { jobs?: unknown[] };
+        } catch (error) {
+          cronRestoreOutcome = "store-invalid";
+          throw error;
+        }
+
+        if (!Array.isArray(storedData.jobs)) {
+          cronRestoreOutcome = "store-invalid";
+          throw new Error(`Invalid cron jobs payload in store: missing jobs array for ${CRON_JOBS_KEY}`);
+        }
+
+        if (storedData.jobs.length > 0) {
           // Check current jobs.json — only restore if gateway wiped it.
           const currentBuf = await sandbox.readFileToBuffer({ path: CRON_JOBS_PATH });
           const currentData = currentBuf
@@ -2171,18 +2188,36 @@ async function restoreSandboxFromSnapshot(
               },
               timeoutError: () => new Error("Gateway did not become ready after cron jobs restore"),
             });
-            cronJobsRestored = true;
+            const restoredBuf = await sandbox.readFileToBuffer({ path: CRON_JOBS_PATH });
+            const restoredData = restoredBuf
+              ? (JSON.parse(restoredBuf.toString("utf8")) as { jobs?: unknown[] })
+              : { jobs: [] };
+            const restoredJobCount = Array.isArray(restoredData.jobs) ? restoredData.jobs.length : 0;
+            cronRestoreOutcome =
+              restoredJobCount === storedData.jobs.length
+                ? "restored-verified"
+                : "restore-unverified";
             logInfo("sandbox.restore.cron_jobs_restored", {
               sandboxId: sandbox.sandboxId,
               jobCount: storedData.jobs.length,
+              restoredJobCount,
+              verified: cronRestoreOutcome === "restored-verified",
             });
+          } else {
+            cronRestoreOutcome = "already-present";
           }
+        } else {
+          cronRestoreOutcome = "no-store-jobs";
         }
       }
     } catch (err) {
+      if (cronRestoreOutcome !== "store-invalid") {
+        cronRestoreOutcome = "restore-failed";
+      }
       // Non-critical — cron jobs are a convenience, not a hard requirement.
       logWarn("sandbox.restore.cron_jobs_restore_failed", {
         sandboxId: sandbox.sandboxId,
+        cronRestoreOutcome,
         error: err instanceof Error ? err.message : String(err),
       });
     }
@@ -2300,7 +2335,7 @@ async function restoreSandboxFromSnapshot(
       recordedAt: Date.now(),
       bootOverlapMs,
       skippedPublicReady: skipPublicReady,
-      cronJobsRestored,
+      cronRestoreOutcome,
     };
 
     if (op) {

@@ -4047,7 +4047,87 @@ test("restoreSandboxFromSnapshot restores cron jobs from store after gateway boo
       assert.ok(restartCmd, "Gateway restart script should be run after cron restore");
 
       // Verify metrics record the restore
-      assert.equal(meta.lastRestoreMetrics?.cronJobsRestored, true);
+      assert.equal(meta.lastRestoreMetrics?.cronRestoreOutcome, "restored-verified");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+test("restoreSandboxFromSnapshot marks cron restore unverified when post-restart jobs mismatch store", async () => {
+  const fake = new FakeSandboxController();
+  const originalFetch = globalThis.fetch;
+  const cronJobsJson = JSON.stringify({
+    version: 1,
+    jobs: [
+      {
+        id: "avatar-quote",
+        enabled: true,
+        state: { nextRunAtMs: Date.now() + 60_000 },
+      },
+      {
+        id: "daily-standup",
+        enabled: true,
+        state: { nextRunAtMs: Date.now() + 120_000 },
+      },
+    ],
+  });
+
+  fake.defaultResponders.push((cmd, args) => {
+    if (cmd === "bash" && args?.some((a) => typeof a === "string" && a.includes("openclaw-app"))) {
+      return { exitCode: 0, output: async () => "ok" };
+    }
+    return undefined;
+  });
+
+  const originalCreate = fake.create.bind(fake);
+  fake.create = async (params) => {
+    const handle = await originalCreate(params) as FakeSandboxHandle;
+    const originalReadFileToBuffer = handle.readFileToBuffer.bind(handle);
+    let cronReadCount = 0;
+    handle.readFileToBuffer = async (file) => {
+      if (file.path !== "/home/vercel-sandbox/.openclaw/cron/jobs.json") {
+        return originalReadFileToBuffer(file);
+      }
+
+      cronReadCount += 1;
+      if (cronReadCount === 1) {
+        return null;
+      }
+      if (cronReadCount === 2) {
+        return Buffer.from(JSON.stringify({
+          version: 1,
+          jobs: [{
+            id: "avatar-quote",
+            enabled: true,
+            state: { nextRunAtMs: Date.now() + 60_000 },
+          }],
+        }));
+      }
+      return originalReadFileToBuffer(file);
+    };
+    return handle;
+  };
+
+  await withTestEnv(fake, async () => {
+    await mutateMeta((meta) => {
+      meta.status = "stopped";
+      meta.snapshotId = "snap-cron-restore-unverified";
+      meta.gatewayToken = "test-gw-token";
+    });
+
+    await getStore().setValue(CRON_JOBS_KEY, cronJobsJson);
+
+    globalThis.fetch = async () =>
+      new Response('<div id="openclaw-app"></div>', { status: 200 });
+
+    try {
+      const { meta } = await triggerRestore(fake, {
+        tokenOverride: "test-ai-key",
+      });
+
+      assert.equal(meta.status, "running");
+      assert.equal(meta.lastRestoreMetrics?.cronRestoreOutcome, "restore-unverified");
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -4084,7 +4164,7 @@ test("restoreSandboxFromSnapshot skips cron restore when store has no jobs", asy
       assert.ok(!cronWrite, "Should not write cron jobs when store is empty");
 
       // Verify metrics show no cron restore
-      assert.equal(meta.lastRestoreMetrics?.cronJobsRestored, false);
+      assert.equal(meta.lastRestoreMetrics?.cronRestoreOutcome, "no-store-jobs");
     } finally {
       globalThis.fetch = originalFetch;
     }
