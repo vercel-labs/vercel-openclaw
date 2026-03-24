@@ -71,11 +71,11 @@ Also: `restoring`, `error`
 
 ### Channel delivery
 
-1. Public webhook validates the platform signature
-2. Handler publishes to a Vercel Queue topic
-3. Private queue consumer restores the sandbox if needed
-4. Consumer sends the message to OpenClaw's chat completions endpoint
-5. App delivers the reply back to the originating channel
+1. Public webhook validates the platform signature or secret.
+2. If the sandbox is already running, Telegram forwards raw updates to the native handler on port `8787`; Slack forwards to the gateway's Slack events endpoint.
+3. Otherwise Telegram may send a boot message, then the route starts `drainChannelWorkflow` via Workflow DevKit. Slack and Discord also enter the workflow path when they cannot use the fast path.
+4. The workflow restores the sandbox if needed, sends the message to `POST /v1/chat/completions`, and delivers the reply back to the originating channel.
+5. `@vercel/queue` is used for launch verification only, via `/api/queues/launch-verify`.
 
 ## Project structure
 
@@ -89,7 +89,7 @@ src/
 │   └── admin-shell.tsx         # Admin UI
 ├── server/
 │   ├── auth/                   # Session cookies and Vercel OAuth
-│   ├── channels/               # Channel adapters, queue driver
+│   ├── channels/               # Channel adapters and workflow delivery
 │   ├── firewall/               # Domain parsing, state, policy mapping
 │   ├── openclaw/               # Config generation and bootstrap
 │   ├── proxy/                  # HTML injection, waiting page
@@ -111,11 +111,11 @@ Full reference:
 | `NEXT_PUBLIC_VERCEL_APP_CLIENT_ID` | Sign-in mode | OAuth client ID |
 | `VERCEL_APP_CLIENT_SECRET` | Sign-in mode | OAuth client secret |
 | `SESSION_SECRET` | Sign-in mode | Cookie encryption secret |
-| `OPENCLAW_PACKAGE_SPEC` | No | OpenClaw version to install (defaults to `openclaw@latest`). On Vercel the deployment contract **fails** when unset or unpinned (e.g. `openclaw@latest`); the runtime still falls back to `openclaw@latest` with a warning log. Pin to `openclaw@1.2.3` for deterministic restores and repeatable benchmarks. |
+| `OPENCLAW_PACKAGE_SPEC` | No | OpenClaw version to install (defaults to `openclaw@latest`). On Vercel deployments, the deployment contract **warns** — it does not fail — when unset or unpinned (e.g. `openclaw@latest`). The runtime still falls back to `openclaw@latest`, but restores are non-deterministic. Pin to an exact version like `openclaw@1.2.3`. |
 | `OPENCLAW_SANDBOX_VCPUS` | No | vCPU count for sandbox create and snapshot restore (valid: 1, 2, 4, 8; default: 1). Keep fixed during benchmarks. |
 | `OPENCLAW_SANDBOX_SLEEP_AFTER_MS` | No | How long the sandbox stays alive after last activity, in milliseconds (60000–2700000; default: 1800000 = 30 min). Heartbeat and touch-throttle intervals are derived proportionally. Existing running sandboxes cannot be shortened in place. If you increase this value, the next touch/heartbeat can top the sandbox timeout up to the new target. If you decrease it, the lower value becomes exact on the next create or restore. |
 | `VERCEL_AUTOMATION_BYPASS_SECRET` | No | Appended to webhook URLs to pass Deployment Protection |
-| `CRON_SECRET` | No | Enables `/api/cron/drain-channels` diagnostic backstop (Workflow DevKit is the primary channel delivery mechanism) |
+| `CRON_SECRET` | Required on Vercel | Authenticates `/api/cron/watchdog` (every 5 min, wakes stopped sandboxes for cron jobs) and the optional `/api/cron/drain-channels` diagnostic backstop. Missing on Vercel is a hard failure in the deployment contract. |
 | `NEXT_PUBLIC_APP_URL` | No | Base origin override |
 | `NEXT_PUBLIC_BASE_DOMAIN` | No | Preferred external host for webhook URLs |
 | `BASE_DOMAIN` | No | Legacy alias for `NEXT_PUBLIC_BASE_DOMAIN` |
@@ -138,3 +138,6 @@ Full reference:
 | `/api/channels/discord/webhook` | Public Discord interactions endpoint |
 
 See `CLAUDE.md` for the complete route table and detailed system documentation.
+
+See `SECURITY.md` for vulnerability reporting.
+See `CODE_OF_CONDUCT.md` for community participation standards.

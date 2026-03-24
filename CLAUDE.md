@@ -103,7 +103,8 @@ Cron jobs can be lost during snapshot restore in edge cases: partial writes duri
 - **Store keys**: `openclaw-single:cron-next-wake-ms` (wake timestamp) and `openclaw-single:cron-jobs-json` (full jobs payload)
 - **Save path**: `stopSandbox()` and `touchRunningSandbox()` both persist to the store
 - **Restore path**: after gateway readiness in `restoreSandboxFromSnapshot()`, if the store has jobs and the sandbox has none, the jobs are written back and the gateway is restarted via `OPENCLAW_GATEWAY_RESTART_SCRIPT_PATH`. When the snapshot already preserved the jobs (the common case), no restart is needed.
-- **Metrics**: `RestorePhaseMetrics.cronJobsRestored` indicates whether jobs were restored on a given restore cycle
+- **Metrics**: `RestorePhaseMetrics.cronRestoreOutcome` records `no-store-jobs`, `already-present`, `restored-verified`, `restore-failed`, `restore-unverified`, or `store-invalid`.
+- **Watchdog clear behavior**: `/api/cron/watchdog` clears the saved wake key only after `no-store-jobs`, `already-present`, or `restored-verified`; otherwise it retains the wake key so the next run can retry.
 
 If you change the restore flow, ensure the cron check happens **after** the gateway is ready and **before** marking the sandbox as `running`.
 
@@ -129,7 +130,7 @@ All channel webhook URL builders (`buildSlackWebhookUrl`, `buildTelegramWebhookU
 
 Machine-checkable config readiness report consumed by `/api/admin/preflight`.
 
-Checks: `public-origin`, `webhook-bypass` (always passes — admin-secret auth handles webhooks without bypass), `store`, `ai-gateway`, `openclaw-package-spec` (warn on Vercel when unpinned, runtime falls back to `openclaw@latest`), `auth-config` (fail when sign-in-with-vercel vars are missing).
+Checks: `public-origin`, `webhook-bypass` (diagnostic only: pass or warn, never fail), `store`, `ai-gateway`, `openclaw-package-spec` (warn on Vercel when unpinned, runtime falls back to `openclaw@latest`), `auth-config` (fail when sign-in-with-vercel vars are missing), `bootstrap-exposure`, and `cron-secret` (fail on Vercel when missing).
 
 The authoritative readiness check is `POST /api/admin/launch-verify` (`src/app/api/admin/launch-verify/route.ts`), which runs preflight as its first phase and then verifies runtime behavior: queue loopback delivery via `/api/queues/launch-verify`, sandbox ensure, gateway chat completions, and wake-from-sleep recovery (destructive mode). `scripts/check-deploy-readiness.mjs` consumes launch-verify by default.
 
@@ -143,16 +144,20 @@ Store requirement policy: missing Upstash is a hard fail (`status: "fail"`) on V
   authMode: "admin-secret" | "sign-in-with-vercel";
   publicOrigin: string | null;
   webhookBypassEnabled: boolean;
+  webhookBypassRecommended: boolean;
   storeBackend: "upstash" | "memory";
-  aiGatewayAuth: "oidc" | "unavailable";
+  aiGatewayAuth: "oidc" | "api-key" | "unavailable";
   cronSecretConfigured: boolean;
   publicOriginResolution: PublicOriginResolution | null;
   webhookDiagnostics: { slack, telegram, discord };
   channels: Record<"slack" | "telegram" | "discord", ChannelConnectability>;
   actions: PreflightAction[];
   checks: PreflightCheck[];
+  nextSteps: PreflightNextStep[];
 }
 ```
+
+`POST /api/admin/launch-verify` is the public readiness entrypoint. It supports standard JSON responses and NDJSON streaming when the client sends `Accept: application/x-ndjson`. Runtime phases are `preflight`, `queuePing`, `ensureRunning`, `chatCompletions`, and `wakeFromSleep` (destructive mode only). If preflight fails, the runtime phases are skipped.
 
 ## Control plane
 
@@ -216,6 +221,8 @@ Readiness is checked in two stages:
 
 This separates sandbox boot failures from proxy/DNS failures and keeps restores fast.
 
+Dynamic restore config verification is hash-based: `snapshotConfigHash` is compared against `computeGatewayConfigHash()`, and restore metrics record `dynamicConfigHash`, `dynamicConfigReason`, and `skippedDynamicConfigSync`.
+
 ### `lastRestoreMetrics`
 
 `SingleMeta.lastRestoreMetrics` records per-phase timings using this shape:
@@ -232,9 +239,15 @@ type RestorePhaseMetrics = {
   publicReadyMs: number;
   totalMs: number;
   skippedStaticAssetSync: boolean;
+  skippedDynamicConfigSync?: boolean;
+  dynamicConfigHash?: string | null;
+  dynamicConfigReason?: "hash-match" | "hash-miss" | "no-snapshot-hash";
   assetSha256: string | null;
   vcpus: number;
   recordedAt: number;
+  bootOverlapMs?: number;
+  skippedPublicReady?: boolean;
+  cronRestoreOutcome?: CronRestoreOutcome;
 };
 ```
 
@@ -479,7 +492,7 @@ These variables are checked by `buildDeploymentContract()` in `src/server/deploy
 | -------- | ------- | ------ |
 | `UPSTASH_REDIS_REST_URL` | All deployments | Required for persistent state. Provision via Vercel Marketplace. |
 | `UPSTASH_REDIS_REST_TOKEN` | All deployments | Required for persistent state. Paired with the URL above. |
-| `OPENCLAW_PACKAGE_SPEC` | All environments | Optional locally, **required on Vercel**. Defaults to `openclaw@latest` when unset in local dev. On Vercel deployments the deployment contract **fails** when unset or unpinned (e.g. `openclaw@latest`); the runtime still falls back to `openclaw@latest` with a warning log. Pin to an exact version like `openclaw@1.2.3` for deterministic sandbox restores. |
+| `OPENCLAW_PACKAGE_SPEC` | All environments | Optional locally, recommended on Vercel. Defaults to `openclaw@latest` when unset in local dev. On Vercel deployments, the deployment contract **warns** — it does not fail — when unset or unpinned (e.g. `openclaw@latest`). The runtime still falls back to `openclaw@latest`, but restores are non-deterministic. Pin to an exact version like `openclaw@1.2.3` for deterministic sandbox restores. |
 | `OPENCLAW_SANDBOX_VCPUS` | All environments | Optional. vCPU count for sandbox create and snapshot restore (valid: 1, 2, 4, 8; default: 1). Keep this fixed during benchmarks so restore timings stay comparable. |
 | `OPENCLAW_SANDBOX_SLEEP_AFTER_MS` | All environments | Optional. How long the sandbox stays alive after last activity, in milliseconds (60000–2700000; default: 1800000 = 30 min). Heartbeat and touch-throttle intervals are derived proportionally. Existing running sandboxes cannot be shortened in place. If you increase this value, the next touch/heartbeat can top the sandbox timeout up to the new target. If you decrease it, the lower value becomes exact on the next create or restore. |
 | `NEXT_PUBLIC_VERCEL_APP_CLIENT_ID` | `sign-in-with-vercel` mode | Required for OAuth flow. |
