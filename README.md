@@ -16,21 +16,24 @@
 
 ## Setup
 
-The deploy button will ask you for two environment variables. Both come from **Upstash Redis**, which you can provision for free through the [Vercel Marketplace](https://vercel.com/marketplace/upstash-redis):
+The deploy button asks for the two Upstash Redis variables because durable state is the only external dependency the template cannot infer. A working Vercel deployment still needs an auth configuration and `CRON_SECRET` before launch verification passes.
 
 | Variable | Where to get it |
 | -------- | --------------- |
 | `UPSTASH_REDIS_REST_URL` | Upstash console → your database → REST API → Endpoint |
 | `UPSTASH_REDIS_REST_TOKEN` | Upstash console → your database → REST API → Token |
 
-That's it. AI Gateway auth is handled automatically via OIDC — no API keys needed.
+AI Gateway auth is handled automatically via OIDC on deployed Vercel environments.
 
 ## First visit
 
-1. Set `ADMIN_SECRET` in your Vercel project's environment variables (Settings → Environment Variables). Use a strong, random value.
-2. Open your new deployment.
-3. Use that secret to log in from the main page.
-4. The app will create your sandbox automatically on first use.
+1. Choose an auth mode:
+   - default: set `ADMIN_SECRET`
+   - optional: set `VERCEL_AUTH_MODE=sign-in-with-vercel` plus `NEXT_PUBLIC_VERCEL_APP_CLIENT_ID`, `VERCEL_APP_CLIENT_SECRET`, and `SESSION_SECRET`
+2. Set `CRON_SECRET`.
+3. Open the deployment and sign in.
+4. Visit `/gateway` or use the admin panel to start the sandbox.
+5. Run launch verification before connecting channels.
 
 ## What you can do
 
@@ -39,29 +42,17 @@ That's it. AI Gateway auth is handled automatically via OIDC — no API keys nee
 - **Connect channels** — wire up Slack, Telegram, or Discord so people can talk to your OpenClaw instance from chat. Configure each one from the admin panel. Normal channel delivery uses Workflow DevKit. Deployment verification is triggered via `POST /api/admin/launch-verify`, which internally probes the private `/api/queues/launch-verify` consumer.
 - **Firewall** — the app can learn which domains your agent talks to, then lock egress down to only those domains.
 
-## Optional: sign in with Vercel
-
-By default the app uses a simple admin secret. If you'd prefer OAuth login through Vercel, set these additional environment variables:
-
-| Variable | Purpose |
-| -------- | ------- |
-| `VERCEL_AUTH_MODE` | Set to `sign-in-with-vercel` |
-| `NEXT_PUBLIC_VERCEL_APP_CLIENT_ID` | From [vercel.com/account/oauth-apps](https://vercel.com/account/oauth-apps) |
-| `VERCEL_APP_CLIENT_SECRET` | From the same OAuth app |
-| `SESSION_SECRET` | Any random string for cookie encryption |
-
-Set the OAuth callback URL to `https://<your-domain>/api/auth/callback`.
-
 ## Required on Vercel
 
-These variables must be set for deployed Vercel environments:
+| Variable | When required | Purpose |
+| -------- | ------------- | ------- |
+| `CRON_SECRET` | Always | Authenticates `/api/cron/watchdog` and the optional `/api/cron/drain-channels` diagnostic backstop. Missing on Vercel is a hard failure in the deployment contract. |
+| `ADMIN_SECRET` | `admin-secret` mode (default) | Secret exchanged for an encrypted session cookie via `/api/auth/login`. |
+| `NEXT_PUBLIC_VERCEL_APP_CLIENT_ID` | `sign-in-with-vercel` mode | OAuth client ID. |
+| `VERCEL_APP_CLIENT_SECRET` | `sign-in-with-vercel` mode | OAuth client secret. |
+| `SESSION_SECRET` | `sign-in-with-vercel` mode on Vercel | Explicit cookie encryption secret. Do not rely on derivation from the Upstash token. |
 
-| Variable | Purpose |
-| -------- | ------- |
-| `ADMIN_SECRET` | Secret used to log in with the default `admin-secret` auth mode. Use a strong, random value. |
-| `CRON_SECRET` | Authenticates the watchdog cron (`/api/cron/watchdog`, every 5 min). Generate with `openssl rand -hex 32`. Without this, the watchdog silently returns 401 and never fires. Missing on Vercel is a hard failure in the deployment contract. |
-
-AI Gateway auth uses Vercel OIDC automatically on deployed Vercel environments — no API keys needed. If OIDC is unavailable (e.g. local dev without `vercel env pull`), set `AI_GATEWAY_API_KEY` as an optional fallback.
+`VERCEL_AUTH_MODE` defaults to `admin-secret` when unset. AI Gateway auth uses Vercel OIDC automatically on deployed Vercel environments. If OIDC is unavailable outside Vercel, set `AI_GATEWAY_API_KEY` as an optional fallback.
 
 ## Optional: pin the OpenClaw version
 
@@ -75,11 +66,15 @@ By default the app installs `openclaw@latest`, which is non-deterministic across
 
 ## Optional: Deployment Protection and webhooks
 
-If Vercel Deployment Protection is enabled, channel webhooks (Slack, Telegram, Discord) will be blocked unless you set a bypass secret:
+`VERCEL_AUTOMATION_BYPASS_SECRET` is diagnostic-only: missing it does not fail preflight by itself, but protected third-party webhooks can be blocked before app auth runs.
 
 | Variable | Purpose |
 | -------- | ------- |
-| `VERCEL_AUTOMATION_BYPASS_SECRET` | Appended to webhook URLs so they pass Deployment Protection. Set this in Vercel project settings under Deployment Protection → Automation Bypass. |
+| `VERCEL_AUTOMATION_BYPASS_SECRET` | Lets protected webhook requests reach the app when Vercel Deployment Protection is enabled. |
+
+Channel behavior:
+- Slack and Discord webhook URLs include the bypass query parameter when the secret is configured.
+- Telegram intentionally does not include the bypass query parameter. Telegram validates via the `x-telegram-bot-api-secret-token` header, and adding the bypass query parameter can cause `setWebhook` to silently drop registration.
 
 ## Optional: override the public origin
 

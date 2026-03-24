@@ -32,6 +32,7 @@ Additional verification commands:
 ```bash
 npm run verify:observability-pass   # preflight + launch-verify + deploy-requirements + lifecycle tests
 npm run check:deploy-readiness      # machine-checkable deployment readiness report
+npm run check:verify-contract       # docs/env contract guard for README.md, CLAUDE.md, CONTRIBUTING.md, .env.example
 ```
 
 ### Remote smoke testing
@@ -124,7 +125,7 @@ Full reference:
 | `OPENCLAW_PACKAGE_SPEC` | No | OpenClaw version to install (defaults to `openclaw@latest`). On Vercel deployments, the deployment contract **warns** — it does not fail — when unset or unpinned (e.g. `openclaw@latest`). The runtime still falls back to `openclaw@latest`, but restores are non-deterministic. Pin to an exact version like `openclaw@1.2.3`. |
 | `OPENCLAW_SANDBOX_VCPUS` | No | vCPU count for sandbox create and snapshot restore (valid: 1, 2, 4, 8; default: 1). Keep fixed during benchmarks. |
 | `OPENCLAW_SANDBOX_SLEEP_AFTER_MS` | No | How long the sandbox stays alive after last activity, in milliseconds (60000–2700000; default: 1800000 = 30 min). Heartbeat and touch-throttle intervals are derived proportionally. Existing running sandboxes cannot be shortened in place. If you increase this value, the next touch/heartbeat can top the sandbox timeout up to the new target. If you decrease it, the lower value becomes exact on the next create or restore. |
-| `VERCEL_AUTOMATION_BYPASS_SECRET` | No | Appended to webhook URLs to pass Deployment Protection |
+| `VERCEL_AUTOMATION_BYPASS_SECRET` | No | Enables protected webhook delivery when Deployment Protection is on. Slack and Discord URLs use it when configured; Telegram intentionally does not and relies on webhook-secret validation instead. |
 | `NEXT_PUBLIC_APP_URL` | No | Base origin override |
 | `NEXT_PUBLIC_BASE_DOMAIN` | No | Preferred external host for webhook URLs |
 | `BASE_DOMAIN` | No | Legacy alias for `NEXT_PUBLIC_BASE_DOMAIN` |

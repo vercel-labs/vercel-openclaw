@@ -479,6 +479,14 @@ Run a subset of steps:
 node scripts/verify.mjs --steps=test,typecheck
 ```
 
+For docs-only changes that touch operator instructions or env names, also run locally:
+
+```bash
+npm run check:verify-contract
+```
+
+This guards the documented deployment contract across `README.md`, `CLAUDE.md`, `CONTRIBUTING.md`, and `.env.example`.
+
 ## AI Gateway auth helpers (`src/server/env.ts`)
 
 - `isVercelDeployment(): boolean` — returns `true` when any of `VERCEL`, `VERCEL_ENV`, `VERCEL_URL`, or `VERCEL_PROJECT_PRODUCTION_URL` is set. Use this when behavior must differ between deployed Vercel runtimes and local/non-Vercel execution.
