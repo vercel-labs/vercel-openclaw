@@ -45,6 +45,10 @@ import { getSandboxController } from "@/server/sandbox/controller";
 import type { SandboxHandle } from "@/server/sandbox/controller";
 import { getSandboxVcpus } from "@/server/sandbox/resources";
 import {
+  deleteVercelSnapshot,
+  isSnapshotNotFoundError,
+} from "@/server/sandbox/snapshot-delete";
+import {
   getSandboxSleepAfterMs,
   getSandboxTouchThrottleMs,
 } from "@/server/sandbox/timeout";
@@ -245,6 +249,16 @@ export type WaitForSandboxReadyResult = {
   readyAction: SandboxReadyAction;
 };
 
+export type ResetSandboxOptions = {
+  origin: string;
+  reason: string;
+  op?: OperationContext;
+};
+
+export type ResetSandboxDeps = {
+  deleteSnapshot?: (snapshotId: string) => Promise<void>;
+};
+
 export async function waitForSandboxReady(
   options: WaitForSandboxReadyOptions,
 ): Promise<WaitForSandboxReadyResult> {
@@ -343,6 +357,100 @@ export async function ensureSandboxReady(options: {
 }): Promise<SingleMeta> {
   const result = await waitForSandboxReady({ ...options, reconcile: true });
   return result.meta;
+}
+
+export async function resetSandbox(
+  options: ResetSandboxOptions,
+  deps: ResetSandboxDeps = {},
+): Promise<SingleMeta> {
+  const deleteSnapshot = deps.deleteSnapshot ?? deleteVercelSnapshot;
+  const ctx = (extra: Record<string, unknown> = {}) =>
+    options.op
+      ? withOperationContext(options.op, extra)
+      : { reason: options.reason, ...extra };
+
+  logInfo("sandbox.reset_requested", ctx());
+
+  try {
+    return await withLifecycleLock(async () => {
+      const current = await getInitializedMeta();
+      const snapshotIds = collectTrackedSnapshotIds(current);
+
+      logInfo("sandbox.reset.start", ctx({
+        status: current.status,
+        sandboxId: current.sandboxId,
+        snapshotCount: snapshotIds.length,
+      }));
+
+      await destroyCurrentSandboxWithoutSnapshot(current, ctx);
+      const failedSnapshotIds = await deleteTrackedSnapshotsForReset(
+        snapshotIds,
+        deleteSnapshot,
+        ctx,
+      );
+      await clearResetCronState(ctx);
+
+      if (failedSnapshotIds.length > 0) {
+        const errorMessage =
+          `Sandbox reset failed while deleting snapshots: ${failedSnapshotIds.join(", ")}`;
+
+        const failedIdSet = new Set(failedSnapshotIds);
+        const failedSnapshotHistory = current.snapshotHistory.filter((record) =>
+          failedIdSet.has(record.snapshotId),
+        );
+        await mutateMeta((meta) => {
+          clearSandboxRuntimeStateForReset(meta);
+          meta.status = "error";
+          meta.lastError = errorMessage;
+          meta.snapshotId =
+            current.snapshotId && failedIdSet.has(current.snapshotId)
+              ? current.snapshotId
+              : null;
+          meta.snapshotHistory = failedSnapshotHistory;
+        });
+
+        logError("sandbox.reset.snapshot_delete_failed", ctx({
+          failedSnapshotIds,
+          attemptedSnapshotIds: snapshotIds,
+        }));
+        return getInitializedMeta();
+      }
+
+      const resetMeta = await mutateMeta((meta) => {
+        clearSandboxRuntimeStateForReset(meta);
+        meta.status = "uninitialized";
+        meta.lastError = null;
+      });
+
+      logInfo("sandbox.reset.completed", ctx({
+        status: resetMeta.status,
+        snapshotCount: snapshotIds.length,
+      }));
+
+      return resetMeta;
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (error instanceof LifecycleLockUnavailableError) {
+      logInfo("sandbox.reset.lifecycle_lock_contended", ctx({ error: message }));
+      throw error;
+    }
+
+    logError("sandbox.reset_failed", ctx({ error: message }));
+    try {
+      await mutateMeta((meta) => {
+        clearSandboxRuntimeStateForReset(meta);
+        meta.status = "error";
+        meta.lastError = `Sandbox reset failed: ${message}`;
+      });
+    } catch (metaError) {
+      logWarn("sandbox.reset.meta_update_failed", ctx({
+        error: message,
+        metaError: metaError instanceof Error ? metaError.message : String(metaError),
+      }));
+    }
+    throw error;
+  }
 }
 
 async function cleanupBeforeSnapshot(
@@ -1680,174 +1788,179 @@ async function createAndBootstrapSandbox(
   origin: string,
   options?: { op?: OperationContext },
 ): Promise<SingleMeta> {
-  return withLifecycleLock(async () => {
-    const current = await getInitializedMeta();
-    if (current.status === "running" && current.sandboxId) {
-      return current;
-    }
+  return withLifecycleLock(() => createAndBootstrapSandboxWithinLifecycleLock(origin, options));
+}
 
-    /** Merge operation context (when available) with extra fields for structured logs. */
-    const ctx = (extra?: Record<string, unknown>) =>
-      options?.op ? withOperationContext(options.op, extra) : (extra ?? {});
+async function createAndBootstrapSandboxWithinLifecycleLock(
+  origin: string,
+  options?: { op?: OperationContext },
+): Promise<SingleMeta> {
+  const current = await getInitializedMeta();
+  if (current.status === "running" && current.sandboxId) {
+    return current;
+  }
 
-    // Auth-required boot: on Vercel, require a usable AI Gateway credential.
-    const credential = await resolveAiGatewayCredentialOptional();
-    if (isVercelDeployment() && !credential) {
-      logError("sandbox.create.no_ai_gateway_credential", ctx({
-        message: "Cannot create sandbox on Vercel without AI Gateway credential. OIDC may be temporarily unavailable.",
-      }));
-      await mutateMeta((meta) => {
-        meta.status = "error";
-        meta.lastError =
-          "AI Gateway credential unavailable during sandbox create. " +
-          "OIDC may be temporarily unavailable — retry will be attempted automatically.";
-      });
-      return getInitializedMeta();
-    }
+  /** Merge operation context (when available) with extra fields for structured logs. */
+  const ctx = (extra?: Record<string, unknown>) =>
+    options?.op ? withOperationContext(options.op, extra) : (extra ?? {});
 
-    logInfo("sandbox.status_transition", ctx({ from: current.status, to: "creating" }));
-    await mutateMeta((meta) => {
-      meta.status = "creating";
-      meta.lastError = null;
-      meta.snapshotId = null;
-    });
-
-    const vcpus = getSandboxVcpus();
-    const sleepAfterMs = getSandboxSleepAfterMs();
-    const sandbox = await getSandboxController().create({
-      ports: SANDBOX_PORTS,
-      timeout: sleepAfterMs,
-      resources: { vcpus },
-      ...(await buildRuntimeEnv()),
-    });
-
-    logInfo("sandbox.status_transition", ctx({ from: "creating", to: "setup", sandboxId: sandbox.sandboxId, vcpus, sleepAfterMs }));
-    await mutateMeta((meta) => {
-      meta.status = "setup";
-      meta.sandboxId = sandbox.sandboxId;
-      meta.portUrls = resolvePortUrls(sandbox);
-      meta.lastAccessedAt = Date.now();
-    });
-
-    const latest = await getInitializedMeta();
-    // Reuse the already-resolved credential — no redundant second lookup.
-    const apiKey = credential?.token;
-    const slackCfg = latest.channels.slack;
-    const setupResult = await setupOpenClaw(sandbox, {
-      gatewayToken: latest.gatewayToken,
-      apiKey,
-      proxyOrigin: origin,
-      telegramBotToken: latest.channels.telegram?.botToken,
-      telegramWebhookSecret: latest.channels.telegram?.webhookSecret,
-      slackCredentials: slackCfg ? { botToken: slackCfg.botToken, signingSecret: slackCfg.signingSecret } : undefined,
-    });
-
-    const pending = await mutateMeta((meta) => {
-      meta.status = "setup";
-      meta.sandboxId = sandbox.sandboxId;
-      meta.portUrls = resolvePortUrls(sandbox);
-      meta.lastAccessedAt = Date.now();
-      meta.startupScript = setupResult.startupScript;
-      meta.openclawVersion = setupResult.openclawVersion;
-      meta.lastError = null;
-      // Record token metadata from the credential used during boot.
-      if (credential) {
-        meta.lastTokenRefreshAt = Date.now();
-        meta.lastTokenSource = credential.source;
-        meta.lastTokenExpiresAt = credential.expiresAt ?? null;
-      }
-    });
-
-    // Apply firewall policy and record structured outcome before marking running.
-    const firewallPolicy = toNetworkPolicy(
-      pending.firewall.mode,
-      pending.firewall.allowlist,
-    );
-    const firewallPolicyHash = createHash("sha256")
-      .update(JSON.stringify(firewallPolicy))
-      .digest("hex");
-
-    let firewallApplied = false;
-    let firewallError: string | null = null;
-    const firewallStartedAt = Date.now();
-    try {
-      await applyFirewallPolicyToSandbox(sandbox, pending);
-      firewallApplied = true;
-    } catch (err) {
-      firewallError = err instanceof Error ? err.message : String(err);
-      logWarn("sandbox.create.firewall_sync_failed", ctx({
-        sandboxId: sandbox.sandboxId,
-        mode: pending.firewall.mode,
-        error: firewallError,
-      }));
-    }
-    const firewallCompletedAt = Date.now();
-    const firewallDurationMs = firewallCompletedAt - firewallStartedAt;
-
-    // Record firewall sync outcome in metadata.
-    await mutateMeta((meta) => {
-      const outcome: import("@/shared/types").FirewallSyncOutcome = {
-        timestamp: firewallCompletedAt,
-        durationMs: firewallDurationMs,
-        allowlistCount: pending.firewall.allowlist.length,
-        policyHash: firewallPolicyHash,
-        applied: firewallApplied,
-        reason: firewallApplied ? "create-policy-applied" : "create-policy-failed",
-      };
-      meta.firewall.lastSyncReason = outcome.reason;
-      meta.firewall.lastSyncOutcome = outcome;
-      if (firewallApplied) {
-        meta.firewall.lastSyncAppliedAt = firewallCompletedAt;
-      } else {
-        meta.firewall.lastSyncFailedAt = firewallCompletedAt;
-      }
-    });
-
-    // In enforcing mode, firewall sync failure is a hard blocker — the
-    // sandbox must not become available without its network policy applied.
-    if (!firewallApplied && pending.firewall.mode === "enforcing") {
-      logError("sandbox.create.firewall_sync_blocked_create", ctx({
-        sandboxId: sandbox.sandboxId,
-        error: firewallError,
-      }));
-
-      try {
-        await sandbox.stop({ blocking: true });
-      } catch (stopError) {
-        logWarn("sandbox.create.firewall_sync_cleanup_failed", ctx({
-          sandboxId: sandbox.sandboxId,
-          error: stopError instanceof Error ? stopError.message : String(stopError),
-        }));
-      }
-
-      await mutateMeta((meta) => {
-        meta.status = "error";
-        meta.lastError = `Firewall sync failed during create: ${firewallError}`;
-        meta.sandboxId = null;
-        meta.portUrls = null;
-      });
-
-      return getInitializedMeta();
-    }
-
-    logInfo("sandbox.status_transition", ctx({
-      from: "setup",
-      to: "running",
-      sandboxId: sandbox.sandboxId,
+  // Auth-required boot: on Vercel, require a usable AI Gateway credential.
+  const credential = await resolveAiGatewayCredentialOptional();
+  if (isVercelDeployment() && !credential) {
+    logError("sandbox.create.no_ai_gateway_credential", ctx({
+      message: "Cannot create sandbox on Vercel without AI Gateway credential. OIDC may be temporarily unavailable.",
     }));
-
     await mutateMeta((meta) => {
-      meta.status = "running";
-      meta.lastError = null;
+      meta.status = "error";
+      meta.lastError =
+        "AI Gateway credential unavailable during sandbox create. " +
+        "OIDC may be temporarily unavailable — retry will be attempted automatically.";
     });
-
-    logInfo("sandbox.create.complete", ctx({
-      sandboxId: sandbox.sandboxId,
-      openclawVersion: setupResult.openclawVersion,
-      firewallApplied,
-    }));
     return getInitializedMeta();
+  }
+
+  logInfo("sandbox.status_transition", ctx({ from: current.status, to: "creating" }));
+  await mutateMeta((meta) => {
+    meta.status = "creating";
+    meta.lastError = null;
+    meta.snapshotId = null;
   });
+
+  const vcpus = getSandboxVcpus();
+  const sleepAfterMs = getSandboxSleepAfterMs();
+  const sandbox = await getSandboxController().create({
+    ports: SANDBOX_PORTS,
+    timeout: sleepAfterMs,
+    resources: { vcpus },
+    ...(await buildRuntimeEnv()),
+  });
+
+  logInfo("sandbox.status_transition", ctx({ from: "creating", to: "setup", sandboxId: sandbox.sandboxId, vcpus, sleepAfterMs }));
+  await mutateMeta((meta) => {
+    meta.status = "setup";
+    meta.sandboxId = sandbox.sandboxId;
+    meta.portUrls = resolvePortUrls(sandbox);
+    meta.lastAccessedAt = Date.now();
+  });
+
+  const latest = await getInitializedMeta();
+  // Reuse the already-resolved credential — no redundant second lookup.
+  const apiKey = credential?.token;
+  const slackCfg = latest.channels.slack;
+  const setupResult = await setupOpenClaw(sandbox, {
+    gatewayToken: latest.gatewayToken,
+    apiKey,
+    proxyOrigin: origin,
+    telegramBotToken: latest.channels.telegram?.botToken,
+    telegramWebhookSecret: latest.channels.telegram?.webhookSecret,
+    slackCredentials: slackCfg ? { botToken: slackCfg.botToken, signingSecret: slackCfg.signingSecret } : undefined,
+  });
+
+  const pending = await mutateMeta((meta) => {
+    meta.status = "setup";
+    meta.sandboxId = sandbox.sandboxId;
+    meta.portUrls = resolvePortUrls(sandbox);
+    meta.lastAccessedAt = Date.now();
+    meta.startupScript = setupResult.startupScript;
+    meta.openclawVersion = setupResult.openclawVersion;
+    meta.lastError = null;
+    // Record token metadata from the credential used during boot.
+    if (credential) {
+      meta.lastTokenRefreshAt = Date.now();
+      meta.lastTokenSource = credential.source;
+      meta.lastTokenExpiresAt = credential.expiresAt ?? null;
+    }
+  });
+
+  // Apply firewall policy and record structured outcome before marking running.
+  const firewallPolicy = toNetworkPolicy(
+    pending.firewall.mode,
+    pending.firewall.allowlist,
+  );
+  const firewallPolicyHash = createHash("sha256")
+    .update(JSON.stringify(firewallPolicy))
+    .digest("hex");
+
+  let firewallApplied = false;
+  let firewallError: string | null = null;
+  const firewallStartedAt = Date.now();
+  try {
+    await applyFirewallPolicyToSandbox(sandbox, pending);
+    firewallApplied = true;
+  } catch (err) {
+    firewallError = err instanceof Error ? err.message : String(err);
+    logWarn("sandbox.create.firewall_sync_failed", ctx({
+      sandboxId: sandbox.sandboxId,
+      mode: pending.firewall.mode,
+      error: firewallError,
+    }));
+  }
+  const firewallCompletedAt = Date.now();
+  const firewallDurationMs = firewallCompletedAt - firewallStartedAt;
+
+  // Record firewall sync outcome in metadata.
+  await mutateMeta((meta) => {
+    const outcome: import("@/shared/types").FirewallSyncOutcome = {
+      timestamp: firewallCompletedAt,
+      durationMs: firewallDurationMs,
+      allowlistCount: pending.firewall.allowlist.length,
+      policyHash: firewallPolicyHash,
+      applied: firewallApplied,
+      reason: firewallApplied ? "create-policy-applied" : "create-policy-failed",
+    };
+    meta.firewall.lastSyncReason = outcome.reason;
+    meta.firewall.lastSyncOutcome = outcome;
+    if (firewallApplied) {
+      meta.firewall.lastSyncAppliedAt = firewallCompletedAt;
+    } else {
+      meta.firewall.lastSyncFailedAt = firewallCompletedAt;
+    }
+  });
+
+  // In enforcing mode, firewall sync failure is a hard blocker — the
+  // sandbox must not become available without its network policy applied.
+  if (!firewallApplied && pending.firewall.mode === "enforcing") {
+    logError("sandbox.create.firewall_sync_blocked_create", ctx({
+      sandboxId: sandbox.sandboxId,
+      error: firewallError,
+    }));
+
+    try {
+      await sandbox.stop({ blocking: true });
+    } catch (stopError) {
+      logWarn("sandbox.create.firewall_sync_cleanup_failed", ctx({
+        sandboxId: sandbox.sandboxId,
+        error: stopError instanceof Error ? stopError.message : String(stopError),
+      }));
+    }
+
+    await mutateMeta((meta) => {
+      meta.status = "error";
+      meta.lastError = `Firewall sync failed during create: ${firewallError}`;
+      meta.sandboxId = null;
+      meta.portUrls = null;
+    });
+
+    return getInitializedMeta();
+  }
+
+  logInfo("sandbox.status_transition", ctx({
+    from: "setup",
+    to: "running",
+    sandboxId: sandbox.sandboxId,
+  }));
+
+  await mutateMeta((meta) => {
+    meta.status = "running";
+    meta.lastError = null;
+  });
+
+  logInfo("sandbox.create.complete", ctx({
+    sandboxId: sandbox.sandboxId,
+    openclawVersion: setupResult.openclawVersion,
+    firewallApplied,
+  }));
+  return getInitializedMeta();
 }
 
 async function restoreSandboxFromSnapshot(
@@ -1884,7 +1997,7 @@ async function restoreSandboxFromSnapshot(
       return current;
     }
     if (!current.snapshotId) {
-      return createAndBootstrapSandbox(origin);
+      return createAndBootstrapSandboxWithinLifecycleLock(origin, { op });
     }
 
     // Auth-required boot: on Vercel, require a usable AI Gateway credential.
@@ -2526,6 +2639,98 @@ function recordSnapshotMetadata(
     },
     ...meta.snapshotHistory,
   ].slice(0, 50);
+}
+
+function collectTrackedSnapshotIds(
+  meta: Pick<SingleMeta, "snapshotId" | "snapshotHistory">,
+): string[] {
+  return [...new Set([
+    meta.snapshotId,
+    ...meta.snapshotHistory.map((record) => record.snapshotId),
+  ].filter((snapshotId): snapshotId is string => Boolean(snapshotId)))];
+}
+
+async function destroyCurrentSandboxWithoutSnapshot(
+  meta: SingleMeta,
+  ctx: (extra?: Record<string, unknown>) => Record<string, unknown>,
+): Promise<void> {
+  if (!meta.sandboxId) {
+    logInfo("sandbox.reset.destroy_skipped", ctx({ reason: "no_running_sandbox" }));
+    return;
+  }
+
+  try {
+    const sandbox = await getSandboxController().get({ sandboxId: meta.sandboxId });
+    await sandbox.stop({ blocking: true });
+    logInfo("sandbox.reset.destroyed", ctx({ sandboxId: meta.sandboxId }));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const isGone = message.includes("404") || message.includes("410");
+    if (isGone) {
+      logWarn("sandbox.reset.sandbox_already_gone", ctx({
+        sandboxId: meta.sandboxId,
+        error: message,
+      }));
+      return;
+    }
+
+    throw new Error(
+      `Failed to destroy sandbox ${meta.sandboxId} during reset: ${message}`,
+    );
+  }
+}
+
+async function deleteTrackedSnapshotsForReset(
+  snapshotIds: string[],
+  deleteSnapshot: (snapshotId: string) => Promise<void>,
+  ctx: (extra?: Record<string, unknown>) => Record<string, unknown>,
+): Promise<string[]> {
+  const failedSnapshotIds: string[] = [];
+
+  for (const snapshotId of snapshotIds) {
+    try {
+      await deleteSnapshot(snapshotId);
+      logInfo("sandbox.reset.snapshot_deleted", ctx({ snapshotId }));
+    } catch (error) {
+      if (isSnapshotNotFoundError(error)) {
+        logInfo("sandbox.reset.snapshot_missing", ctx({ snapshotId }));
+        continue;
+      }
+
+      failedSnapshotIds.push(snapshotId);
+      logError("sandbox.reset.snapshot_delete_error", ctx({
+        snapshotId,
+        error: error instanceof Error ? error.message : String(error),
+      }));
+    }
+  }
+
+  return failedSnapshotIds;
+}
+
+async function clearResetCronState(
+  ctx: (extra?: Record<string, unknown>) => Record<string, unknown>,
+): Promise<void> {
+  await Promise.all([
+    getStore().deleteValue(CRON_NEXT_WAKE_KEY),
+    getStore().deleteValue(CRON_JOBS_KEY),
+  ]);
+  logInfo("sandbox.reset.cron_state_cleared", ctx());
+}
+
+function clearSandboxRuntimeStateForReset(meta: SingleMeta): void {
+  meta.sandboxId = null;
+  meta.portUrls = null;
+  meta.snapshotId = null;
+  meta.snapshotConfigHash = null;
+  meta.snapshotHistory = [];
+  meta.lastRestoreMetrics = null;
+  meta.restoreHistory = [];
+  meta.lastAccessedAt = null;
+  meta.startupScript = null;
+  meta.openclawVersion = null;
+  meta.lastError = null;
+  meta.lifecycleAttemptId = null;
 }
 
 // ---------------------------------------------------------------------------
