@@ -1,18 +1,21 @@
 import { randomBytes } from "node:crypto";
 
 import { logInfo, logError } from "@/server/log";
+import { adminSecretKey } from "@/server/store/keyspace";
 import { getStore } from "@/server/store/store";
 
 const GENERATED_ADMIN_SECRET_BYTES = 32;
-const ADMIN_SECRET_KEY = "openclaw-single:admin-secret";
 
 export type ConfiguredAdminSecret = {
   source: "env" | "generated";
   secret: string;
 };
 
-let generatedAdminSecretCache: string | null = null;
-let generatedAdminSecretLoadPromise: Promise<string | null> | null = null;
+const generatedAdminSecretCache = new Map<string, string>();
+const generatedAdminSecretLoadPromises = new Map<
+  string,
+  Promise<string | null>
+>();
 
 function normalizeSecret(value: string | null | undefined): string | null {
   if (typeof value !== "string") {
@@ -22,14 +25,12 @@ function normalizeSecret(value: string | null | undefined): string | null {
   return normalized.length > 0 ? normalized : null;
 }
 
-async function loadOrCreateAdminSecret(): Promise<string | null> {
+async function loadOrCreateAdminSecret(secretKey: string): Promise<string | null> {
   try {
     const store = getStore();
-    const existing = normalizeSecret(
-      await store.getValue<string>(ADMIN_SECRET_KEY),
-    );
+    const existing = normalizeSecret(await store.getValue<string>(secretKey));
     if (existing) {
-      generatedAdminSecretCache = existing;
+      generatedAdminSecretCache.set(secretKey, existing);
       return existing;
     }
 
@@ -37,14 +38,12 @@ async function loadOrCreateAdminSecret(): Promise<string | null> {
     // Use setValue — the store handles persistence. For Upstash this is
     // idempotent across concurrent cold-starts because the first writer wins
     // and subsequent reads return the persisted value.
-    await store.setValue(ADMIN_SECRET_KEY, generated);
+    await store.setValue(secretKey, generated);
 
     // Verify it was actually written (handles race conditions)
-    const persisted = normalizeSecret(
-      await store.getValue<string>(ADMIN_SECRET_KEY),
-    );
+    const persisted = normalizeSecret(await store.getValue<string>(secretKey));
     if (persisted) {
-      generatedAdminSecretCache = persisted;
+      generatedAdminSecretCache.set(secretKey, persisted);
       logInfo("auth.admin_secret.generated", {
         bytes: GENERATED_ADMIN_SECRET_BYTES,
       });
@@ -64,17 +63,22 @@ async function loadOrCreateAdminSecret(): Promise<string | null> {
 }
 
 async function ensureGeneratedAdminSecretCache(): Promise<string | null> {
-  if (generatedAdminSecretCache) {
-    return generatedAdminSecretCache;
+  const secretKey = adminSecretKey();
+  const cachedSecret = generatedAdminSecretCache.get(secretKey);
+  if (cachedSecret) {
+    return cachedSecret;
   }
 
-  if (!generatedAdminSecretLoadPromise) {
-    generatedAdminSecretLoadPromise = loadOrCreateAdminSecret().finally(() => {
-      generatedAdminSecretLoadPromise = null;
-    });
+  const existingLoadPromise = generatedAdminSecretLoadPromises.get(secretKey);
+  if (existingLoadPromise) {
+    return existingLoadPromise;
   }
 
-  return generatedAdminSecretLoadPromise;
+  const loadPromise = loadOrCreateAdminSecret(secretKey).finally(() => {
+    generatedAdminSecretLoadPromises.delete(secretKey);
+  });
+  generatedAdminSecretLoadPromises.set(secretKey, loadPromise);
+  return loadPromise;
 }
 
 export async function getConfiguredAdminSecret(): Promise<ConfiguredAdminSecret | null> {
@@ -92,6 +96,6 @@ export async function getConfiguredAdminSecret(): Promise<ConfiguredAdminSecret 
 }
 
 export function _resetAdminSecretCacheForTesting(): void {
-  generatedAdminSecretCache = null;
-  generatedAdminSecretLoadPromise = null;
+  generatedAdminSecretCache.clear();
+  generatedAdminSecretLoadPromises.clear();
 }
