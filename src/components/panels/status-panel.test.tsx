@@ -145,10 +145,9 @@ test("StatusPanel renders first-run callout and create action when sandbox is un
       "This first start creates a new sandbox and installs OpenClaw. It can take a minute the first time.",
     ),
   );
-  assert.match(html, /<button[^>]*disabled=""[^>]*>Reset Sandbox<\/button>/);
 });
 
-test("StatusPanel renders first-run setup progress detail and disables reset during setup", () => {
+test("StatusPanel renders first-run setup progress detail", () => {
   const html = renderPanel(
     makeStatus({
       status: "setup",
@@ -160,10 +159,9 @@ test("StatusPanel renders first-run setup progress detail and disables reset dur
 
   assert.ok(html.includes("Installing OpenClaw…"));
   assert.ok(html.includes("This is the longest step on the first run."));
-  assert.match(html, /<button[^>]*disabled=""[^>]*>Reset Sandbox<\/button>/);
 });
 
-test("StatusPanel renders restore action and enabled reset when errored with a snapshot", () => {
+test("StatusPanel renders restore action when errored with a snapshot", () => {
   const html = renderPanel(
     makeStatus({
       status: "error",
@@ -172,17 +170,12 @@ test("StatusPanel renders restore action and enabled reset when errored with a s
   );
 
   assert.ok(html.includes("Restore Sandbox"));
-  assert.ok(html.includes("Danger zone"));
-  assert.ok(html.includes("Delete the current sandbox and all saved snapshots"));
-  assert.ok(!/<button[^>]*disabled=""[^>]*>Reset Sandbox<\/button>/.test(html));
-  assert.match(html, /<button[^>]*>Reset Sandbox<\/button>/);
 });
 
 test("StatusPanel renders Open Gateway as the main green running action", () => {
   const html = renderPanel(makeStatus());
 
   assert.ok(html.includes("Check health"));
-  assert.ok(html.includes("Save snapshot"));
   assert.ok(html.includes("Stop"));
   assert.match(html, /<a[^>]*class="button success"[^>]*>Open Gateway<\/a>/);
 });

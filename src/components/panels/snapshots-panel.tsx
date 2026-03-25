@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { ConfirmDialog, useConfirm } from "@/components/ui/confirm-dialog";
-import type { SnapshotRecord } from "@/shared/types";
+import type { SnapshotRecord, SingleStatus } from "@/shared/types";
 import type { StatusPayload, RunAction, RequestJson } from "@/components/admin-types";
 
 /** How this snapshot was created (stored on each history row). */
@@ -44,8 +44,18 @@ export function SnapshotsPanel({
   const [snapshots, setSnapshots] = useState<SnapshotRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const { confirm, dialogProps } = useConfirm();
+  const { confirm: confirmReset, dialogProps: resetDialogProps } = useConfirm();
 
-  const isRunning = status.status === "running";
+  const lifecycleStatus = status.status as SingleStatus;
+  const isRunning = lifecycleStatus === "running";
+  const isLifecycleTransition = new Set<SingleStatus>([
+    "creating",
+    "restoring",
+    "booting",
+    "setup",
+  ]).has(lifecycleStatus);
+  const isResetDisabled =
+    busy || lifecycleStatus === "uninitialized" || isLifecycleTransition;
 
   const fetchSnapshots = useCallback(async () => {
     setLoading(true);
@@ -117,6 +127,23 @@ export function SnapshotsPanel({
     if (result?.ok) {
       await fetchSnapshots();
     }
+  };
+
+  const handleReset = async () => {
+    const ok = await confirmReset({
+      title: "Reset sandbox from scratch?",
+      description:
+        "This deletes the current sandbox and all saved snapshots, then starts a fresh install of OpenClaw. Unsaved runtime state, installed packages, and in-sandbox changes will be lost.",
+      confirmLabel: "Reset Sandbox",
+      variant: "danger",
+    });
+    if (!ok) return;
+
+    void runAction("/api/admin/reset", {
+      label: "Reset Sandbox",
+      successMessage: "Sandbox reset initiated",
+      method: "POST",
+    });
   };
 
   return (
@@ -217,6 +244,63 @@ export function SnapshotsPanel({
       </ul>
 
       <ConfirmDialog {...dialogProps} />
+      <section style={{ marginTop: 28 }}>
+        <p
+          style={{
+            margin: "0 0 8px",
+            color: "var(--foreground-subtle)",
+            fontSize: 12,
+            fontWeight: 500,
+            lineHeight: 1.4,
+          }}
+        >
+          Danger zone
+        </p>
+        <div
+          className="border border-red-900/50 rounded-lg p-4"
+          style={{
+            border: "1px solid rgba(127, 29, 29, 0.5)",
+            borderRadius: 12,
+            background: "rgba(127, 29, 29, 0.08)",
+            padding: 16,
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              alignItems: "flex-start",
+              justifyContent: "space-between",
+              gap: 16,
+              flexWrap: "wrap",
+            }}
+          >
+            <div style={{ flex: "1 1 320px" }}>
+              <p style={{ margin: 0, fontWeight: 600 }}>Reset Sandbox</p>
+              <p
+                style={{
+                  margin: "8px 0 0",
+                  color: "var(--foreground-muted)",
+                  lineHeight: 1.5,
+                  maxWidth: 640,
+                }}
+              >
+                Delete the current sandbox and all saved snapshots, then create
+                a brand new sandbox from scratch. Use this when the environment
+                is stuck, corrupted, or you want a clean rebuild.
+              </p>
+            </div>
+            <button
+              className="button danger"
+              disabled={isResetDisabled}
+              onClick={() => void handleReset()}
+              type="button"
+            >
+              Reset Sandbox
+            </button>
+          </div>
+        </div>
+      </section>
+      <ConfirmDialog {...resetDialogProps} />
     </article>
   );
 }

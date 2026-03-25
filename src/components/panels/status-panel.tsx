@@ -168,9 +168,6 @@ export function StatusPanel({
   checkHealth,
 }: StatusPanelProps) {
   const { confirm: confirmStop, dialogProps: stopDialogProps } = useConfirm();
-  const { confirm: confirmSnapshot, dialogProps: snapshotDialogProps } =
-    useConfirm();
-  const { confirm: confirmReset, dialogProps: resetDialogProps } = useConfirm();
 
   const lifecycleStatus = status.status as SingleStatus;
   const lifecycleAwareStatus = status as LifecycleAwareStatus;
@@ -227,46 +224,12 @@ export function StatusPanel({
     });
   }
 
-  async function handleSnapshot(): Promise<void> {
-    const ok = await confirmSnapshot({
-      title: "Take snapshot?",
-      description:
-        "This will create a point-in-time snapshot of the running sandbox. The sandbox will continue running.",
-      confirmLabel: "Take snapshot",
-    });
-    if (!ok) return;
-    void runAction("/api/admin/snapshot", {
-      label: "Take snapshot",
-      successMessage: "Snapshot created",
-      method: "POST",
-    });
-  }
-
-  async function handleReset(): Promise<void> {
-    const ok = await confirmReset({
-      title: "Reset sandbox from scratch?",
-      description:
-        "This deletes the current sandbox and all saved snapshots, then starts a fresh install of OpenClaw. Unsaved runtime state, installed packages, and in-sandbox changes will be lost.",
-      confirmLabel: "Reset Sandbox",
-      variant: "danger",
-    });
-    if (!ok) return;
-
-    void runAction("/api/admin/reset", {
-      label: "Reset Sandbox",
-      successMessage: "Sandbox reset initiated",
-      method: "POST",
-    });
-  }
-
   const isStopping = pendingAction === "Stop sandbox";
   const displayStatus = isStopping ? "stopping" : lifecycleStatus;
   const showRestart = NEEDS_RESTART.has(lifecycleStatus);
   const showRunningActions = lifecycleStatus === "running" && !isStopping;
   const isLifecycleTransition = IS_TRANSITIONAL.has(lifecycleStatus);
   const isTransitional = isLifecycleTransition || isStopping;
-  const isResetDisabled =
-    busy || lifecycleStatus === "uninitialized" || isLifecycleTransition;
   const errorCopy = status.lastError ? friendlyError(status.lastError) : null;
   const isCheckingHealth = pendingAction === "Check health";
 
@@ -388,13 +351,6 @@ export function StatusPanel({
               {isCheckingHealth ? "Checking health\u2026" : "Check health"}
             </button>
             <button
-              className="button ghost"
-              disabled={busy}
-              onClick={() => void handleSnapshot()}
-            >
-              Save snapshot
-            </button>
-            <button
               className="button danger"
               disabled={busy}
               onClick={() => void handleStop()}
@@ -462,66 +418,7 @@ export function StatusPanel({
         </div>
       ) : null}
 
-      <section style={{ marginTop: 28 }}>
-        <p
-          style={{
-            margin: "0 0 8px",
-            color: "var(--foreground-subtle)",
-            fontSize: 12,
-            fontWeight: 500,
-            lineHeight: 1.4,
-          }}
-        >
-          Danger zone
-        </p>
-        <div
-          className="border border-red-900/50 rounded-lg p-4"
-          style={{
-            border: "1px solid rgba(127, 29, 29, 0.5)",
-            borderRadius: 12,
-            background: "rgba(127, 29, 29, 0.08)",
-            padding: 16,
-          }}
-        >
-          <div
-            style={{
-              display: "flex",
-              alignItems: "flex-start",
-              justifyContent: "space-between",
-              gap: 16,
-              flexWrap: "wrap",
-            }}
-          >
-            <div style={{ flex: "1 1 320px" }}>
-              <p style={{ margin: 0, fontWeight: 600 }}>Reset Sandbox</p>
-              <p
-                style={{
-                  margin: "8px 0 0",
-                  color: "var(--foreground-muted)",
-                  lineHeight: 1.5,
-                  maxWidth: 640,
-                }}
-              >
-                Delete the current sandbox and all saved snapshots, then create
-                a brand new sandbox from scratch. Use this when the environment
-                is stuck, corrupted, or you want a clean rebuild.
-              </p>
-            </div>
-            <button
-              className="button danger"
-              disabled={isResetDisabled}
-              onClick={() => void handleReset()}
-              type="button"
-            >
-              Reset Sandbox
-            </button>
-          </div>
-        </div>
-      </section>
-
       <ConfirmDialog {...stopDialogProps} />
-      <ConfirmDialog {...snapshotDialogProps} />
-      <ConfirmDialog {...resetDialogProps} />
     </article>
   );
 }
