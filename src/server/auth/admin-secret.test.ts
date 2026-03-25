@@ -6,12 +6,13 @@ import { _setInstanceIdOverrideForTesting } from "@/server/env";
 import { _resetStoreForTesting } from "@/server/store/store";
 
 test("getConfiguredAdminSecret scopes generated cache by admin secret key when instance id changes", async () => {
+  const mutableEnv = process.env as Record<string, string | undefined>;
   const originalAdminSecret = process.env.ADMIN_SECRET;
-  const originalNodeEnv = process.env.NODE_ENV;
+  const originalNodeEnv = mutableEnv.NODE_ENV;
   const originalInstanceId = process.env.OPENCLAW_INSTANCE_ID;
 
   delete process.env.ADMIN_SECRET;
-  process.env.NODE_ENV = "test";
+  mutableEnv.NODE_ENV = "test";
   delete process.env.OPENCLAW_INSTANCE_ID;
   _setInstanceIdOverrideForTesting(null);
   _resetStoreForTesting();
@@ -49,9 +50,9 @@ test("getConfiguredAdminSecret scopes generated cache by admin secret key when i
     }
 
     if (originalNodeEnv === undefined) {
-      delete process.env.NODE_ENV;
+      delete mutableEnv.NODE_ENV;
     } else {
-      process.env.NODE_ENV = originalNodeEnv;
+      mutableEnv.NODE_ENV = originalNodeEnv;
     }
 
     if (originalInstanceId === undefined) {
