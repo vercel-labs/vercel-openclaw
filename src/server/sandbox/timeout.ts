@@ -36,6 +36,17 @@ function parsePositiveInteger(raw: string | undefined): number | null {
   return parsed;
 }
 
+export function estimateSandboxTimeoutRemainingMs(
+  lastAccessedAt: number | null,
+  sleepAfterMs: number,
+  now = Date.now(),
+): number | null {
+  if (lastAccessedAt === null) {
+    return null;
+  }
+  return Math.max(0, sleepAfterMs - (now - lastAccessedAt));
+}
+
 export function getSandboxSleepConfig(): SandboxSleepConfig {
   const raw = process.env.OPENCLAW_SANDBOX_SLEEP_AFTER_MS;
   if (cachedConfig && raw === cachedRaw) {

@@ -12,14 +12,17 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { _setSandboxControllerForTesting } from "@/server/sandbox/controller";
-import { _resetSandboxSleepConfigCacheForTesting } from "@/server/sandbox/timeout";
+import {
+  _resetSandboxSleepConfigCacheForTesting,
+  estimateSandboxTimeoutRemainingMs,
+} from "@/server/sandbox/timeout";
 import {
   _resetStoreForTesting,
+  getInitializedMeta,
   mutateMeta,
 } from "@/server/store/store";
 import {
   callRoute,
-  buildGetRequest,
   buildPostRequest,
   buildAuthGetRequest,
   buildAuthPostRequest,
@@ -77,6 +80,9 @@ async function withTestEnv(fn: () => Promise<void>): Promise<void> {
   try {
     await fn();
   } finally {
+    resetAfterCallbacks();
+    _setSandboxControllerForTesting(null);
+    _resetStoreForTesting();
     for (const key of keys) {
       if (originals[key] === undefined) {
         delete process.env[key];
@@ -84,15 +90,18 @@ async function withTestEnv(fn: () => Promise<void>): Promise<void> {
         process.env[key] = originals[key];
       }
     }
-    _resetStoreForTesting();
-    resetAfterCallbacks();
-    _setSandboxControllerForTesting(null);
   }
 }
 
 // ===========================================================================
 // GET /api/status
 // ===========================================================================
+
+test("estimateSandboxTimeoutRemainingMs: returns null without last access and clamps at zero", () => {
+  assert.equal(estimateSandboxTimeoutRemainingMs(null, 300_000, 1_000), null);
+  assert.equal(estimateSandboxTimeoutRemainingMs(1_000, 300_000, 61_000), 240_000);
+  assert.equal(estimateSandboxTimeoutRemainingMs(1_000, 300_000, 401_000), 0);
+});
 
 test("GET /api/status: returns uninitialized status by default", async () => {
   await withTestEnv(async () => {
@@ -101,9 +110,20 @@ test("GET /api/status: returns uninitialized status by default", async () => {
     const result = await callRoute(route.GET!, request);
 
     assert.equal(result.status, 200);
-    const body = result.json as { status: string; storeBackend: string };
+    const body = result.json as {
+      status: string;
+      storeBackend: string;
+      timeoutSource: string;
+      gatewayStatus: string;
+      gatewayCheckedAt: number | null;
+      lastKeepaliveAt: number | null;
+    };
     assert.equal(body.status, "uninitialized");
     assert.equal(body.storeBackend, "memory");
+    assert.equal(body.timeoutSource, "estimated");
+    assert.equal(body.gatewayStatus, "unknown");
+    assert.equal(body.gatewayCheckedAt, null);
+    assert.equal(body.lastKeepaliveAt, null);
   });
 });
 
@@ -115,6 +135,7 @@ test("GET /api/status: returns running status when sandbox is running", async ()
     await mutateMeta((meta) => {
       meta.status = "running";
       meta.sandboxId = "sbx-test-run";
+      meta.lastAccessedAt = Date.now();
     });
 
     const route = getStatusRoute();
@@ -126,10 +147,14 @@ test("GET /api/status: returns running status when sandbox is running", async ()
       status: string;
       sandboxId: string;
       gatewayReady: boolean;
+      gatewayStatus: string;
+      timeoutSource: string;
     };
     assert.equal(body.status, "running");
     assert.equal(body.sandboxId, "sbx-test-run");
-    assert.equal(body.gatewayReady, true);
+    assert.equal(body.gatewayReady, false);
+    assert.equal(body.gatewayStatus, "unknown");
+    assert.equal(body.timeoutSource, "estimated");
   });
 });
 
@@ -359,7 +384,83 @@ test("GET /api/status: lifecycle.restoreHistory is capped at 5 entries", async (
 // GET /api/status — configured sleep-after values
 // ===========================================================================
 
-test("GET /api/status: returns configured sleep settings and timeout remaining", async () => {
+test("GET /api/status: passive returns estimated timeout without live sandbox calls", async () => {
+  await withTestEnv(async () => {
+    const controller = new FakeSandboxController();
+    _setSandboxControllerForTesting(controller);
+
+    const original = process.env.OPENCLAW_SANDBOX_SLEEP_AFTER_MS;
+    const originalFetch = globalThis.fetch;
+    const fetchCalls: string[] = [];
+    try {
+      process.env.OPENCLAW_SANDBOX_SLEEP_AFTER_MS = "300000";
+      _resetSandboxSleepConfigCacheForTesting();
+
+      globalThis.fetch = async (input, init) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+        fetchCalls.push(url);
+        return originalFetch(input as RequestInfo | URL, init);
+      };
+
+      const now = Date.now();
+      await mutateMeta((meta) => {
+        meta.status = "running";
+        meta.sandboxId = "sbx-status-timeout";
+        meta.lastAccessedAt = now - 180_000;
+      });
+
+      controller.handlesByIds.set(
+        "sbx-status-timeout",
+        new FakeSandboxHandle("sbx-status-timeout", controller.events, 120_000),
+      );
+
+      const route = getStatusRoute();
+      const request = buildAuthGetRequest("/api/status");
+      const result = await callRoute(route.GET!, request);
+
+      assert.equal(result.status, 200);
+      const body = result.json as {
+        sleepAfterMs: number;
+        heartbeatIntervalMs: number;
+        timeoutRemainingMs: number | null;
+        timeoutSource: string;
+        gatewayStatus: string;
+        gatewayReady: boolean;
+        gatewayCheckedAt: number | null;
+        lastKeepaliveAt: number | null;
+      };
+
+      assert.equal(body.sleepAfterMs, 300_000);
+      assert.equal(body.heartbeatIntervalMs, 150_000);
+      assert.ok(body.timeoutRemainingMs !== null);
+      assert.ok(
+        body.timeoutRemainingMs >= 119_000 && body.timeoutRemainingMs <= 120_000,
+        `expected estimated timeout near 120000ms, got ${body.timeoutRemainingMs}`,
+      );
+      assert.equal(body.timeoutSource, "estimated");
+      assert.equal(body.gatewayStatus, "unknown");
+      assert.equal(body.gatewayReady, false);
+      assert.equal(body.gatewayCheckedAt, null);
+      assert.equal(body.lastKeepaliveAt, now - 180_000);
+      assert.deepEqual(controller.retrieved, []);
+      assert.equal(controller.eventsOfKind("extend_timeout").length, 0);
+      assert.equal(
+        fetchCalls.filter((url) => url.includes(".fake.vercel.run")).length,
+        0,
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (original === undefined) {
+        delete process.env.OPENCLAW_SANDBOX_SLEEP_AFTER_MS;
+      } else {
+        process.env.OPENCLAW_SANDBOX_SLEEP_AFTER_MS = original;
+      }
+      _resetSandboxSleepConfigCacheForTesting();
+    }
+  });
+});
+
+test("GET /api/status: live health returns live timeout and gateway data", async () => {
   await withTestEnv(async () => {
     const controller = new FakeSandboxController();
     _setSandboxControllerForTesting(controller);
@@ -394,11 +495,27 @@ test("GET /api/status: returns configured sleep settings and timeout remaining",
         sleepAfterMs: number;
         heartbeatIntervalMs: number;
         timeoutRemainingMs: number | null;
+        timeoutSource: string;
+        gatewayStatus: string;
+        gatewayReady: boolean;
+        gatewayCheckedAt: number | null;
+        lastKeepaliveAt: number | null;
       };
 
       assert.equal(body.sleepAfterMs, 300_000);
       assert.equal(body.heartbeatIntervalMs, 150_000);
       assert.equal(body.timeoutRemainingMs, 120_000);
+      assert.equal(body.timeoutSource, "live");
+      assert.equal(body.gatewayStatus, "ready");
+      assert.equal(body.gatewayReady, true);
+      assert.ok(typeof body.gatewayCheckedAt === "number");
+      assert.equal(body.lastKeepaliveAt, null);
+      assert.deepEqual(controller.retrieved, ["sbx-status-timeout", "sbx-status-timeout"]);
+
+      const meta = await getInitializedMeta();
+      assert.equal(meta.lastGatewayProbeReady, true);
+      assert.equal(meta.lastGatewayProbeSandboxId, "sbx-status-timeout");
+      assert.equal(meta.lastGatewayProbeAt, body.gatewayCheckedAt);
     } finally {
       globalThis.fetch = originalFetch;
       if (original === undefined) {
@@ -407,6 +524,98 @@ test("GET /api/status: returns configured sleep settings and timeout remaining",
         process.env.OPENCLAW_SANDBOX_SLEEP_AFTER_MS = original;
       }
       _resetSandboxSleepConfigCacheForTesting();
+    }
+  });
+});
+
+test("GET /api/status: passive returns unknown gateway status when no prior probe exists", async () => {
+  await withTestEnv(async () => {
+    await mutateMeta((meta) => {
+      meta.status = "running";
+      meta.sandboxId = "sbx-gateway-unknown";
+      meta.lastAccessedAt = Date.now();
+      meta.lastGatewayProbeAt = null;
+      meta.lastGatewayProbeReady = null;
+      meta.lastGatewayProbeSandboxId = null;
+    });
+
+    const route = getStatusRoute();
+    const request = buildAuthGetRequest("/api/status");
+    const result = await callRoute(route.GET!, request);
+
+    assert.equal(result.status, 200);
+    const body = result.json as {
+      gatewayStatus: string;
+      gatewayReady: boolean;
+      gatewayCheckedAt: number | null;
+    };
+
+    assert.equal(body.gatewayStatus, "unknown");
+    assert.equal(body.gatewayReady, false);
+    assert.equal(body.gatewayCheckedAt, null);
+  });
+});
+
+test("GET /api/status: passive returns cached gateway status after live probe", async () => {
+  await withTestEnv(async () => {
+    const controller = new FakeSandboxController();
+    _setSandboxControllerForTesting(controller);
+
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = async (input, init) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+        if (url.includes(".fake.vercel.run")) {
+          return new Response('<div id="openclaw-app">ready</div>', { status: 200 });
+        }
+        return originalFetch(input as RequestInfo | URL, init);
+      };
+
+      const now = Date.now();
+      await mutateMeta((meta) => {
+        meta.status = "running";
+        meta.sandboxId = "sbx-cache-probe";
+        meta.lastAccessedAt = now - 30_000;
+      });
+
+      controller.handlesByIds.set(
+        "sbx-cache-probe",
+        new FakeSandboxHandle("sbx-cache-probe", controller.events, 240_000),
+      );
+
+      const route = getStatusRoute();
+      const liveResult = await callRoute(
+        route.GET!,
+        buildAuthGetRequest("/api/status?health=1"),
+      );
+
+      assert.equal(liveResult.status, 200);
+      const liveBody = liveResult.json as {
+        gatewayCheckedAt: number | null;
+      };
+      assert.ok(typeof liveBody.gatewayCheckedAt === "number");
+
+      controller.retrieved.length = 0;
+      controller.events.length = 0;
+
+      const passiveResult = await callRoute(route.GET!, buildAuthGetRequest("/api/status"));
+
+      assert.equal(passiveResult.status, 200);
+      const passiveBody = passiveResult.json as {
+        gatewayStatus: string;
+        gatewayReady: boolean;
+        gatewayCheckedAt: number | null;
+        timeoutSource: string;
+      };
+
+      assert.equal(passiveBody.gatewayStatus, "ready");
+      assert.equal(passiveBody.gatewayReady, true);
+      assert.equal(passiveBody.gatewayCheckedAt, liveBody.gatewayCheckedAt);
+      assert.equal(passiveBody.timeoutSource, "estimated");
+      assert.deepEqual(controller.retrieved, []);
+      assert.equal(controller.events.length, 0);
+    } finally {
+      globalThis.fetch = originalFetch;
     }
   });
 });

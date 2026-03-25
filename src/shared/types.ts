@@ -267,6 +267,9 @@ export type SingleMeta = {
   createdAt: number;
   updatedAt: number;
   lastAccessedAt: number | null;
+  lastGatewayProbeAt?: number | null;
+  lastGatewayProbeReady?: boolean | null;
+  lastGatewayProbeSandboxId?: string | null;
   portUrls: Record<string, string> | null;
   startupScript: string | null;
   lastError: string | null;
@@ -308,6 +311,9 @@ export function createDefaultMeta(now: number, gatewayToken: string): SingleMeta
     createdAt: now,
     updatedAt: now,
     lastAccessedAt: null,
+    lastGatewayProbeAt: null,
+    lastGatewayProbeReady: null,
+    lastGatewayProbeSandboxId: null,
     portUrls: null,
     startupScript: null,
     lastError: null,
@@ -371,6 +377,18 @@ export function ensureMetaShape(input: unknown): SingleMeta | null {
     updatedAt: typeof raw.updatedAt === "number" ? raw.updatedAt : createdAt,
     lastAccessedAt:
       typeof raw.lastAccessedAt === "number" ? raw.lastAccessedAt : null,
+    lastGatewayProbeAt:
+      typeof (raw as Record<string, unknown>).lastGatewayProbeAt === "number"
+        ? (raw as Record<string, unknown>).lastGatewayProbeAt as number
+        : null,
+    lastGatewayProbeReady:
+      typeof (raw as Record<string, unknown>).lastGatewayProbeReady === "boolean"
+        ? (raw as Record<string, unknown>).lastGatewayProbeReady as boolean
+        : null,
+    lastGatewayProbeSandboxId:
+      typeof (raw as Record<string, unknown>).lastGatewayProbeSandboxId === "string"
+        ? (raw as Record<string, unknown>).lastGatewayProbeSandboxId as string
+        : null,
     portUrls:
       raw.portUrls && typeof raw.portUrls === "object" && !Array.isArray(raw.portUrls)
         ? (raw.portUrls as Record<string, string>)

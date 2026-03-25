@@ -8,9 +8,40 @@ import {
   probeGatewayReady,
   touchRunningSandbox,
 } from "@/server/sandbox/lifecycle";
-import { getSandboxSleepConfig } from "@/server/sandbox/timeout";
-import { getStore, getInitializedMeta } from "@/server/store/store";
+import {
+  estimateSandboxTimeoutRemainingMs,
+  getSandboxSleepConfig,
+} from "@/server/sandbox/timeout";
+import { getStore, getInitializedMeta, mutateMeta } from "@/server/store/store";
 import { jsonError } from "@/shared/http";
+import type { SingleMeta } from "@/shared/types";
+
+type GatewayStatus = "ready" | "not-ready" | "unknown";
+
+function toGatewayReady(status: GatewayStatus): boolean {
+  return status === "ready";
+}
+
+function getCachedGatewayStatus(meta: SingleMeta): {
+  gatewayStatus: GatewayStatus;
+  gatewayCheckedAt: number | null;
+} {
+  if (
+    meta.sandboxId &&
+    meta.lastGatewayProbeSandboxId === meta.sandboxId &&
+    typeof meta.lastGatewayProbeReady === "boolean"
+  ) {
+    return {
+      gatewayStatus: meta.lastGatewayProbeReady ? "ready" : "not-ready",
+      gatewayCheckedAt: meta.lastGatewayProbeAt ?? null,
+    };
+  }
+
+  return {
+    gatewayStatus: "unknown",
+    gatewayCheckedAt: null,
+  };
+}
 
 export async function GET(request: Request): Promise<Response> {
   const auth = await requireJsonRouteAuth(request);
@@ -23,47 +54,70 @@ export async function GET(request: Request): Promise<Response> {
   try {
     const url = new URL(request.url);
     const includeHealth = url.searchParams.get("health") === "1";
-    const meta = await getInitializedMeta();
-    const gatewayReady =
-      meta.status === "running"
-        ? includeHealth
-          ? (await probeGatewayReady()).ready
-          : true
-        : includeHealth
-          ? (await probeGatewayReady()).ready
-          : false;
-
     const sleepConfig = getSandboxSleepConfig();
-    const timeoutRemainingMs =
-      includeHealth || meta.status === "running"
-        ? await getRunningSandboxTimeoutRemainingMs()
-        : null;
+    const meta = await getInitializedMeta();
+
+    let responseMeta = meta;
+    let gatewayStatus: GatewayStatus;
+    let gatewayCheckedAt: number | null;
+    let timeoutRemainingMs: number | null;
+    let timeoutSource: "live" | "estimated" | "none";
+
+    if (includeHealth) {
+      const checkedAt = Date.now();
+      const probe = await probeGatewayReady();
+      responseMeta = await mutateMeta((next) => {
+        next.lastGatewayProbeAt = checkedAt;
+        next.lastGatewayProbeReady = probe.ready;
+        next.lastGatewayProbeSandboxId = next.sandboxId;
+      });
+      gatewayStatus = probe.ready ? "ready" : "not-ready";
+      gatewayCheckedAt = checkedAt;
+      timeoutRemainingMs = await getRunningSandboxTimeoutRemainingMs();
+      timeoutSource = "live";
+    } else {
+      const cachedGateway = getCachedGatewayStatus(meta);
+      gatewayStatus = cachedGateway.gatewayStatus;
+      gatewayCheckedAt = cachedGateway.gatewayCheckedAt;
+      timeoutRemainingMs = estimateSandboxTimeoutRemainingMs(
+        meta.lastAccessedAt,
+        sleepConfig.sleepAfterMs,
+      );
+      timeoutSource = "estimated";
+    }
 
     const response = Response.json({
       authMode: getAuthMode(),
       storeBackend: getStore().name,
       persistentStore: getStore().name !== "memory",
-      status: meta.status,
-      sandboxId: meta.sandboxId,
-      snapshotId: meta.snapshotId,
-      gatewayReady,
+      status: responseMeta.status,
+      sandboxId: responseMeta.sandboxId,
+      snapshotId: responseMeta.snapshotId,
+      gatewayReady: toGatewayReady(gatewayStatus),
+      gatewayStatus,
+      gatewayCheckedAt,
       gatewayUrl: "/gateway",
-      lastError: meta.lastError,
+      lastError: responseMeta.lastError,
+      lastKeepaliveAt: responseMeta.lastAccessedAt,
       sleepAfterMs: sleepConfig.sleepAfterMs,
       heartbeatIntervalMs: sleepConfig.heartbeatIntervalMs,
       timeoutRemainingMs,
-      firewall: { ...meta.firewall, wouldBlock: computeWouldBlock(meta.firewall) },
-      channels: await getPublicChannelState(request, meta),
+      timeoutSource,
+      firewall: {
+        ...responseMeta.firewall,
+        wouldBlock: computeWouldBlock(responseMeta.firewall),
+      },
+      channels: await getPublicChannelState(request, responseMeta),
       lifecycle: {
-        lastRestoreMetrics: meta.lastRestoreMetrics ?? null,
-        restoreHistory: (meta.restoreHistory ?? []).slice(0, 5),
-        lastTokenRefreshAt: meta.lastTokenRefreshAt,
-        lastTokenSource: meta.lastTokenSource ?? null,
-        lastTokenExpiresAt: meta.lastTokenExpiresAt ?? null,
-        lastTokenRefreshError: meta.lastTokenRefreshError ?? null,
+        lastRestoreMetrics: responseMeta.lastRestoreMetrics ?? null,
+        restoreHistory: (responseMeta.restoreHistory ?? []).slice(0, 5),
+        lastTokenRefreshAt: responseMeta.lastTokenRefreshAt,
+        lastTokenSource: responseMeta.lastTokenSource ?? null,
+        lastTokenExpiresAt: responseMeta.lastTokenExpiresAt ?? null,
+        lastTokenRefreshError: responseMeta.lastTokenRefreshError ?? null,
         consecutiveTokenRefreshFailures:
-          meta.consecutiveTokenRefreshFailures ?? 0,
-        breakerOpenUntil: meta.breakerOpenUntil ?? null,
+          responseMeta.consecutiveTokenRefreshFailures ?? 0,
+        breakerOpenUntil: responseMeta.breakerOpenUntil ?? null,
       },
       user: { sub: "admin", name: "Admin" },
     });

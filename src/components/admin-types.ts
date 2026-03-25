@@ -30,11 +30,15 @@ export type StatusPayload = {
   sandboxId: string | null;
   snapshotId: string | null;
   gatewayReady: boolean;
+  gatewayStatus: "ready" | "not-ready" | "unknown";
+  gatewayCheckedAt: number | null;
   gatewayUrl: string;
   lastError: string | null;
+  lastKeepaliveAt: number | null;
   sleepAfterMs: number;
   heartbeatIntervalMs: number;
   timeoutRemainingMs: number | null;
+  timeoutSource: "live" | "estimated" | "none";
   firewall: {
     mode: "disabled" | "learning" | "enforcing";
     allowlist: string[];
