@@ -478,6 +478,7 @@ The admin page is intentionally small. It is a control surface, not a dashboard 
 - `POST /api/admin/snapshot` currently snapshots and stops. If you change that to a hot snapshot flow, update the README and this file.
 - If you add environment variables, update `.env.example`, `README.md`, and this file in the same change.
 - If you change metadata shape, update tests and migration logic in `ensureMetaShape`.
+- All new Redis keys must go through `src/server/store/keyspace.ts` — never hardcode the `openclaw-single` prefix.
 - Telegram `webhookSecret` must flow through ALL config paths: `buildGatewayConfig()`, `buildDynamicRestoreFiles()`, `syncRestoreAssetsIfNeeded()`, and `computeGatewayConfigHash()`. Missing it causes OpenClaw config validation failure ("webhookUrl requires webhookSecret").
 - `_setSandboxControllerForTesting()` only works when `NODE_ENV=test`. In production, `getSandboxController()` always returns the real `@vercel/sandbox` SDK wrapper. This prevents fake sandbox IDs from contaminating Upstash metadata.
 - Upstash store only connects on deployed Vercel runtimes (`isVercelDeployment()`). Local dev and CI always use the memory store, even if Upstash env vars are present.
@@ -526,6 +527,7 @@ These variables are checked by `buildDeploymentContract()` in `src/server/deploy
 | `CRON_SECRET` | Required on Vercel | Authenticates `/api/cron/watchdog`. Missing on Vercel is a hard failure in the deployment contract. |
 | `UPSTASH_REDIS_REST_URL` | All deployments | Required for persistent state. Provision via Vercel Marketplace. |
 | `UPSTASH_REDIS_REST_TOKEN` | All deployments | Required for persistent state. Paired with the URL above. |
+| `OPENCLAW_INSTANCE_ID` | All environments | Optional. Namespace token for Redis key isolation. Defaults to `openclaw-single`. Required when multiple deployments share one Upstash database. Changing it later points the app at a new namespace; it does not migrate existing state. |
 | `OPENCLAW_PACKAGE_SPEC` | All environments | Optional locally, recommended on Vercel. Defaults to `openclaw@latest` when unset in local dev. On Vercel deployments, the deployment contract **warns** — it does not fail — when unset or unpinned (e.g. `openclaw@latest`). The runtime still falls back to `openclaw@latest`, but restores are non-deterministic. Pin to an exact version like `openclaw@1.2.3` for deterministic sandbox restores. |
 | `OPENCLAW_SANDBOX_VCPUS` | All environments | Optional. vCPU count for sandbox create and snapshot restore (valid: 1, 2, 4, 8; default: 1). Keep this fixed during benchmarks so restore timings stay comparable. |
 | `OPENCLAW_SANDBOX_SLEEP_AFTER_MS` | All environments | Optional. How long the sandbox stays alive after last activity, in milliseconds (60000–2700000; default: 1800000 = 30 min). Heartbeat and touch-throttle intervals are derived proportionally. Existing running sandboxes cannot be shortened in place. If you increase this value, the next touch/heartbeat can top the sandbox timeout up to the new target. If you decrease it, the lower value becomes exact on the next create or restore. |

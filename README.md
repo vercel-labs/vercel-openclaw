@@ -64,6 +64,7 @@ By default the app installs `openclaw@latest`, which is non-deterministic across
 
 | Variable | Purpose |
 | -------- | ------- |
+| `OPENCLAW_INSTANCE_ID` | Optional Redis key namespace. Defaults to `openclaw-single`. Required when multiple forks or deployments share one Upstash database. Changing it later points the app at a new namespace; it does not migrate existing state. |
 | `OPENCLAW_PACKAGE_SPEC` | Pin to an exact version like `openclaw@1.2.3` for deterministic sandbox restores and comparable benchmarks. When unset, the runtime falls back to `openclaw@latest` and the deployment contract warns on Vercel. |
 | `OPENCLAW_SANDBOX_VCPUS` | vCPU count for sandbox create/restore (1, 2, 4, or 8; default: 1). Keep fixed during benchmarks. |
 | `OPENCLAW_SANDBOX_SLEEP_AFTER_MS` | How long the sandbox stays alive after last activity, in milliseconds (60000–2700000; default: 1800000 = 30 min). Heartbeat and touch-throttle intervals are derived proportionally. Existing running sandboxes cannot be shortened in place. If you increase this value, the next touch/heartbeat can top the sandbox timeout up to the new target. If you decrease it, the lower value becomes exact on the next create or restore. |

@@ -144,6 +144,7 @@ Full reference:
 | `VERCEL_APP_CLIENT_SECRET` | Sign-in mode | OAuth client secret |
 | `SESSION_SECRET` | Required on Vercel (`sign-in-with-vercel` mode) | Cookie encryption secret. Must be explicitly set on deployed Vercel environments. |
 | `AI_GATEWAY_API_KEY` | No | Optional fallback when Vercel OIDC is unavailable (e.g. local dev without `vercel env pull`). OIDC is the default on deployed Vercel. |
+| `OPENCLAW_INSTANCE_ID` | No | Optional Redis key namespace. Defaults to `openclaw-single`. Required when multiple deployments share one Upstash database. Changing it later points the app at a new namespace and does not migrate existing state. |
 | `OPENCLAW_PACKAGE_SPEC` | No | OpenClaw version to install (defaults to `openclaw@latest`). On Vercel deployments, the deployment contract **warns** — it does not fail — when unset or unpinned (e.g. `openclaw@latest`). The runtime still falls back to `openclaw@latest`, but restores are non-deterministic. Pin to an exact version like `openclaw@1.2.3`. |
 | `OPENCLAW_SANDBOX_VCPUS` | No | vCPU count for sandbox create and snapshot restore (valid: 1, 2, 4, 8; default: 1). Keep fixed during benchmarks. |
 | `OPENCLAW_SANDBOX_SLEEP_AFTER_MS` | No | How long the sandbox stays alive after last activity, in milliseconds (60000–2700000; default: 1800000 = 30 min). Heartbeat and touch-throttle intervals are derived proportionally. Existing running sandboxes cannot be shortened in place. If you increase this value, the next touch/heartbeat can top the sandbox timeout up to the new target. If you decrease it, the lower value becomes exact on the next create or restore. |
@@ -153,6 +154,8 @@ Full reference:
 | `BASE_DOMAIN` | No | Legacy alias for `NEXT_PUBLIC_BASE_DOMAIN` |
 | `KV_REST_API_URL` | No | Alias for Upstash REST URL |
 | `KV_REST_API_TOKEN` | No | Alias for Upstash REST token |
+
+When you add or change Redis keys, route every key through `src/server/store/keyspace.ts`. Do not hardcode the `openclaw-single` prefix anywhere else.
 
 ## Routes
 
