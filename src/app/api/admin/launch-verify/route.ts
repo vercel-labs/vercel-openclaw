@@ -22,7 +22,10 @@ import {
 } from "@/server/sandbox/lifecycle";
 import { getOpenclawPackageSpec } from "@/server/env";
 import { detectDrift } from "@/server/openclaw/bootstrap";
-import { buildRestoreTargetAttestation } from "@/server/sandbox/restore-attestation";
+import {
+  buildRestoreTargetAttestation,
+  buildRestoreTargetPlan,
+} from "@/server/sandbox/restore-attestation";
 import { getInitializedMeta } from "@/server/store/store";
 import {
   publishLaunchVerifyQueueProbe,
@@ -107,6 +110,9 @@ function buildLaunchVerifyCompletionLog(input: {
   payload: LaunchVerificationPayload;
   readiness: ChannelReadiness;
 }): LaunchVerifyCompletionLog {
+  const attestation = input.payload.runtime?.restoreAttestation;
+  const plan = input.payload.runtime?.restorePlan;
+
   return {
     ok: input.payload.ok,
     mode: input.payload.mode,
@@ -127,6 +133,10 @@ function buildLaunchVerifyCompletionLog(input: {
     repaired: input.payload.sandboxHealth?.repaired ?? null,
     configReconciled: input.payload.sandboxHealth?.configReconciled ?? null,
     configReconcileReason: input.payload.sandboxHealth?.configReconcileReason,
+    restoreReusable: attestation?.reusable ?? null,
+    restoreNeedsPrepare: attestation?.needsPrepare ?? null,
+    restoreReasonIds: attestation?.reasons ?? [],
+    restorePlanActionIds: plan?.actions.map((a) => a.id) ?? [],
   };
 }
 
@@ -174,6 +184,11 @@ function buildLaunchVerificationRuntime(
   if (!packageSpec) return undefined;
 
   const attestation = buildRestoreTargetAttestation(runtimeMeta);
+  const plan = buildRestoreTargetPlan({
+    attestation,
+    status: runtimeMeta.status,
+    sandboxId: runtimeMeta.sandboxId,
+  });
 
   return {
     packageSpec,
@@ -194,6 +209,7 @@ function buildLaunchVerificationRuntime(
     snapshotAssetSha256: runtimeMeta.snapshotAssetSha256,
     runtimeAssetSha256: runtimeMeta.runtimeAssetSha256,
     restoreAttestation: attestation,
+    restorePlan: plan,
   };
 }
 

@@ -25,6 +25,60 @@ export type RestoreTargetAttestation = {
 };
 
 // ---------------------------------------------------------------------------
+// Restore oracle — deterministic plan from attestation + sandbox state
+// ---------------------------------------------------------------------------
+
+export type RestoreTargetPlanAction = {
+  id: "ensure-running" | "prepare-destructive";
+  priority: "required" | "recommended";
+  title: string;
+  description: string;
+  request: {
+    method: "GET" | "POST";
+    path: string;
+    body: Record<string, unknown> | null;
+  };
+};
+
+export type RestoreTargetPlan = {
+  schemaVersion: 1;
+  status: "ready" | "needs-prepare";
+  blocking: boolean;
+  reasons: string[];
+  actions: RestoreTargetPlanAction[];
+};
+
+export type RestoreTargetInspectionPayload = {
+  ok: boolean;
+  generatedAt: string;
+  attestation: RestoreTargetAttestation;
+  preview: {
+    ok: boolean;
+    destructive: boolean;
+    state: RestorePreparedStatus;
+    reason: RestorePreparedReason | null;
+    snapshotId: string | null;
+    snapshotDynamicConfigHash: string | null;
+    runtimeDynamicConfigHash: string | null;
+    snapshotAssetSha256: string | null;
+    runtimeAssetSha256: string | null;
+    preparedAt: number | null;
+    actions: Array<{
+      id:
+        | "ensure-running"
+        | "reconcile-dynamic-config"
+        | "sync-static-assets"
+        | "verify-ready"
+        | "snapshot"
+        | "stamp-meta";
+      status: "completed" | "skipped" | "failed";
+      message: string;
+    }>;
+  };
+  plan: RestoreTargetPlan;
+};
+
+// ---------------------------------------------------------------------------
 // Launch verification types
 // ---------------------------------------------------------------------------
 
@@ -60,6 +114,7 @@ export type LaunchVerificationRuntime = {
   snapshotAssetSha256: string | null;
   runtimeAssetSha256: string | null;
   restoreAttestation?: RestoreTargetAttestation;
+  restorePlan?: RestoreTargetPlan;
 };
 
 export type LaunchVerificationSandboxHealth = {
@@ -159,6 +214,10 @@ export type LaunchVerifyCompletionLog = {
   repaired: boolean | null;
   configReconciled: boolean | null;
   configReconcileReason?: string;
+  restoreReusable: boolean | null;
+  restoreNeedsPrepare: boolean | null;
+  restoreReasonIds: string[];
+  restorePlanActionIds: string[];
 };
 
 const REQUIRED_PHASE_IDS: LaunchVerificationPhaseId[] = [

@@ -6,7 +6,11 @@ import {
   toWhatsAppGatewayConfig,
 } from "@/server/openclaw/config";
 import { buildRestoreAssetManifest } from "@/server/openclaw/restore-assets";
-import { buildRestoreTargetAttestation } from "@/server/sandbox/restore-attestation";
+import {
+  buildRestoreTargetAttestation,
+  buildRestoreTargetPlan,
+} from "@/server/sandbox/restore-attestation";
+import type { RestoreTargetAttestation } from "@/shared/launch-verification";
 import { createDefaultMeta } from "@/shared/types";
 
 test("buildRestoreTargetAttestation includes whatsapp config in desiredDynamicConfigHash", () => {
@@ -112,4 +116,99 @@ test("buildRestoreTargetAttestation reports reusable when snapshot is fresh and 
   assert.equal(attestation.reusable, true);
   assert.equal(attestation.needsPrepare, false);
   assert.deepEqual(attestation.reasons, []);
+});
+
+// ---------------------------------------------------------------------------
+// buildRestoreTargetPlan tests
+// ---------------------------------------------------------------------------
+
+function makeAttestation(
+  overrides: Partial<RestoreTargetAttestation> = {},
+): RestoreTargetAttestation {
+  return {
+    desiredDynamicConfigHash: "cfg-current",
+    desiredAssetSha256: "asset-current",
+    snapshotDynamicConfigHash: "cfg-current",
+    runtimeDynamicConfigHash: "cfg-current",
+    snapshotAssetSha256: "asset-current",
+    runtimeAssetSha256: "asset-current",
+    restorePreparedStatus: "ready",
+    restorePreparedReason: "prepared",
+    restorePreparedAt: 123,
+    runtimeConfigFresh: true,
+    snapshotConfigFresh: true,
+    runtimeAssetsFresh: true,
+    snapshotAssetsFresh: true,
+    reusable: true,
+    needsPrepare: false,
+    reasons: [],
+    ...overrides,
+  };
+}
+
+test("buildRestoreTargetPlan returns ready when snapshot is reusable", () => {
+  assert.deepEqual(
+    buildRestoreTargetPlan({
+      attestation: makeAttestation(),
+      status: "stopped",
+      sandboxId: null,
+    }),
+    {
+      schemaVersion: 1,
+      status: "ready",
+      blocking: false,
+      reasons: [],
+      actions: [],
+    },
+  );
+});
+
+test("buildRestoreTargetPlan requires ensure-running before destructive prepare", () => {
+  const attestation = makeAttestation({
+    snapshotDynamicConfigHash: "cfg-old",
+    snapshotConfigFresh: false,
+    reusable: false,
+    needsPrepare: true,
+    reasons: ["snapshot-config-stale"],
+  });
+
+  assert.deepEqual(
+    buildRestoreTargetPlan({
+      attestation,
+      status: "stopped",
+      sandboxId: null,
+    }),
+    {
+      schemaVersion: 1,
+      status: "needs-prepare",
+      blocking: true,
+      reasons: ["snapshot-config-stale"],
+      actions: [
+        {
+          id: "ensure-running",
+          priority: "required",
+          title: "Start the sandbox",
+          description:
+            "Destructive restore preparation needs a running sandbox.",
+          request: {
+            method: "POST",
+            path: "/api/admin/ensure?wait=1",
+            body: null,
+          },
+        },
+        {
+          id: "prepare-destructive",
+          priority: "required",
+          title: "Prepare a fresh restore target",
+          description:
+            "The current snapshot cannot be reused: snapshot-config-stale.",
+          request: {
+            method: "POST",
+            path: "/api/admin/restore-target",
+            body: { destructive: true },
+          },
+        },
+      ],
+    },
+  );
 });

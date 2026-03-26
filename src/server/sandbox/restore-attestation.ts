@@ -4,7 +4,10 @@ import {
 } from "@/server/openclaw/config";
 import { buildRestoreAssetManifest } from "@/server/openclaw/restore-assets";
 import type { SingleMeta } from "@/shared/types";
-import type { RestoreTargetAttestation } from "@/shared/launch-verification";
+import type {
+  RestoreTargetAttestation,
+  RestoreTargetPlan,
+} from "@/shared/launch-verification";
 
 type RestoreAttestationMeta = Pick<
   SingleMeta,
@@ -103,5 +106,65 @@ export function buildRestoreTargetAttestation(
     reusable,
     needsPrepare: !reusable,
     reasons,
+  };
+}
+
+export function buildRestoreTargetPlan(input: {
+  attestation: RestoreTargetAttestation;
+  status: SingleMeta["status"];
+  sandboxId: string | null;
+}): RestoreTargetPlan {
+  const { attestation, status, sandboxId } = input;
+
+  if (attestation.reusable) {
+    return {
+      schemaVersion: 1,
+      status: "ready",
+      blocking: false,
+      reasons: [],
+      actions: [],
+    };
+  }
+
+  const reasons =
+    attestation.reasons.length > 0
+      ? attestation.reasons
+      : ["restore-target-not-reusable"];
+
+  const actions: RestoreTargetPlan["actions"] = [];
+
+  if (status !== "running" || !sandboxId) {
+    actions.push({
+      id: "ensure-running",
+      priority: "required",
+      title: "Start the sandbox",
+      description:
+        "Destructive restore preparation needs a running sandbox.",
+      request: {
+        method: "POST",
+        path: "/api/admin/ensure?wait=1",
+        body: null,
+      },
+    });
+  }
+
+  actions.push({
+    id: "prepare-destructive",
+    priority: "required",
+    title: "Prepare a fresh restore target",
+    description: `The current snapshot cannot be reused: ${reasons.join(", ")}.`,
+    request: {
+      method: "POST",
+      path: "/api/admin/restore-target",
+      body: { destructive: true },
+    },
+  });
+
+  return {
+    schemaVersion: 1,
+    status: "needs-prepare",
+    blocking: true,
+    reasons,
+    actions,
   };
 }

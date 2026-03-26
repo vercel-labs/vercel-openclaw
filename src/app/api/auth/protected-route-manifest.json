@@ -1,12 +1,12 @@
 {
   "version": 3,
-  "generatedAt": "2026-03-26T06:03:46.208Z",
+  "generatedAt": "2026-03-26T07:56:53.065Z",
   "roots": [
     "src/app/api/admin",
     "src/app/api/firewall",
     "src/app/api/debug"
   ],
-  "discoveredRouteCount": 40,
+  "discoveredRouteCount": 42,
   "unauthenticatedRouteCount": 0,
   "violationCount": 0,
   "routes": [
@@ -37,6 +37,10 @@
     {
       "method": "GET",
       "path": "/api/admin/prepare-restore"
+    },
+    {
+      "method": "GET",
+      "path": "/api/admin/restore-target"
     },
     {
       "method": "GET",
@@ -89,6 +93,10 @@
     {
       "method": "POST",
       "path": "/api/admin/reset"
+    },
+    {
+      "method": "POST",
+      "path": "/api/admin/restore-target"
     },
     {
       "method": "POST",

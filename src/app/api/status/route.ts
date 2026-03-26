@@ -3,7 +3,10 @@ import { getPublicChannelState } from "@/server/channels/state";
 import { getAuthMode } from "@/server/env";
 import { computeWouldBlock } from "@/server/firewall/state";
 import { extractRequestId, logError } from "@/server/log";
-import { buildRestoreTargetAttestation } from "@/server/sandbox/restore-attestation";
+import {
+  buildRestoreTargetAttestation,
+  buildRestoreTargetPlan,
+} from "@/server/sandbox/restore-attestation";
 import {
   getRunningSandboxTimeoutRemainingMs,
   probeGatewayReady,
@@ -98,6 +101,13 @@ export async function GET(request: Request): Promise<Response> {
       }
     }
 
+    const restoreAttestation = buildRestoreTargetAttestation(responseMeta);
+    const restorePlan = buildRestoreTargetPlan({
+      attestation: restoreAttestation,
+      status: responseMeta.status,
+      sandboxId: responseMeta.sandboxId,
+    });
+
     const response = Response.json({
       authMode: getAuthMode(),
       storeBackend: getStore().name,
@@ -128,7 +138,8 @@ export async function GET(request: Request): Promise<Response> {
         runtimeDynamicConfigHash: responseMeta.runtimeDynamicConfigHash,
         snapshotAssetSha256: responseMeta.snapshotAssetSha256,
         runtimeAssetSha256: responseMeta.runtimeAssetSha256,
-        attestation: buildRestoreTargetAttestation(responseMeta),
+        attestation: restoreAttestation,
+        plan: restorePlan,
       },
       lifecycle: {
         lastRestoreMetrics: responseMeta.lastRestoreMetrics ?? null,
