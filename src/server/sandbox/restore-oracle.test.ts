@@ -8,11 +8,33 @@ import {
   type RestoreOracleDeps,
 } from "@/server/sandbox/restore-oracle";
 import type { PrepareRestoreResult } from "@/server/sandbox/lifecycle";
+import type { RestoreDecision } from "@/shared/restore-decision";
 import { createDefaultMeta, type SingleMeta } from "@/shared/types";
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+const defaultMetaForHashes = createDefaultMeta(1_000_000, "gw-token");
+const desiredDynamicConfigHash = computeGatewayConfigHash({
+  telegramBotToken: defaultMetaForHashes.channels.telegram?.botToken,
+  telegramWebhookSecret: defaultMetaForHashes.channels.telegram?.webhookSecret,
+  slackCredentials: defaultMetaForHashes.channels.slack
+    ? {
+        botToken: defaultMetaForHashes.channels.slack.botToken,
+        signingSecret: defaultMetaForHashes.channels.slack.signingSecret,
+      }
+    : undefined,
+  whatsappConfig: defaultMetaForHashes.channels.whatsapp
+    ? {
+        accessToken: defaultMetaForHashes.channels.whatsapp.accessToken,
+        phoneNumberId: defaultMetaForHashes.channels.whatsapp.phoneNumberId,
+        verifyToken: defaultMetaForHashes.channels.whatsapp.verifyToken,
+        appSecret: defaultMetaForHashes.channels.whatsapp.appSecret,
+      }
+    : undefined,
+});
+const desiredAssetSha256 = buildRestoreAssetManifest().sha256;
 
 function baseMeta(overrides: Partial<SingleMeta> = {}): SingleMeta {
   const base = createDefaultMeta(1_000_000, "gw-token");
@@ -47,7 +69,11 @@ function baseMeta(overrides: Partial<SingleMeta> = {}): SingleMeta {
 function buildDeps(
   meta: SingleMeta,
   overrides: Partial<RestoreOracleDeps> = {},
-): { deps: RestoreOracleDeps; getMeta: () => SingleMeta } {
+): {
+  deps: RestoreOracleDeps;
+  getMeta: () => SingleMeta;
+  setMeta: (next: SingleMeta) => void;
+} {
   let current = meta;
 
   const deps: RestoreOracleDeps = {
@@ -66,7 +92,43 @@ function buildDeps(
     ...overrides,
   };
 
-  return { deps, getMeta: () => current };
+  return {
+    deps,
+    getMeta: () => current,
+    setMeta: (next) => {
+      current = next;
+    },
+  };
+}
+
+function stubDecision(overrides: Partial<RestoreDecision> = {}): RestoreDecision {
+  return {
+    schemaVersion: 1,
+    source: "prepare",
+    destructive: true,
+    reusable: false,
+    needsPrepare: true,
+    blocking: true,
+    reasons: [],
+    requiredActions: [],
+    nextAction: null,
+    status: "stopped",
+    sandboxId: null,
+    snapshotId: null,
+    restorePreparedStatus: "unknown",
+    restorePreparedReason: null,
+    oracleStatus: null,
+    idleMs: null,
+    minIdleMs: null,
+    probeReady: null,
+    desiredDynamicConfigHash: "stub",
+    snapshotDynamicConfigHash: null,
+    runtimeDynamicConfigHash: null,
+    desiredAssetSha256: "stub",
+    snapshotAssetSha256: null,
+    runtimeAssetSha256: null,
+    ...overrides,
+  };
 }
 
 const successPrepare: PrepareRestoreResult = {
@@ -75,12 +137,13 @@ const successPrepare: PrepareRestoreResult = {
   state: "ready",
   reason: "prepared",
   snapshotId: "snap_new",
-  snapshotDynamicConfigHash: "new-hash",
-  runtimeDynamicConfigHash: "new-hash",
-  snapshotAssetSha256: "new-asset-hash",
-  runtimeAssetSha256: "new-asset-hash",
+  snapshotDynamicConfigHash: desiredDynamicConfigHash,
+  runtimeDynamicConfigHash: desiredDynamicConfigHash,
+  snapshotAssetSha256: desiredAssetSha256,
+  runtimeAssetSha256: desiredAssetSha256,
   preparedAt: 1_000_000,
   actions: [],
+  decision: stubDecision({ reusable: true, needsPrepare: false, blocking: false }),
 };
 
 const failedPrepare: PrepareRestoreResult = {
@@ -95,6 +158,7 @@ const failedPrepare: PrepareRestoreResult = {
   runtimeAssetSha256: null,
   preparedAt: null,
   actions: [],
+  decision: stubDecision({ reusable: false, reasons: ["restore-target-failed"] }),
 };
 
 // ---------------------------------------------------------------------------
@@ -128,6 +192,15 @@ describe("runRestoreOracleCycle", () => {
     assert.equal(result.prepare, null);
     assert.equal(getMeta().restoreOracle.status, "ready");
     assert.equal(getMeta().restoreOracle.lastResult, "already-ready");
+
+    // Decision reflects already-reusable state
+    assert.equal(result.decision.schemaVersion, 1);
+    assert.equal(result.decision.source, "oracle");
+    assert.equal(result.decision.reusable, true);
+    assert.equal(result.decision.needsPrepare, false);
+    assert.equal(result.decision.blocking, false);
+    assert.deepEqual(result.decision.requiredActions, []);
+    assert.equal(result.decision.nextAction, null);
   });
 
   test("blocks when sandbox was active too recently", async () => {
@@ -155,6 +228,14 @@ describe("runRestoreOracleCycle", () => {
     assert.ok(
       getMeta().restoreOracle.lastBlockedReason?.includes("10000ms ago"),
     );
+
+    // Decision captures recent-activity blocking with exact context
+    assert.equal(result.decision.reusable, false);
+    assert.ok(result.decision.reasons.includes("sandbox-recently-active"));
+    assert.equal(result.decision.nextAction, "prepare-destructive");
+    assert.deepEqual(result.decision.requiredActions, ["prepare-destructive"]);
+    assert.equal(result.decision.idleMs, 10_000);
+    assert.equal(result.decision.minIdleMs, 30_000);
   });
 
   test("blocks when sandbox is not running", async () => {
@@ -173,6 +254,16 @@ describe("runRestoreOracleCycle", () => {
     assert.equal(result.executed, false);
     assert.equal(result.blockedReason, "sandbox-not-running");
     assert.equal(getMeta().restoreOracle.status, "blocked");
+
+    // Decision captures sandbox-not-running with ensure-running as next action
+    assert.equal(result.decision.reusable, false);
+    assert.ok(result.decision.reasons.includes("sandbox-not-running"));
+    assert.deepEqual(result.decision.requiredActions, [
+      "ensure-running",
+      "prepare-destructive",
+    ]);
+    assert.equal(result.decision.nextAction, "ensure-running");
+    assert.equal(result.decision.oracleStatus, "blocked");
   });
 
   test("blocks when oracle is already running", async () => {
@@ -220,6 +311,11 @@ describe("runRestoreOracleCycle", () => {
       getMeta().restoreOracle.lastBlockedReason,
       "Connection refused",
     );
+
+    // Decision captures gateway-not-ready with probeReady=false
+    assert.equal(result.decision.reusable, false);
+    assert.ok(result.decision.reasons.includes("gateway-not-ready"));
+    assert.equal(result.decision.probeReady, false);
   });
 
   test("executes prepare when sandbox is running, idle, dirty, and probe-ready", async () => {
@@ -228,11 +324,22 @@ describe("runRestoreOracleCycle", () => {
     });
 
     let prepareCalled = false;
-    const { deps, getMeta } = buildDeps(meta, {
+    const { deps, getMeta, setMeta } = buildDeps(meta, {
       prepare: async (input) => {
         prepareCalled = true;
         assert.equal(input.destructive, true);
         assert.equal(input.origin, "https://app.example.com");
+        setMeta({
+          ...getMeta(),
+          snapshotId: successPrepare.snapshotId,
+          snapshotDynamicConfigHash: successPrepare.snapshotDynamicConfigHash,
+          runtimeDynamicConfigHash: successPrepare.runtimeDynamicConfigHash,
+          snapshotAssetSha256: successPrepare.snapshotAssetSha256,
+          runtimeAssetSha256: successPrepare.runtimeAssetSha256,
+          restorePreparedStatus: successPrepare.state,
+          restorePreparedReason: successPrepare.reason,
+          restorePreparedAt: successPrepare.preparedAt,
+        });
         return successPrepare;
       },
     });
@@ -250,6 +357,11 @@ describe("runRestoreOracleCycle", () => {
     assert.equal(getMeta().restoreOracle.status, "ready");
     assert.equal(getMeta().restoreOracle.lastResult, "prepared");
     assert.equal(getMeta().restoreOracle.consecutiveFailures, 0);
+    assert.equal(result.decision.reusable, true);
+    assert.equal(result.decision.oracleStatus, "ready");
+    assert.equal(result.decision.snapshotId, "snap_new");
+    assert.deepEqual(result.decision.requiredActions, []);
+    assert.equal(result.decision.nextAction, null);
   });
 
   test("records failure when prepare returns ok=false", async () => {
@@ -271,6 +383,7 @@ describe("runRestoreOracleCycle", () => {
     assert.equal(getMeta().restoreOracle.lastResult, "failed");
     assert.equal(getMeta().restoreOracle.consecutiveFailures, 1);
     assert.ok(getMeta().restoreOracle.lastError?.includes("prepare failed"));
+    assert.equal(result.decision.oracleStatus, "failed");
   });
 
   test("records failure and rethrows when prepare throws", async () => {
@@ -306,9 +419,20 @@ describe("runRestoreOracleCycle", () => {
     });
 
     let prepareCalled = false;
-    const { deps } = buildDeps(meta, {
+    const { deps, getMeta, setMeta } = buildDeps(meta, {
       prepare: async () => {
         prepareCalled = true;
+        setMeta({
+          ...getMeta(),
+          snapshotId: successPrepare.snapshotId,
+          snapshotDynamicConfigHash: successPrepare.snapshotDynamicConfigHash,
+          runtimeDynamicConfigHash: successPrepare.runtimeDynamicConfigHash,
+          snapshotAssetSha256: successPrepare.snapshotAssetSha256,
+          runtimeAssetSha256: successPrepare.runtimeAssetSha256,
+          restorePreparedStatus: successPrepare.state,
+          restorePreparedReason: successPrepare.reason,
+          restorePreparedAt: successPrepare.preparedAt,
+        });
         return successPrepare;
       },
     });
@@ -370,8 +494,21 @@ describe("runRestoreOracleCycle", () => {
       },
     });
 
-    const { deps, getMeta } = buildDeps(meta, {
-      prepare: async () => successPrepare,
+    const { deps, getMeta, setMeta } = buildDeps(meta, {
+      prepare: async () => {
+        setMeta({
+          ...getMeta(),
+          snapshotId: successPrepare.snapshotId,
+          snapshotDynamicConfigHash: successPrepare.snapshotDynamicConfigHash,
+          runtimeDynamicConfigHash: successPrepare.runtimeDynamicConfigHash,
+          snapshotAssetSha256: successPrepare.snapshotAssetSha256,
+          runtimeAssetSha256: successPrepare.runtimeAssetSha256,
+          restorePreparedStatus: successPrepare.state,
+          restorePreparedReason: successPrepare.reason,
+          restorePreparedAt: successPrepare.preparedAt,
+        });
+        return successPrepare;
+      },
     });
 
     await runRestoreOracleCycle(
@@ -406,9 +543,20 @@ describe("runRestoreOracleCycle", () => {
     });
 
     let prepareCalled = false;
-    const { deps } = buildDeps(meta, {
+    const { deps, getMeta, setMeta } = buildDeps(meta, {
       prepare: async () => {
         prepareCalled = true;
+        setMeta({
+          ...getMeta(),
+          snapshotId: successPrepare.snapshotId,
+          snapshotDynamicConfigHash: successPrepare.snapshotDynamicConfigHash,
+          runtimeDynamicConfigHash: successPrepare.runtimeDynamicConfigHash,
+          snapshotAssetSha256: successPrepare.snapshotAssetSha256,
+          runtimeAssetSha256: successPrepare.runtimeAssetSha256,
+          restorePreparedStatus: successPrepare.state,
+          restorePreparedReason: successPrepare.reason,
+          restorePreparedAt: successPrepare.preparedAt,
+        });
         return successPrepare;
       },
     });

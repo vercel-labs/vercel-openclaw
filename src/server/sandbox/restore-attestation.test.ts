@@ -7,6 +7,7 @@ import {
 } from "@/server/openclaw/config";
 import { buildRestoreAssetManifest } from "@/server/openclaw/restore-assets";
 import {
+  buildRestoreDecision,
   buildRestoreTargetAttestation,
   buildRestoreTargetPlan,
 } from "@/server/sandbox/restore-attestation";
@@ -285,5 +286,124 @@ test("buildRestoreTargetPlan requires ensure-running before destructive prepare"
         },
       ],
     },
+  );
+});
+
+// ---------------------------------------------------------------------------
+// buildRestoreDecision tests
+// ---------------------------------------------------------------------------
+
+test("buildRestoreDecision: snapshotId missing with matching hashes and ready status yields non-reusable with snapshot-missing reason", () => {
+  const base = createDefaultMeta(Date.now(), "gw-token");
+  const desiredConfigHash = computeGatewayConfigHash({});
+  const desiredAssetSha256 = buildRestoreAssetManifest().sha256;
+
+  const meta = {
+    ...base,
+    snapshotId: null,
+    snapshotDynamicConfigHash: desiredConfigHash,
+    runtimeDynamicConfigHash: desiredConfigHash,
+    snapshotAssetSha256: desiredAssetSha256,
+    runtimeAssetSha256: desiredAssetSha256,
+    restorePreparedStatus: "ready" as const,
+    restorePreparedReason: "prepared" as const,
+    restorePreparedAt: 123,
+    status: "stopped" as const,
+    sandboxId: null,
+  };
+
+  const decision = buildRestoreDecision({
+    meta,
+    source: "inspect",
+    destructive: false,
+  });
+
+  assert.equal(decision.reusable, false);
+  assert.equal(decision.needsPrepare, true);
+  assert.ok(decision.reasons.includes("snapshot-missing"));
+  assert.deepEqual(decision.requiredActions, [
+    "ensure-running",
+    "prepare-destructive",
+  ]);
+  assert.equal(decision.nextAction, "ensure-running");
+});
+
+test("buildRestoreDecision agrees with attestation.reusable and plan.actions for same input", () => {
+  const base = createDefaultMeta(Date.now(), "gw-token");
+  const desiredConfigHash = computeGatewayConfigHash({});
+  const desiredAssetSha256 = buildRestoreAssetManifest().sha256;
+
+  // Test case 1: reusable snapshot
+  const reusableMeta = {
+    ...base,
+    snapshotId: "snap-ready",
+    snapshotDynamicConfigHash: desiredConfigHash,
+    runtimeDynamicConfigHash: desiredConfigHash,
+    snapshotAssetSha256: desiredAssetSha256,
+    runtimeAssetSha256: desiredAssetSha256,
+    restorePreparedStatus: "ready" as const,
+    restorePreparedReason: "prepared" as const,
+    restorePreparedAt: Date.now(),
+    status: "running" as const,
+    sandboxId: "sbx-1",
+  };
+
+  const reusableDecision = buildRestoreDecision({
+    meta: reusableMeta,
+    source: "inspect",
+    destructive: false,
+  });
+  const reusableAttestation = buildRestoreTargetAttestation(reusableMeta);
+  const reusablePlan = buildRestoreTargetPlan({
+    attestation: reusableAttestation,
+    status: reusableMeta.status,
+    sandboxId: reusableMeta.sandboxId,
+  });
+
+  assert.equal(reusableDecision.reusable, reusableAttestation.reusable);
+  assert.deepEqual(
+    reusableDecision.requiredActions,
+    reusablePlan.actions
+      .map((a) => a.id)
+      .filter(
+        (id) => id === "ensure-running" || id === "prepare-destructive",
+      ),
+  );
+
+  // Test case 2: non-reusable snapshot (stopped, no sandbox)
+  const dirtyMeta = {
+    ...base,
+    snapshotId: "snap-stale",
+    snapshotDynamicConfigHash: "old-hash",
+    runtimeDynamicConfigHash: desiredConfigHash,
+    snapshotAssetSha256: desiredAssetSha256,
+    runtimeAssetSha256: desiredAssetSha256,
+    restorePreparedStatus: "dirty" as const,
+    restorePreparedReason: "dynamic-config-changed" as const,
+    restorePreparedAt: 1,
+    status: "stopped" as const,
+    sandboxId: null,
+  };
+
+  const dirtyDecision = buildRestoreDecision({
+    meta: dirtyMeta,
+    source: "inspect",
+    destructive: false,
+  });
+  const dirtyAttestation = buildRestoreTargetAttestation(dirtyMeta);
+  const dirtyPlan = buildRestoreTargetPlan({
+    attestation: dirtyAttestation,
+    status: dirtyMeta.status,
+    sandboxId: dirtyMeta.sandboxId,
+  });
+
+  assert.equal(dirtyDecision.reusable, dirtyAttestation.reusable);
+  assert.deepEqual(
+    dirtyDecision.requiredActions,
+    dirtyPlan.actions
+      .map((a) => a.id)
+      .filter(
+        (id) => id === "ensure-running" || id === "prepare-destructive",
+      ),
   );
 });

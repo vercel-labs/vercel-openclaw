@@ -2,9 +2,40 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { RestoreOracleCycleResult } from "@/server/sandbox/restore-oracle";
+import type { RestoreDecision } from "@/shared/restore-decision";
 import type { SingleMeta } from "@/shared/types";
 import type { WatchdogReport } from "@/shared/watchdog";
 import { runSandboxWatchdog } from "@/server/watchdog/run";
+
+function stubDecision(overrides: Partial<RestoreDecision> = {}): RestoreDecision {
+  return {
+    schemaVersion: 1,
+    source: "oracle",
+    destructive: true,
+    reusable: false,
+    needsPrepare: true,
+    blocking: true,
+    reasons: [],
+    requiredActions: [],
+    nextAction: null,
+    status: "running",
+    sandboxId: "sbx_123",
+    snapshotId: null,
+    restorePreparedStatus: "unknown",
+    restorePreparedReason: null,
+    oracleStatus: "idle",
+    idleMs: null,
+    minIdleMs: null,
+    probeReady: null,
+    desiredDynamicConfigHash: "stub",
+    snapshotDynamicConfigHash: null,
+    runtimeDynamicConfigHash: null,
+    desiredAssetSha256: "stub",
+    snapshotAssetSha256: null,
+    runtimeAssetSha256: null,
+    ...overrides,
+  };
+}
 
 /** Build a partial oracle result — only the fields the watchdog actually reads. */
 function oracleResult(partial: Record<string, unknown>): RestoreOracleCycleResult {
@@ -59,6 +90,7 @@ function makeDeps(overrides: Partial<Parameters<typeof runSandboxWatchdog>[1]> =
       attestation: { reusable: true, needsPrepare: false, reasons: [] },
       plan: { schemaVersion: 1, status: "ready", blocking: false, reasons: [], actions: [] },
       prepare: null,
+      decision: stubDecision({ reusable: true, needsPrepare: false, blocking: false }),
     }),
     now: (() => {
       let current = 0;
@@ -446,6 +478,7 @@ test("probe-failed recovery passes schedule callback to reconcile", async () => 
 // ===========================================================================
 
 test("restore.prepare: skip when oracle reports already-ready", async () => {
+  const decision = stubDecision({ reusable: true, needsPrepare: false, blocking: false });
   const report = await runSandboxWatchdog(
     { request: new Request("https://app.test/api/cron/watchdog") },
     makeDeps({
@@ -457,6 +490,7 @@ test("restore.prepare: skip when oracle reports already-ready", async () => {
         attestation: { reusable: true, needsPrepare: false, reasons: [] },
         plan: { schemaVersion: 1, status: "ready", blocking: false, reasons: [], actions: [] },
         prepare: null,
+        decision,
       }),
     }),
   );
@@ -466,9 +500,20 @@ test("restore.prepare: skip when oracle reports already-ready", async () => {
   assert.ok(check, "should have restore.prepare check");
   assert.equal(check.status, "skip");
   assert.ok(check.message.includes("already reusable"));
+
+  // Structured data includes decision
+  assert.ok(check.data, "check should have structured data");
+  assert.equal(check.data.blockedReason, "already-ready");
+  assert.equal((check.data.decision as RestoreDecision).reusable, true);
 });
 
 test("restore.prepare: skip when sandbox recently active", async () => {
+  const decision = stubDecision({
+    reusable: false,
+    reasons: ["snapshot-config-stale", "sandbox-recently-active"],
+    requiredActions: ["prepare-destructive"],
+    nextAction: "prepare-destructive",
+  });
   const report = await runSandboxWatchdog(
     { request: new Request("https://app.test/api/cron/watchdog") },
     makeDeps({
@@ -480,6 +525,7 @@ test("restore.prepare: skip when sandbox recently active", async () => {
         attestation: { reusable: false, needsPrepare: true, reasons: ["snapshot-config-stale"] },
         plan: { schemaVersion: 1, status: "needs-prepare", blocking: true, reasons: [], actions: [] },
         prepare: null,
+        decision,
       }),
     }),
   );
@@ -489,9 +535,23 @@ test("restore.prepare: skip when sandbox recently active", async () => {
   assert.ok(check, "should have restore.prepare check");
   assert.equal(check.status, "skip");
   assert.ok(check.message.includes("sandbox-recently-active"));
+
+  // Structured data includes decision with reasons and required actions
+  assert.ok(check.data, "check should have structured data");
+  assert.deepEqual(
+    (check.data.decision as RestoreDecision).requiredActions,
+    ["prepare-destructive"],
+  );
+  assert.ok((check.data.decision as RestoreDecision).reasons.includes("snapshot-config-stale"));
 });
 
 test("restore.prepare: pass when oracle executes and prepares successfully", async () => {
+  const decision = stubDecision({
+    reusable: false,
+    reasons: ["snapshot-config-stale"],
+    requiredActions: ["prepare-destructive"],
+    nextAction: "prepare-destructive",
+  });
   const report = await runSandboxWatchdog(
     { request: new Request("https://app.test/api/cron/watchdog") },
     makeDeps({
@@ -515,6 +575,7 @@ test("restore.prepare: pass when oracle executes and prepares successfully", asy
           preparedAt: Date.now(),
           actions: [],
         },
+        decision,
       }),
     }),
   );
@@ -525,9 +586,20 @@ test("restore.prepare: pass when oracle executes and prepares successfully", asy
   assert.ok(check, "should have restore.prepare check");
   assert.equal(check.status, "pass");
   assert.ok(check.message.includes("snap_fresh"));
+
+  // Structured data present on pass
+  assert.ok(check.data, "check should have structured data");
+  assert.equal(check.data.blockedReason, null);
+  assert.ok((check.data.decision as RestoreDecision).reasons.includes("snapshot-config-stale"));
 });
 
 test("restore.prepare: fail when oracle executes but prepare fails", async () => {
+  const decision = stubDecision({
+    reusable: false,
+    reasons: ["snapshot-config-stale"],
+    requiredActions: ["prepare-destructive"],
+    nextAction: "prepare-destructive",
+  });
   const report = await runSandboxWatchdog(
     { request: new Request("https://app.test/api/cron/watchdog") },
     makeDeps({
@@ -551,6 +623,7 @@ test("restore.prepare: fail when oracle executes but prepare fails", async () =>
           preparedAt: null,
           actions: [{ id: "snapshot", status: "failed", message: "Snapshot timed out." }],
         },
+        decision,
       }),
     }),
   );
@@ -560,6 +633,13 @@ test("restore.prepare: fail when oracle executes but prepare fails", async () =>
   assert.ok(check, "should have restore.prepare check");
   assert.equal(check.status, "fail");
   assert.ok(check.message.includes("Snapshot timed out"));
+
+  // Structured data present on failure
+  assert.ok(check.data, "check should have structured data");
+  assert.deepEqual(
+    (check.data.decision as RestoreDecision).requiredActions,
+    ["prepare-destructive"],
+  );
 });
 
 test("restore.prepare: fail when oracle throws", async () => {

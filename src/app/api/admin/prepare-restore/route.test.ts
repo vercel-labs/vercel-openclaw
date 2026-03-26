@@ -158,6 +158,7 @@ test("GET /api/admin/prepare-restore: dirty target returns executable destructiv
         needsPrepare: boolean;
         reasons: string[];
       };
+      preview: { ok: boolean };
       plan: {
         schemaVersion: number;
         status: string;
@@ -167,6 +168,13 @@ test("GET /api/admin/prepare-restore: dirty target returns executable destructiv
           priority: string;
           request: { method: string; path: string; body: unknown };
         }>;
+      };
+      decision: {
+        schemaVersion: number;
+        reusable: boolean;
+        reasons: string[];
+        requiredActions: string[];
+        nextAction: string | null;
       };
     };
 
@@ -185,6 +193,11 @@ test("GET /api/admin/prepare-restore: dirty target returns executable destructiv
     assert.equal(prepareAction.request.method, "POST");
     assert.equal(prepareAction.request.path, "/api/admin/prepare-restore");
     assert.deepEqual(prepareAction.request.body, { destructive: true });
+
+    // Decision kernel invariants
+    assert.equal(body.ok, body.attestation.reusable);
+    assert.equal(body.preview.ok, body.attestation.reusable);
+    assert.equal(body.decision.reusable, body.attestation.reusable);
   });
 });
 
@@ -219,6 +232,7 @@ test("GET /api/admin/prepare-restore: reusable target returns ready plan with no
       ok: boolean;
       attestation: { reusable: boolean; reasons: string[] };
       plan: { status: string; actions: unknown[] };
+      decision: { reusable: boolean; reasons: string[]; requiredActions: string[] };
     };
 
     assert.equal(body.ok, true);
@@ -226,5 +240,9 @@ test("GET /api/admin/prepare-restore: reusable target returns ready plan with no
     assert.deepEqual(body.attestation.reasons, []);
     assert.equal(body.plan.status, "ready");
     assert.equal(body.plan.actions.length, 0);
+
+    // Decision kernel invariants
+    assert.equal(body.decision.reusable, body.attestation.reusable);
+    assert.deepEqual(body.decision.requiredActions, []);
   });
 });

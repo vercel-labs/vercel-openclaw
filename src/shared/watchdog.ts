@@ -9,6 +9,7 @@ export type WatchdogCheck = {
   status: WatchdogCheckStatus;
   durationMs: number;
   message: string;
+  data?: Record<string, unknown>;
 };
 
 export type WatchdogReport = {

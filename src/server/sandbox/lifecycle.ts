@@ -43,6 +43,8 @@ import {
   buildStaticRestoreFiles,
   type RestoreAssetManifest,
 } from "@/server/openclaw/restore-assets";
+import { buildRestoreDecision } from "@/server/sandbox/restore-attestation";
+import type { RestoreDecision } from "@/shared/restore-decision";
 import { getSandboxController } from "@/server/sandbox/controller";
 import type { SandboxHandle } from "@/server/sandbox/controller";
 import { getSandboxVcpus } from "@/server/sandbox/resources";
@@ -1051,6 +1053,7 @@ export type PrepareRestoreResult = {
   runtimeAssetSha256: string | null;
   preparedAt: number | null;
   actions: PrepareRestoreAction[];
+  decision: RestoreDecision;
 };
 
 /**
@@ -1067,36 +1070,41 @@ export async function prepareRestoreTarget(input: {
 }): Promise<PrepareRestoreResult> {
   const actions: PrepareRestoreAction[] = [];
   const meta = await getInitializedMeta();
+  const isDestructive = input.destructive ?? false;
 
   logInfo("sandbox.restore_target.prepare_start", {
-    destructive: input.destructive ?? false,
+    destructive: isDestructive,
     reason: input.reason,
     status: meta.status,
     sandboxId: meta.sandboxId,
   });
 
-  const currentManifest = buildRestoreAssetManifest();
-  const configHashInput: GatewayConfigHashInput = {
-    telegramBotToken: meta.channels.telegram?.botToken,
-    telegramWebhookSecret: meta.channels.telegram?.webhookSecret,
-    slackCredentials: meta.channels.slack
-      ? {
-          botToken: meta.channels.slack.botToken,
-          signingSecret: meta.channels.slack.signingSecret,
-        }
-      : undefined,
-    whatsappConfig: toWhatsAppGatewayConfig(meta.channels.whatsapp),
-  };
-  const desiredConfigHash = computeGatewayConfigHash(configHashInput);
+  // Single source of truth: compute the canonical decision once.
+  const decision = buildRestoreDecision({
+    meta,
+    source: isDestructive ? "prepare" : "inspect",
+    destructive: isDestructive,
+  });
+
+  logInfo("sandbox.restore.decision", {
+    source: decision.source,
+    destructive: decision.destructive,
+    reusable: decision.reusable,
+    needsPrepare: decision.needsPrepare,
+    blocking: decision.blocking,
+    reasons: decision.reasons,
+    requiredActions: decision.requiredActions,
+    nextAction: decision.nextAction,
+    status: decision.status,
+    sandboxId: decision.sandboxId,
+    snapshotId: decision.snapshotId,
+    idleMs: decision.idleMs,
+    minIdleMs: decision.minIdleMs,
+    probeReady: decision.probeReady,
+  });
 
   // Check if the existing snapshot is already prepared and fresh.
-  if (
-    isPreparedRestoreReusable({
-      meta,
-      desiredDynamicConfigHash: desiredConfigHash,
-      desiredAssetSha256: currentManifest.sha256,
-    })
-  ) {
+  if (decision.reusable) {
     logInfo("sandbox.restore_target.already_prepared", {
       snapshotId: meta.snapshotId,
       snapshotDynamicConfigHash: meta.snapshotDynamicConfigHash,
@@ -1114,6 +1122,7 @@ export async function prepareRestoreTarget(input: {
       runtimeAssetSha256: meta.runtimeAssetSha256,
       preparedAt: meta.restorePreparedAt,
       actions: [{ id: "stamp-meta", status: "skipped", message: "already prepared" }],
+      decision,
     };
   }
 
@@ -1121,10 +1130,8 @@ export async function prepareRestoreTarget(input: {
   if (!input.destructive) {
     logInfo("sandbox.restore_target.non_destructive_check", {
       currentState: meta.restorePreparedStatus,
-      snapshotDynamicConfigHash: meta.snapshotDynamicConfigHash,
-      desiredConfigHash,
-      snapshotAssetSha256: meta.snapshotAssetSha256,
-      desiredAssetSha256: currentManifest.sha256,
+      reasons: decision.reasons,
+      requiredActions: decision.requiredActions,
     });
     return {
       ok: false,
@@ -1138,6 +1145,7 @@ export async function prepareRestoreTarget(input: {
       runtimeAssetSha256: meta.runtimeAssetSha256,
       preparedAt: meta.restorePreparedAt,
       actions: [{ id: "snapshot", status: "failed", message: "destructive snapshot required but not allowed" }],
+      decision,
     };
   }
 
@@ -1167,6 +1175,7 @@ export async function prepareRestoreTarget(input: {
       runtimeAssetSha256: failMeta.runtimeAssetSha256,
       preparedAt: failMeta.restorePreparedAt,
       actions,
+      decision: buildRestoreDecision({ meta: failMeta, source: "prepare", destructive: true }),
     };
   }
   actions.push({ id: "ensure-running", status: "completed", message: "sandbox running" });
@@ -1199,6 +1208,7 @@ export async function prepareRestoreTarget(input: {
       runtimeAssetSha256: failMeta.runtimeAssetSha256,
       preparedAt: failMeta.restorePreparedAt,
       actions,
+      decision: buildRestoreDecision({ meta: failMeta, source: "prepare", destructive: true }),
     };
   }
 
@@ -1241,6 +1251,7 @@ export async function prepareRestoreTarget(input: {
       runtimeAssetSha256: failMeta.runtimeAssetSha256,
       preparedAt: failMeta.restorePreparedAt,
       actions,
+      decision: buildRestoreDecision({ meta: failMeta, source: "prepare", destructive: true }),
     };
   }
 
@@ -1273,6 +1284,7 @@ export async function prepareRestoreTarget(input: {
       runtimeAssetSha256: failMeta.runtimeAssetSha256,
       preparedAt: failMeta.restorePreparedAt,
       actions,
+      decision: buildRestoreDecision({ meta: failMeta, source: "prepare", destructive: true }),
     };
   }
 
@@ -1303,6 +1315,7 @@ export async function prepareRestoreTarget(input: {
       runtimeAssetSha256: failMeta.runtimeAssetSha256,
       preparedAt: failMeta.restorePreparedAt,
       actions,
+      decision: buildRestoreDecision({ meta: failMeta, source: "prepare", destructive: true }),
     };
   }
 
@@ -1311,11 +1324,30 @@ export async function prepareRestoreTarget(input: {
   actions.push({ id: "stamp-meta", status: "completed", message: "snapshot truth recorded" });
 
   const finalMeta = await getInitializedMeta();
+  const finalDecision = buildRestoreDecision({ meta: finalMeta, source: "prepare", destructive: true });
+
   logInfo("sandbox.restore_target.prepare_complete", {
     snapshotId: finalMeta.snapshotId,
     snapshotDynamicConfigHash: finalMeta.snapshotDynamicConfigHash,
     snapshotAssetSha256: finalMeta.snapshotAssetSha256,
     restorePreparedStatus: finalMeta.restorePreparedStatus,
+  });
+
+  logInfo("sandbox.restore.decision", {
+    source: finalDecision.source,
+    destructive: finalDecision.destructive,
+    reusable: finalDecision.reusable,
+    needsPrepare: finalDecision.needsPrepare,
+    blocking: finalDecision.blocking,
+    reasons: finalDecision.reasons,
+    requiredActions: finalDecision.requiredActions,
+    nextAction: finalDecision.nextAction,
+    status: finalDecision.status,
+    sandboxId: finalDecision.sandboxId,
+    snapshotId: finalDecision.snapshotId,
+    idleMs: finalDecision.idleMs,
+    minIdleMs: finalDecision.minIdleMs,
+    probeReady: finalDecision.probeReady,
   });
 
   return {
@@ -1330,6 +1362,7 @@ export async function prepareRestoreTarget(input: {
     runtimeAssetSha256: finalMeta.runtimeAssetSha256,
     preparedAt: finalMeta.restorePreparedAt,
     actions,
+    decision: finalDecision,
   };
 }
 

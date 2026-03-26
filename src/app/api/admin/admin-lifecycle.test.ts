@@ -632,6 +632,7 @@ test("GET /api/admin/prepare-restore: returns RestoreTargetInspectionPayload wit
       attestation: { reusable: boolean; needsPrepare: boolean; reasons: string[] };
       preview: { ok: boolean; destructive: boolean; state: string };
       plan: { schemaVersion: number; status: string; blocking: boolean; actions: Array<{ id: string }> };
+      decision: { reusable: boolean; reasons: string[]; requiredActions: string[]; nextAction: string | null };
     };
 
     // Payload has full inspection shape
@@ -639,6 +640,7 @@ test("GET /api/admin/prepare-restore: returns RestoreTargetInspectionPayload wit
     assert.ok(body.attestation, "Should include attestation");
     assert.ok(body.preview, "Should include preview");
     assert.ok(body.plan, "Should include plan");
+    assert.ok(body.decision, "Should include decision");
 
     // Dirty target is not reusable
     assert.equal(body.ok, false);
@@ -652,6 +654,11 @@ test("GET /api/admin/prepare-restore: returns RestoreTargetInspectionPayload wit
       body.plan.actions.some((a) => a.id === "prepare-destructive"),
       "Plan should include prepare-destructive action",
     );
+
+    // Decision invariants
+    assert.equal(body.ok, body.attestation.reusable);
+    assert.equal(body.preview.ok, body.attestation.reusable);
+    assert.equal(body.decision.reusable, body.attestation.reusable);
   });
 });
 
@@ -734,6 +741,17 @@ test("GET /api/admin/prepare-restore: missing snapshotId cannot report reusable 
         blocking: boolean;
         actions: Array<{ id: string }>;
       };
+      decision: {
+        schemaVersion: number;
+        source: string;
+        destructive: boolean;
+        reusable: boolean;
+        needsPrepare: boolean;
+        blocking: boolean;
+        reasons: string[];
+        requiredActions: string[];
+        nextAction: string | null;
+      };
     };
 
     assert.equal(body.ok, false);
@@ -746,6 +764,16 @@ test("GET /api/admin/prepare-restore: missing snapshotId cannot report reusable 
       body.plan.actions.some((action) => action.id === "prepare-destructive"),
       "Plan should require prepare-destructive when snapshotId is missing",
     );
+
+    // Decision kernel invariants
+    assert.equal(body.ok, body.attestation.reusable);
+    assert.equal(body.decision.reusable, body.attestation.reusable);
+    assert.ok(body.decision.reasons.includes("snapshot-missing"));
+    assert.deepEqual(body.decision.requiredActions, [
+      "ensure-running",
+      "prepare-destructive",
+    ]);
+    assert.equal(body.decision.nextAction, "ensure-running");
   });
 });
 
@@ -779,6 +807,16 @@ test("GET /api/admin/prepare-restore: inspect mode is read-only", async () => {
 
     assert.equal(result.status, 200);
 
+    // Verify decision is present on read-only response
+    const body = result.json as {
+      ok: boolean;
+      attestation: { reusable: boolean };
+      decision: { reusable: boolean; source: string };
+    };
+    assert.ok(body.decision, "Read-only inspect must include decision");
+    assert.equal(body.decision.reusable, body.attestation.reusable);
+
+    // State must not mutate
     const after = await getInitializedMeta();
     assert.equal(after.version, before.version);
     assert.equal(after.status, before.status);

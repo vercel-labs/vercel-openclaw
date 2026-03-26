@@ -4,9 +4,11 @@ import type {
   ProbeResult,
 } from "@/server/sandbox/lifecycle";
 import {
+  buildRestoreDecision,
   buildRestoreTargetAttestation,
   buildRestoreTargetPlan,
 } from "@/server/sandbox/restore-attestation";
+import type { RestoreDecision } from "@/shared/restore-decision";
 import type { RestoreTargetAttestation } from "@/shared/launch-verification";
 import type { RestoreTargetPlan } from "@/shared/launch-verification";
 import type {
@@ -32,6 +34,7 @@ export type RestoreOracleCycleResult = {
   attestation: RestoreTargetAttestation;
   plan: RestoreTargetPlan;
   prepare: PrepareRestoreResult | null;
+  decision: RestoreDecision;
 };
 
 export type RestoreOracleDeps = {
@@ -158,6 +161,20 @@ export async function runRestoreOracleCycle(
   });
   const idleMs = toIdleMs(meta.lastAccessedAt, now);
 
+  /** Build a decision snapshot with the oracle-specific context known so far. */
+  const makeDecision = (opts?: {
+    meta?: SingleMeta;
+    probeReady?: boolean | null;
+  }): RestoreDecision =>
+    buildRestoreDecision({
+      meta: opts?.meta ?? meta,
+      source: "oracle",
+      destructive: true,
+      idleMs: toIdleMs((opts?.meta ?? meta).lastAccessedAt, now),
+      minIdleMs,
+      probeReady: opts?.probeReady ?? null,
+    });
+
   await deps.mutate((next) => {
     next.restoreOracle.lastEvaluatedAt = now;
   });
@@ -174,9 +191,12 @@ export async function runRestoreOracleCycle(
 
   if (attestation.reusable) {
     await markOracleReady(deps, now, "already-ready");
+    const updatedMeta = await deps.getMeta();
+    const decision = makeDecision({ meta: updatedMeta });
     logInfo("sandbox.restore_oracle.already_ready", {
       reason: input.reason,
     });
+    logDecision(decision);
     return {
       executed: false,
       blockedReason: "already-ready",
@@ -185,15 +205,18 @@ export async function runRestoreOracleCycle(
       attestation,
       plan,
       prepare: null,
+      decision,
     };
   }
 
   if (meta.restoreOracle.status === "running") {
+    const decision = makeDecision();
     const message = blockedMessage("already-running", idleMs, minIdleMs);
     logInfo("sandbox.restore_oracle.blocked", {
       reason: "already-running",
       message,
     });
+    logDecision(decision);
     return {
       executed: false,
       blockedReason: "already-running",
@@ -202,17 +225,21 @@ export async function runRestoreOracleCycle(
       attestation,
       plan,
       prepare: null,
+      decision,
     };
   }
 
   if (meta.status !== "running" || !meta.sandboxId) {
     const message = blockedMessage("sandbox-not-running", idleMs, minIdleMs);
     await markOracleBlocked(deps, message, now);
+    const updatedMeta = await deps.getMeta();
+    const decision = makeDecision({ meta: updatedMeta });
     logInfo("sandbox.restore_oracle.blocked", {
       reason: "sandbox-not-running",
       sandboxStatus: meta.status,
       message,
     });
+    logDecision(decision);
     return {
       executed: false,
       blockedReason: "sandbox-not-running",
@@ -221,6 +248,7 @@ export async function runRestoreOracleCycle(
       attestation,
       plan,
       prepare: null,
+      decision,
     };
   }
 
@@ -231,12 +259,15 @@ export async function runRestoreOracleCycle(
       minIdleMs,
     );
     await markOracleBlocked(deps, message, now);
+    const updatedMeta = await deps.getMeta();
+    const decision = makeDecision({ meta: updatedMeta });
     logInfo("sandbox.restore_oracle.blocked", {
       reason: "sandbox-recently-active",
       idleMs,
       minIdleMs,
       message,
     });
+    logDecision(decision);
     return {
       executed: false,
       blockedReason: "sandbox-recently-active",
@@ -245,6 +276,7 @@ export async function runRestoreOracleCycle(
       attestation,
       plan,
       prepare: null,
+      decision,
     };
   }
 
@@ -253,11 +285,14 @@ export async function runRestoreOracleCycle(
     const message =
       probe.error ?? blockedMessage("gateway-not-ready", idleMs, minIdleMs);
     await markOracleBlocked(deps, message, now);
+    const updatedMeta = await deps.getMeta();
+    const decision = makeDecision({ meta: updatedMeta, probeReady: false });
     logInfo("sandbox.restore_oracle.blocked", {
       reason: "gateway-not-ready",
       probeError: probe.error ?? null,
       message,
     });
+    logDecision(decision);
     return {
       executed: false,
       blockedReason: "gateway-not-ready",
@@ -266,6 +301,7 @@ export async function runRestoreOracleCycle(
       attestation,
       plan,
       prepare: null,
+      decision,
     };
   }
 
@@ -276,10 +312,12 @@ export async function runRestoreOracleCycle(
       error instanceof Error &&
       error.message === "RESTORE_ORACLE_ALREADY_RUNNING"
     ) {
+      const decision = makeDecision({ probeReady: true });
       logInfo("sandbox.restore_oracle.blocked", {
         reason: "already-running",
         message: "Lost CAS race for oracle lock.",
       });
+      logDecision(decision);
       return {
         executed: false,
         blockedReason: "already-running",
@@ -288,6 +326,7 @@ export async function runRestoreOracleCycle(
         attestation,
         plan,
         prepare: null,
+        decision,
       };
     }
     throw error;
@@ -314,11 +353,14 @@ export async function runRestoreOracleCycle(
     if (!prepare.ok) {
       const errorMessage = `prepare failed: ${prepare.reason ?? "unknown"}`;
       await markOracleFailed(deps, deps.now(), errorMessage);
+      const updatedMeta = await deps.getMeta();
+      const decision = makeDecision({ meta: updatedMeta, probeReady: true });
       logWarn("sandbox.restore_oracle.run_failed", {
         error: errorMessage,
         state: prepare.state,
         snapshotId: prepare.snapshotId,
       });
+      logDecision(decision);
       return {
         executed: true,
         blockedReason: null,
@@ -327,15 +369,19 @@ export async function runRestoreOracleCycle(
         attestation,
         plan,
         prepare,
+        decision,
       };
     }
 
     await markOracleReady(deps, deps.now(), "prepared");
+    const updatedMeta = await deps.getMeta();
+    const decision = makeDecision({ meta: updatedMeta, probeReady: true });
     logInfo("sandbox.restore_oracle.run_completed", {
       snapshotId: prepare.snapshotId,
       state: prepare.state,
       reason: prepare.reason,
     });
+    logDecision(decision);
 
     return {
       executed: true,
@@ -345,6 +391,7 @@ export async function runRestoreOracleCycle(
       attestation,
       plan,
       prepare,
+      decision,
     };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
@@ -352,4 +399,23 @@ export async function runRestoreOracleCycle(
     logWarn("sandbox.restore_oracle.run_threw", { error: errorMessage });
     throw error;
   }
+}
+
+function logDecision(decision: RestoreDecision): void {
+  logInfo("sandbox.restore.decision", {
+    source: decision.source,
+    destructive: decision.destructive,
+    reusable: decision.reusable,
+    needsPrepare: decision.needsPrepare,
+    blocking: decision.blocking,
+    reasons: decision.reasons,
+    requiredActions: decision.requiredActions,
+    nextAction: decision.nextAction,
+    status: decision.status,
+    sandboxId: decision.sandboxId,
+    snapshotId: decision.snapshotId,
+    idleMs: decision.idleMs,
+    minIdleMs: decision.minIdleMs,
+    probeReady: decision.probeReady,
+  });
 }

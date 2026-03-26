@@ -9,6 +9,7 @@ import { extractRequestId, logError, logInfo } from "@/server/log";
 import { getInitializedMeta } from "@/server/store/store";
 import { prepareRestoreTarget } from "@/server/sandbox/lifecycle";
 import {
+  buildRestoreDecision,
   buildRestoreTargetAttestation,
   buildRestoreTargetPlan,
 } from "@/server/sandbox/restore-attestation";
@@ -45,6 +46,11 @@ async function buildInspectionPayload(
     status: meta.status,
     sandboxId: meta.sandboxId,
   });
+  const decision = buildRestoreDecision({
+    meta,
+    source: destructive ? "prepare" : "inspect",
+    destructive,
+  });
 
   return {
     ok: attestation.reusable,
@@ -64,6 +70,7 @@ async function buildInspectionPayload(
       actions: preview.actions,
     },
     plan,
+    decision,
   };
 }
 
@@ -87,6 +94,10 @@ function logInspection(
     previewOk: payload.preview.ok,
     previewState: payload.preview.state,
     previewReason: payload.preview.reason,
+    decisionReusable: payload.decision.reusable,
+    decisionReasons: payload.decision.reasons,
+    decisionRequiredActions: payload.decision.requiredActions,
+    decisionNextAction: payload.decision.nextAction,
   });
 }
 

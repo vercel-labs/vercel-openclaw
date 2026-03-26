@@ -1,4 +1,5 @@
 import type { ChannelName } from "@/shared/channels";
+import type { RestoreDecision } from "@/shared/restore-decision";
 import type { RestorePreparedStatus, RestorePreparedReason } from "@/shared/types";
 
 // ---------------------------------------------------------------------------
@@ -76,6 +77,7 @@ export type RestoreTargetInspectionPayload = {
     }>;
   };
   plan: RestoreTargetPlan;
+  decision: RestoreDecision;
 };
 
 // ---------------------------------------------------------------------------

@@ -112,13 +112,16 @@ export async function runSandboxWatchdog(
     status: WatchdogCheck["status"],
     stepStartedAt: number,
     message: string,
+    data?: Record<string, unknown>,
   ): void => {
-    checks.push({
+    const check: WatchdogCheck = {
       id,
       status,
       durationMs: Math.max(0, deps.now() - stepStartedAt),
       message,
-    });
+    };
+    if (data) check.data = data;
+    checks.push(check);
   };
 
   let previous: WatchdogReport = {
@@ -246,6 +249,11 @@ export async function runSandboxWatchdog(
             reason: "watchdog:restore-prepare",
           });
 
+          const oracleData: Record<string, unknown> = {
+            blockedReason: oracle.blockedReason,
+            decision: oracle.decision,
+          };
+
           if (oracle.executed && oracle.prepare?.ok) {
             triggeredRepair = true;
             addCheck(
@@ -255,6 +263,7 @@ export async function runSandboxWatchdog(
               oracle.prepare.snapshotId
                 ? `Prepared fresh restore target ${oracle.prepare.snapshotId}.`
                 : "Prepared fresh restore target.",
+              oracleData,
             );
             meta = await deps.getMeta();
             status = failingRequirementIds.length > 0 ? "failed" : "repairing";
@@ -262,7 +271,7 @@ export async function runSandboxWatchdog(
             const message =
               oracle.prepare?.actions.find((a) => a.status === "failed")?.message ??
               "Restore prepare failed.";
-            addCheck("restore.prepare", "fail", restorePrepareStartedAt, message);
+            addCheck("restore.prepare", "fail", restorePrepareStartedAt, message, oracleData);
             lastError = message;
             status = "failed";
           } else {
@@ -270,7 +279,7 @@ export async function runSandboxWatchdog(
               oracle.blockedReason === "already-ready"
                 ? "Restore target already reusable."
                 : `Skipped: ${oracle.blockedReason ?? "unknown"}.`;
-            addCheck("restore.prepare", "skip", restorePrepareStartedAt, message);
+            addCheck("restore.prepare", "skip", restorePrepareStartedAt, message, oracleData);
             status = failingRequirementIds.length > 0 ? "failed" : "ok";
           }
         } catch (oracleError) {

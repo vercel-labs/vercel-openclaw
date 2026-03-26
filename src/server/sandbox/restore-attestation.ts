@@ -3,13 +3,17 @@ import {
   toWhatsAppGatewayConfig,
 } from "@/server/openclaw/config";
 import { buildRestoreAssetManifest } from "@/server/openclaw/restore-assets";
+import type {
+  RestoreDecision,
+  RestoreDecisionAction,
+} from "@/shared/restore-decision";
 import type { SingleMeta } from "@/shared/types";
 import type {
   RestoreTargetAttestation,
   RestoreTargetPlan,
 } from "@/shared/launch-verification";
 
-type RestoreAttestationMeta = Pick<
+export type RestoreAttestationMeta = Pick<
   SingleMeta,
   | "channels"
   | "snapshotId"
@@ -172,5 +176,86 @@ export function buildRestoreTargetPlan(input: {
     blocking: true,
     reasons,
     actions,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Canonical restore decision kernel — single source of truth for all callers
+// ---------------------------------------------------------------------------
+
+export function buildRestoreDecision(input: {
+  meta: RestoreAttestationMeta &
+    Pick<SingleMeta, "status" | "sandboxId" | "restoreOracle">;
+  source: RestoreDecision["source"];
+  destructive: boolean;
+  idleMs?: number | null;
+  minIdleMs?: number | null;
+  probeReady?: boolean | null;
+}): RestoreDecision {
+  const attestation = buildRestoreTargetAttestation(input.meta);
+  const plan = buildRestoreTargetPlan({
+    attestation,
+    status: input.meta.status,
+    sandboxId: input.meta.sandboxId,
+  });
+
+  const requiredActions = plan.actions
+    .map((action) => action.id)
+    .filter(
+      (id): id is RestoreDecisionAction =>
+        id === "ensure-running" || id === "prepare-destructive",
+    );
+
+  const reasons = [
+    ...attestation.reasons,
+  ] as RestoreDecision["reasons"];
+
+  if (
+    !attestation.reusable &&
+    (input.meta.status !== "running" || !input.meta.sandboxId)
+  ) {
+    reasons.push("sandbox-not-running");
+  }
+
+  if (
+    !attestation.reusable &&
+    input.idleMs != null &&
+    input.minIdleMs != null &&
+    input.idleMs < input.minIdleMs
+  ) {
+    reasons.push("sandbox-recently-active");
+  }
+
+  if (!attestation.reusable && input.probeReady === false) {
+    reasons.push("gateway-not-ready");
+  }
+
+  return {
+    schemaVersion: 1,
+    source: input.source,
+    destructive: input.destructive,
+    reusable: attestation.reusable,
+    needsPrepare: attestation.needsPrepare,
+    blocking: plan.blocking,
+    reasons,
+    requiredActions,
+    nextAction: requiredActions[0] ?? null,
+    status: input.meta.status,
+    sandboxId: input.meta.sandboxId,
+    snapshotId: input.meta.snapshotId,
+    restorePreparedStatus: attestation.restorePreparedStatus,
+    restorePreparedReason:
+      (attestation.restorePreparedReason as RestoreDecision["restorePreparedReason"]) ??
+      null,
+    oracleStatus: input.meta.restoreOracle.status,
+    idleMs: input.idleMs ?? null,
+    minIdleMs: input.minIdleMs ?? null,
+    probeReady: input.probeReady ?? null,
+    desiredDynamicConfigHash: attestation.desiredDynamicConfigHash,
+    snapshotDynamicConfigHash: attestation.snapshotDynamicConfigHash,
+    runtimeDynamicConfigHash: attestation.runtimeDynamicConfigHash,
+    desiredAssetSha256: attestation.desiredAssetSha256,
+    snapshotAssetSha256: attestation.snapshotAssetSha256,
+    runtimeAssetSha256: attestation.runtimeAssetSha256,
   };
 }
