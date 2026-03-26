@@ -6,6 +6,7 @@ import { extractRequestId, logError } from "@/server/log";
 import {
   getRunningSandboxTimeoutRemainingMs,
   probeGatewayReady,
+  reconcileStaleRunningStatus,
   touchRunningSandbox,
 } from "@/server/sandbox/lifecycle";
 import {
@@ -84,6 +85,16 @@ export async function GET(request: Request): Promise<Response> {
         sleepConfig.sleepAfterMs,
       );
       timeoutSource = "estimated";
+
+      // When metadata says "running" but estimated timeout has elapsed,
+      // ask the Sandbox SDK for the real status and reconcile metadata.
+      if (
+        responseMeta.status === "running" &&
+        timeoutRemainingMs != null &&
+        timeoutRemainingMs <= 0
+      ) {
+        responseMeta = await reconcileStaleRunningStatus();
+      }
     }
 
     const response = Response.json({

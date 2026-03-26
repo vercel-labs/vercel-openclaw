@@ -119,14 +119,14 @@ export function deriveEffectiveStatus(
   status: SingleStatus,
   timeoutRemainingMs: number | null,
   timeoutSource: string,
-): SingleStatus | "likely-asleep" {
+): SingleStatus | "asleep" {
   if (
     status === "running" &&
     timeoutSource === "estimated" &&
     timeoutRemainingMs != null &&
     timeoutRemainingMs <= 0
   ) {
-    return "likely-asleep";
+    return "asleep";
   }
   return status;
 }
@@ -161,7 +161,7 @@ export function StatusPanel({
       ? snapshotHistoryCount === 0
       : !hasSnapshot && restoreHistory.length === 0;
   const primaryActionLabel = getLifecycleActionLabel(
-    effectiveStatus === "likely-asleep" ? "stopped" : lifecycleStatus,
+    effectiveStatus === "asleep" ? "stopped" : lifecycleStatus,
     hasSnapshot,
   );
   const progressLabel = getLifecycleProgressLabel(lifecycleStatus);
@@ -203,10 +203,10 @@ export function StatusPanel({
   const isStopping = pendingAction === "Stop sandbox";
   const displayStatus = isStopping ? "stopping" : effectiveStatus;
   const showRestart =
-    NEEDS_RESTART.has(lifecycleStatus) || effectiveStatus === "likely-asleep";
+    NEEDS_RESTART.has(lifecycleStatus) || effectiveStatus === "asleep";
   const showRunningActions =
     lifecycleStatus === "running" &&
-    effectiveStatus !== "likely-asleep" &&
+    effectiveStatus !== "asleep" &&
     !isStopping;
   const isLifecycleTransition = IS_TRANSITIONAL.has(lifecycleStatus);
   const isTransitional = isLifecycleTransition || isStopping;

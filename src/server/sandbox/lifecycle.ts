@@ -32,6 +32,7 @@ import {
   OPENCLAW_LOG_FILE,
   OPENCLAW_STATE_DIR,
   OPENCLAW_TELEGRAM_WEBHOOK_PORT,
+  toWhatsAppGatewayConfig,
   type GatewayConfigHashInput,
 } from "@/server/openclaw/config";
 import {
@@ -591,6 +592,7 @@ export async function stopSandbox(): Promise<SingleMeta> {
             signingSecret: meta.channels.slack.signingSecret,
           }
           : undefined,
+        whatsappConfig: toWhatsAppGatewayConfig(meta.channels.whatsapp),
       };
       const configHash = computeGatewayConfigHash(configHashInput);
 
@@ -746,6 +748,7 @@ export async function syncGatewayConfigToSandbox(): Promise<{ synced: boolean; r
     slackCredentials: slackConfig
       ? { botToken: slackConfig.botToken, signingSecret: slackConfig.signingSecret }
       : undefined,
+    whatsappConfig: toWhatsAppGatewayConfig(meta.channels.whatsapp),
   });
 
   const sandboxId = meta.sandboxId;
@@ -854,6 +857,7 @@ export async function ensureRunningSandboxDynamicConfigFresh(input: {
           signingSecret: meta.channels.slack.signingSecret,
         }
       : undefined,
+    whatsappConfig: toWhatsAppGatewayConfig(meta.channels.whatsapp),
   };
   const expectedHash = computeGatewayConfigHash(configHashInput);
 
@@ -884,6 +888,7 @@ export async function ensureRunningSandboxDynamicConfigFresh(input: {
     slackCredentials: slackConfig
       ? { botToken: slackConfig.botToken, signingSecret: slackConfig.signingSecret }
       : undefined,
+    whatsappConfig: toWhatsAppGatewayConfig(meta.channels.whatsapp),
   });
 
   let sandbox: SandboxHandle;
@@ -1057,6 +1062,48 @@ export async function getRunningSandboxTimeoutRemainingMs(): Promise<number | nu
     return Math.max(0, sandbox.timeout);
   } catch {
     return null;
+  }
+}
+
+/**
+ * Check if a sandbox that metadata says is "running" has actually stopped
+ * (e.g. platform timeout). If the SDK confirms it's stopped/failed, update
+ * metadata to "stopped" so the UI shows the truth instead of a stale status.
+ *
+ * Returns the reconciled metadata.
+ */
+export async function reconcileStaleRunningStatus(): Promise<SingleMeta> {
+  const meta = await getInitializedMeta();
+  if (!meta.sandboxId || meta.status !== "running") {
+    return meta;
+  }
+
+  try {
+    const sandbox = await getSandboxController().get({ sandboxId: meta.sandboxId });
+    const sdkStatus = sandbox.status;
+    if (sdkStatus === "running") {
+      return meta;
+    }
+    logInfo("sandbox.stale_running_reconciled", {
+      sandboxId: meta.sandboxId,
+      sdkStatus,
+      metaStatus: meta.status,
+    });
+    return mutateMeta((next) => {
+      next.status = "stopped";
+      next.lastError = null;
+    });
+  } catch {
+    // get() throws when sandbox no longer exists — it's definitely stopped
+    logInfo("sandbox.stale_running_reconciled", {
+      sandboxId: meta.sandboxId,
+      sdkStatus: "not-found",
+      metaStatus: meta.status,
+    });
+    return mutateMeta((next) => {
+      next.status = "stopped";
+      next.lastError = null;
+    });
   }
 }
 
@@ -1869,6 +1916,7 @@ async function createAndBootstrapSandboxWithinLifecycleLock(
     telegramBotToken: latest.channels.telegram?.botToken,
     telegramWebhookSecret: latest.channels.telegram?.webhookSecret,
     slackCredentials: slackCfg ? { botToken: slackCfg.botToken, signingSecret: slackCfg.signingSecret } : undefined,
+    whatsappConfig: toWhatsAppGatewayConfig(latest.channels.whatsapp),
   });
 
   const pending = await mutateMeta((meta) => {
@@ -2115,6 +2163,7 @@ async function restoreSandboxFromSnapshot(
       slackCredentials: slackConfig
         ? { botToken: slackConfig.botToken, signingSecret: slackConfig.signingSecret }
         : undefined,
+      whatsappConfig: toWhatsAppGatewayConfig(latest.channels.whatsapp),
     };
     const currentConfigHash = computeGatewayConfigHash(currentConfigHashInput);
     const skippedDynamicConfigSync =
@@ -2149,6 +2198,7 @@ async function restoreSandboxFromSnapshot(
           telegramBotToken: latest.channels.telegram?.botToken,
           telegramWebhookSecret: latest.channels.telegram?.webhookSecret,
           slackCredentials: slackConfig ? { botToken: slackConfig.botToken, signingSecret: slackConfig.signingSecret } : undefined,
+          whatsappConfig: toWhatsAppGatewayConfig(latest.channels.whatsapp),
         }),
       );
       logInfo("sandbox.restore.config_written", {
@@ -2486,6 +2536,7 @@ async function restoreSandboxFromSnapshot(
         telegramBotToken: latest.channels.telegram?.botToken,
         telegramWebhookSecret: latest.channels.telegram?.webhookSecret,
         slackCredentials: slackConfig ? { botToken: slackConfig.botToken, signingSecret: slackConfig.signingSecret } : undefined,
+        whatsappConfig: toWhatsAppGatewayConfig(latest.channels.whatsapp),
       }).then(async (result) => {
         await mutateMeta((m) => {
           if (m.lastRestoreMetrics) {
@@ -2588,6 +2639,7 @@ async function syncRestoreAssetsIfNeeded(
     telegramBotToken?: string;
     telegramWebhookSecret?: string;
     slackCredentials?: { botToken: string; signingSecret: string };
+    whatsappConfig?: import("@/server/openclaw/config").WhatsAppGatewayConfig;
   },
 ): Promise<{ skippedStaticAssetSync: boolean; assetSha256: string }> {
   const manifest = buildRestoreAssetManifest();
@@ -2610,6 +2662,7 @@ async function syncRestoreAssetsIfNeeded(
     telegramBotToken: options.telegramBotToken,
     telegramWebhookSecret: options.telegramWebhookSecret,
     slackCredentials: options.slackCredentials,
+    whatsappConfig: options.whatsappConfig,
   });
 
   const skippedStaticAssetSync = existingSha === manifest.sha256;

@@ -13,6 +13,7 @@ import type {
   RunCommandOptions,
   SandboxController,
   SandboxHandle,
+  SandboxStatus,
   SnapshotResult,
 } from "@/server/sandbox/controller";
 import {
@@ -78,16 +79,27 @@ export class FakeSandboxHandle implements SandboxHandle {
   networkPolicyHandler?: (policy: NetworkPolicy) => Promise<NetworkPolicy> | NetworkPolicy;
 
   private timeoutMs: number;
+  private _status: SandboxStatus;
 
   constructor(sandboxId: string, eventLog: SandboxEvent[], timeoutMs = 5 * 60 * 1000) {
     this.sandboxId = sandboxId;
     this.portDomain = `https://${sandboxId}`;
     this.eventLog = eventLog;
     this.timeoutMs = timeoutMs;
+    this._status = "running";
   }
 
   get timeout(): number {
     return this.timeoutMs;
+  }
+
+  get status(): SandboxStatus {
+    return this._status;
+  }
+
+  /** Override the sandbox status (e.g. to simulate platform timeout). */
+  setStatus(status: SandboxStatus): void {
+    this._status = status;
   }
 
   async runCommand(
@@ -179,6 +191,7 @@ export class FakeSandboxHandle implements SandboxHandle {
 
   async stop(_options?: { blocking?: boolean }): Promise<void> {
     this.stopCalled = true;
+    this._status = "stopped";
     this.eventLog.push({
       kind: "stop",
       sandboxId: this.sandboxId,

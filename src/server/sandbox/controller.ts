@@ -39,9 +39,19 @@ export type RunCommandOptions = {
   signal?: AbortSignal;
 };
 
+export type SandboxStatus =
+  | "pending"
+  | "running"
+  | "stopping"
+  | "stopped"
+  | "failed"
+  | "aborted"
+  | "snapshotting";
+
 export interface SandboxHandle {
   sandboxId: string;
   readonly timeout: number;
+  readonly status: SandboxStatus;
   runCommand(
     commandOrOptions: string | RunCommandOptions,
     args?: string[],
@@ -76,6 +86,9 @@ function wrapSandbox(sandbox: Sandbox): SandboxHandle {
     sandboxId: sandbox.sandboxId,
     get timeout() {
       return sandbox.timeout;
+    },
+    get status() {
+      return sandbox.status;
     },
     async runCommand(
       commandOrOpts: string | RunCommandOptions,

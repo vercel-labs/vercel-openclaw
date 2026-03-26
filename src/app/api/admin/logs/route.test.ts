@@ -142,6 +142,7 @@ test("GET /api/admin/logs: sandbox log parsing prefers top-level source over ctx
         return {
           sandboxId: "sandbox-123",
           get timeout() { return 1800000; },
+          get status() { return "running" as const; },
           async runCommand() {
             return {
               exitCode: 0,
@@ -354,6 +355,9 @@ function fakeSandboxController(
         sandboxId,
         get timeout() {
           return 1800000;
+        },
+        get status() {
+          return "running" as const;
         },
         async runCommand() {
           return {

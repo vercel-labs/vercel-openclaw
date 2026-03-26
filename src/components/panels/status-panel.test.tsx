@@ -75,6 +75,18 @@ const CHANNELS: StatusPayload["channels"] = {
     isPublicUrl: false,
     connectability: makeConnectability("discord", ""),
   },
+  whatsapp: {
+    configured: false,
+    mode: "gateway-native",
+    status: "unconfigured",
+    configuredAt: null,
+    displayName: null,
+    linkedPhone: null,
+    lastError: null,
+    requiresRunningSandbox: true,
+    loginVia: "/gateway",
+    connectability: makeConnectability("whatsapp", null),
+  },
 };
 
 const RUN_ACTION: RunAction = async () => {};
@@ -212,7 +224,7 @@ test("StatusPanel renders past estimated sleep warning when timeout is expired",
   assert.ok(html.includes("sandbox may be asleep"));
 });
 
-test("StatusPanel shows likely asleep badge and restart action after estimated timeout elapses", () => {
+test("StatusPanel shows asleep badge and restart action after estimated timeout elapses", () => {
   const html = renderPanel(
     makeStatus({
       timeoutRemainingMs: 0,
@@ -220,7 +232,7 @@ test("StatusPanel shows likely asleep badge and restart action after estimated t
     }),
   );
 
-  assert.ok(html.includes("Likely asleep"));
+  assert.ok(html.includes("Asleep"));
   assert.ok(html.includes("Start Sandbox"));
   assert.ok(!html.includes(">Open Gateway</a>"));
   assert.ok(!html.includes(">Stop</button>"));
@@ -254,8 +266,8 @@ test("getAutoSleepDisplay shows source labels and estimated sleep warning", () =
   assert.equal(getAutoSleepDisplay({ timeoutSource: "none" }, null), "Unknown");
 });
 
-test("deriveEffectiveStatus returns likely asleep only for expired estimated running status", () => {
-  assert.equal(deriveEffectiveStatus("running", 0, "estimated"), "likely-asleep");
+test("deriveEffectiveStatus returns asleep only for expired estimated running status", () => {
+  assert.equal(deriveEffectiveStatus("running", 0, "estimated"), "asleep");
   assert.equal(deriveEffectiveStatus("running", 5_000, "estimated"), "running");
   assert.equal(deriveEffectiveStatus("running", 0, "live"), "running");
   assert.equal(deriveEffectiveStatus("stopped", 0, "estimated"), "stopped");

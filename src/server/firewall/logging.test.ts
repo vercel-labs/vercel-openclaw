@@ -76,6 +76,7 @@ function installSucceedingSandboxController(
       return {
         sandboxId: "sandbox-123",
         get timeout() { return 1800000; },
+        get status() { return "running" as const; },
         async runCommand() {
           return { exitCode: 0, output: async () => "" };
         },

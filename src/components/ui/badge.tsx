@@ -5,8 +5,8 @@ type BadgeProps = {
 
 export function StatusBadge({ status }: { status: string }) {
   const display =
-    status === "likely-asleep"
-      ? { className: "restoring", label: "Likely asleep" }
+    status === "asleep"
+      ? { className: "stopped", label: "Asleep" }
       : { className: status, label: status };
   return (
     <span className={`status-badge ${display.className}`}>{display.label}</span>
