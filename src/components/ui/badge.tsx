@@ -4,7 +4,13 @@ type BadgeProps = {
 };
 
 export function StatusBadge({ status }: { status: string }) {
-  return <span className={`status-badge ${status}`}>{status}</span>;
+  const display =
+    status === "likely-asleep"
+      ? { className: "restoring", label: "Likely asleep" }
+      : { className: status, label: status };
+  return (
+    <span className={`status-badge ${display.className}`}>{display.label}</span>
+  );
 }
 
 export function Badge({ children, className = "" }: BadgeProps) {

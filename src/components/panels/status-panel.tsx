@@ -115,6 +115,22 @@ export function getAutoSleepDisplay(
   return `${formatDurationMinutes(Math.max(displayedTimeoutMs, 0))}${suffix}`;
 }
 
+export function deriveEffectiveStatus(
+  status: SingleStatus,
+  timeoutRemainingMs: number | null,
+  timeoutSource: string,
+): SingleStatus | "likely-asleep" {
+  if (
+    status === "running" &&
+    timeoutSource === "estimated" &&
+    timeoutRemainingMs != null &&
+    timeoutRemainingMs <= 0
+  ) {
+    return "likely-asleep";
+  }
+  return status;
+}
+
 export function StatusPanel({
   status,
   busy,
@@ -125,6 +141,11 @@ export function StatusPanel({
   const { confirm: confirmStop, dialogProps: stopDialogProps } = useConfirm();
 
   const lifecycleStatus = status.status as SingleStatus;
+  const effectiveStatus = deriveEffectiveStatus(
+    lifecycleStatus,
+    status.timeoutRemainingMs,
+    status.timeoutSource,
+  );
   const lifecycleAwareStatus = status as LifecycleAwareStatus;
   const hasSnapshot = Boolean(status.snapshotId);
   const restoreHistory = Array.isArray(
@@ -140,7 +161,7 @@ export function StatusPanel({
       ? snapshotHistoryCount === 0
       : !hasSnapshot && restoreHistory.length === 0;
   const primaryActionLabel = getLifecycleActionLabel(
-    lifecycleStatus,
+    effectiveStatus === "likely-asleep" ? "stopped" : lifecycleStatus,
     hasSnapshot,
   );
   const progressLabel = getLifecycleProgressLabel(lifecycleStatus);
@@ -180,9 +201,13 @@ export function StatusPanel({
   }
 
   const isStopping = pendingAction === "Stop sandbox";
-  const displayStatus = isStopping ? "stopping" : lifecycleStatus;
-  const showRestart = NEEDS_RESTART.has(lifecycleStatus);
-  const showRunningActions = lifecycleStatus === "running" && !isStopping;
+  const displayStatus = isStopping ? "stopping" : effectiveStatus;
+  const showRestart =
+    NEEDS_RESTART.has(lifecycleStatus) || effectiveStatus === "likely-asleep";
+  const showRunningActions =
+    lifecycleStatus === "running" &&
+    effectiveStatus !== "likely-asleep" &&
+    !isStopping;
   const isLifecycleTransition = IS_TRANSITIONAL.has(lifecycleStatus);
   const isTransitional = isLifecycleTransition || isStopping;
   const errorCopy = status.lastError ? friendlyError(status.lastError) : null;

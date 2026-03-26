@@ -7,6 +7,7 @@ import type { ChannelConnectability } from "@/shared/channel-connectability";
 
 import { getStatusRequestPath } from "../admin-shell";
 import {
+  deriveEffectiveStatus,
   getAutoSleepDisplay,
   StatusPanel,
 } from "./status-panel";
@@ -24,6 +25,7 @@ function makeConnectability(
 ): ChannelConnectability {
   return {
     channel,
+    mode: channel === "whatsapp" ? "gateway-native" : "webhook-proxied",
     canConnect: true,
     status: "pass",
     webhookUrl,
@@ -210,6 +212,20 @@ test("StatusPanel renders past estimated sleep warning when timeout is expired",
   assert.ok(html.includes("sandbox may be asleep"));
 });
 
+test("StatusPanel shows likely asleep badge and restart action after estimated timeout elapses", () => {
+  const html = renderPanel(
+    makeStatus({
+      timeoutRemainingMs: 0,
+      timeoutSource: "estimated",
+    }),
+  );
+
+  assert.ok(html.includes("Likely asleep"));
+  assert.ok(html.includes("Start Sandbox"));
+  assert.ok(!html.includes(">Open Gateway</a>"));
+  assert.ok(!html.includes(">Stop</button>"));
+});
+
 test("StatusPanel disables check health button while the health probe is pending", () => {
   const html = renderPanel(makeStatus(), "Check health");
 
@@ -236,4 +252,12 @@ test("getAutoSleepDisplay shows source labels and estimated sleep warning", () =
     "Past estimated sleep time — sandbox may be asleep",
   );
   assert.equal(getAutoSleepDisplay({ timeoutSource: "none" }, null), "Unknown");
+});
+
+test("deriveEffectiveStatus returns likely asleep only for expired estimated running status", () => {
+  assert.equal(deriveEffectiveStatus("running", 0, "estimated"), "likely-asleep");
+  assert.equal(deriveEffectiveStatus("running", 5_000, "estimated"), "running");
+  assert.equal(deriveEffectiveStatus("running", 0, "live"), "running");
+  assert.equal(deriveEffectiveStatus("stopped", 0, "estimated"), "stopped");
+  assert.equal(deriveEffectiveStatus("running", null, "estimated"), "running");
 });
