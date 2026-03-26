@@ -92,12 +92,43 @@ export type LaunchVerificationPhaseId =
 
 export type LaunchVerificationPhaseStatus = "pass" | "fail" | "skip" | "running";
 
+export type LaunchVerificationPhaseCode =
+  | "phase.pass"
+  | "phase.fail"
+  | "phase.skip"
+  | "restorePrepared.already-reusable"
+  | "restorePrepared.prepared"
+  | "restorePrepared.blocked"
+  | "restorePrepared.prepare-failed"
+  | "restorePrepared.not-reusable-after-prepare";
+
+export type RestorePreparedPhaseResolutionCode =
+  | "already-reusable"
+  | "prepared"
+  | "blocked"
+  | "prepare-failed"
+  | "not-reusable-after-prepare";
+
+export type RestorePreparedPhaseEvidence = {
+  kind: "restorePrepared";
+  resolution: RestorePreparedPhaseResolution;
+  blockedReason: string | null;
+  initialAttestation: RestoreTargetAttestation;
+  finalAttestation: RestoreTargetAttestation;
+  plan: RestoreTargetPlan;
+  prepare: RestorePreparedPhaseResolutionInput["prepare"];
+};
+
+export type LaunchVerificationPhaseDetails = RestorePreparedPhaseEvidence;
+
 export type LaunchVerificationPhase = {
   id: LaunchVerificationPhaseId;
   status: LaunchVerificationPhaseStatus;
   durationMs: number;
   message: string;
   error?: string;
+  code?: LaunchVerificationPhaseCode;
+  details?: LaunchVerificationPhaseDetails;
 };
 
 export type LaunchVerificationRuntime = {
@@ -241,8 +272,26 @@ export type RestorePreparedPhaseResolutionInput = {
 
 export type RestorePreparedPhaseResolution = {
   ok: boolean;
+  code: RestorePreparedPhaseResolutionCode;
   message: string;
 };
+
+function formatRestorePreparedBlockedMessage(blockedReason: string): string {
+  switch (blockedReason) {
+    case "already-ready":
+      return "Restore target already reusable.";
+    case "already-running":
+      return "Restore oracle already running in another worker.";
+    case "sandbox-not-running":
+      return "Sandbox is not running; destructive prepare skipped.";
+    case "sandbox-recently-active":
+      return "Sandbox was recently active; destructive prepare skipped.";
+    case "gateway-not-ready":
+      return "Gateway is not healthy enough to seal a fresh restore target.";
+    default:
+      return `Restore prepare blocked: ${blockedReason}.`;
+  }
+}
 
 export function resolveRestorePreparedPhase(
   input: RestorePreparedPhaseResolutionInput,
@@ -250,6 +299,7 @@ export function resolveRestorePreparedPhase(
   if (input.initialAttestation.reusable) {
     return {
       ok: true,
+      code: "already-reusable",
       message: "Restore target already reusable.",
     };
   }
@@ -257,37 +307,56 @@ export function resolveRestorePreparedPhase(
   if (input.finalAttestation.reusable) {
     return {
       ok: true,
+      code: "prepared",
       message:
-        input.prepare?.ok && input.prepare.snapshotId
-          ? `Prepared restore target sealed and verified (${input.prepare.snapshotId}).`
-          : "Prepared restore target sealed and verified.",
+        input.prepare?.snapshotId != null
+          ? `Prepared fresh restore target ${input.prepare.snapshotId}.`
+          : "Prepared fresh restore target.",
     };
   }
 
-  const failedActionMessage =
-    input.prepare?.actions.find((action) => action.status === "failed")
-      ?.message ?? null;
+  if (input.prepare && !input.prepare.ok) {
+    const failedAction = input.prepare.actions.find(
+      (action) => action.status === "failed",
+    );
+    return {
+      ok: false,
+      code: "prepare-failed",
+      message: failedAction?.message ?? "Restore preparation failed.",
+    };
+  }
 
-  const finalReasons =
-    input.finalAttestation.reasons.length > 0
-      ? input.finalAttestation.reasons.join(", ")
-      : null;
-
-  const initialReasons =
-    input.initialAttestation.reasons.length > 0
-      ? input.initialAttestation.reasons.join(", ")
-      : null;
-
-  const failureReason =
-    failedActionMessage ??
-    input.blockedReason ??
-    finalReasons ??
-    initialReasons ??
-    "unknown";
+  if (input.blockedReason) {
+    return {
+      ok: false,
+      code: "blocked",
+      message: formatRestorePreparedBlockedMessage(input.blockedReason),
+    };
+  }
 
   return {
     ok: false,
-    message: `Restore target not reusable: ${failureReason}`,
+    code: "not-reusable-after-prepare",
+    message: "Restore target is still not reusable after destructive prepare.",
+  };
+}
+
+export type RestorePreparedPhaseEvidenceInput =
+  RestorePreparedPhaseResolutionInput & {
+    plan: RestoreTargetPlan;
+  };
+
+export function buildRestorePreparedPhaseEvidence(
+  input: RestorePreparedPhaseEvidenceInput,
+): RestorePreparedPhaseEvidence {
+  return {
+    kind: "restorePrepared",
+    resolution: resolveRestorePreparedPhase(input),
+    blockedReason: input.blockedReason,
+    initialAttestation: input.initialAttestation,
+    finalAttestation: input.finalAttestation,
+    plan: input.plan,
+    prepare: input.prepare,
   };
 }
 

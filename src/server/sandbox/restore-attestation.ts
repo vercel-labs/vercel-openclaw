@@ -155,7 +155,7 @@ export function buildRestoreTargetPlan(input: {
     description: `The current snapshot cannot be reused: ${reasons.join(", ")}.`,
     request: {
       method: "POST",
-      path: "/api/admin/restore-target",
+      path: "/api/admin/prepare-restore",
       body: { destructive: true },
     },
   });

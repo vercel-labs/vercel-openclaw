@@ -204,7 +204,7 @@ test("buildRestoreTargetPlan requires ensure-running before destructive prepare"
             "The current snapshot cannot be reused: snapshot-config-stale.",
           request: {
             method: "POST",
-            path: "/api/admin/restore-target",
+            path: "/api/admin/prepare-restore",
             body: { destructive: true },
           },
         },

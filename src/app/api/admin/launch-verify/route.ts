@@ -42,53 +42,156 @@ import {
   writeChannelReadiness,
 } from "@/server/launch-verify/state";
 import {
-  resolveRestorePreparedPhase,
+  buildRestorePreparedPhaseEvidence,
   type ChannelReadiness,
   type LaunchVerificationDiagnostics,
   type LaunchVerificationPayload,
   type LaunchVerificationPhase,
+  type LaunchVerificationPhaseCode,
+  type LaunchVerificationPhaseDetails,
   type LaunchVerificationPhaseId,
   type LaunchVerificationRuntime,
   type LaunchVerificationSandboxHealth,
   type LaunchVerificationStreamEvent,
   type LaunchVerifyCompletionLog,
+  type RestorePreparedPhaseResolutionCode,
 } from "@/shared/launch-verification";
 
 const ENSURE_POLL_MS = 2_000;
 const ENSURE_TIMEOUT_MS = 120_000;
 
+type PhaseExecutionValue =
+  | string
+  | {
+      ok?: boolean;
+      message: string;
+      error?: string;
+      code?: LaunchVerificationPhaseCode;
+      details?: LaunchVerificationPhaseDetails;
+    };
+
+type NormalizedPhaseExecutionValue = {
+  ok: boolean;
+  message: string;
+  error?: string;
+  code?: LaunchVerificationPhaseCode;
+  details?: LaunchVerificationPhaseDetails;
+};
+
+function normalizePhaseExecutionValue(
+  value: PhaseExecutionValue,
+): NormalizedPhaseExecutionValue {
+  if (typeof value === "string") {
+    return { ok: true, message: value, code: "phase.pass" };
+  }
+  return {
+    ok: value.ok ?? true,
+    message: value.message,
+    error: value.error,
+    code: value.code,
+    details: value.details,
+  };
+}
+
+function summarizePhaseDetailsForLog(
+  details: LaunchVerificationPhaseDetails | undefined,
+): Record<string, unknown> | undefined {
+  if (!details) return undefined;
+  switch (details.kind) {
+    case "restorePrepared":
+      return {
+        resolutionCode: details.resolution.code,
+        blockedReason: details.blockedReason,
+        initialReusable: details.initialAttestation.reusable,
+        finalReusable: details.finalAttestation.reusable,
+        prepareOk: details.prepare?.ok ?? null,
+        snapshotId: details.prepare?.snapshotId ?? null,
+        restorePlanActionIds: details.plan.actions.map((a) => a.id),
+        restoreReasonIds: details.finalAttestation.reasons,
+      };
+    default:
+      return undefined;
+  }
+}
+
+function toRestorePreparedPhaseCode(
+  code: RestorePreparedPhaseResolutionCode,
+): LaunchVerificationPhaseCode {
+  switch (code) {
+    case "already-reusable":
+      return "restorePrepared.already-reusable";
+    case "prepared":
+      return "restorePrepared.prepared";
+    case "blocked":
+      return "restorePrepared.blocked";
+    case "prepare-failed":
+      return "restorePrepared.prepare-failed";
+    case "not-reusable-after-prepare":
+      return "restorePrepared.not-reusable-after-prepare";
+  }
+}
+
 async function runPhase(
   id: LaunchVerificationPhaseId,
-  fn: () => Promise<string>,
+  fn: () => Promise<PhaseExecutionValue>,
 ): Promise<LaunchVerificationPhase> {
-  const start = Date.now();
+  const startedAt = Date.now();
   try {
-    const message = await fn();
+    const result = normalizePhaseExecutionValue(await fn());
     const phase: LaunchVerificationPhase = {
       id,
-      status: "pass",
-      durationMs: Date.now() - start,
-      message,
+      status: result.ok ? "pass" : "fail",
+      durationMs: Date.now() - startedAt,
+      message: result.message,
+      ...(result.error ? { error: result.error } : {}),
+      ...(result.code ? { code: result.code } : {}),
+      ...(result.details ? { details: result.details } : {}),
     };
-    logInfo(`launch_verify.phase_pass`, { phase: id, durationMs: phase.durationMs });
+    const logFields = {
+      phase: id,
+      durationMs: phase.durationMs,
+      code: phase.code ?? (phase.status === "pass" ? "phase.pass" : "phase.fail"),
+      ...(summarizePhaseDetailsForLog(phase.details) ?? {}),
+    };
+    if (phase.status === "fail") {
+      logError("launch_verify.phase_fail", {
+        ...logFields,
+        error: phase.error ?? phase.message,
+      });
+    } else {
+      logInfo("launch_verify.phase_pass", logFields);
+    }
     return phase;
   } catch (error) {
-    const errMsg = error instanceof Error ? error.message : String(error);
+    const message = error instanceof Error ? error.message : String(error);
     const phase: LaunchVerificationPhase = {
       id,
       status: "fail",
-      durationMs: Date.now() - start,
+      durationMs: Date.now() - startedAt,
       message: `Phase ${id} failed.`,
-      error: errMsg,
+      error: message,
+      code: "phase.fail",
     };
-    logError(`launch_verify.phase_fail`, { phase: id, error: errMsg });
+    logError("launch_verify.phase_fail", {
+      phase: id,
+      durationMs: phase.durationMs,
+      code: phase.code,
+      error: message,
+    });
     return phase;
   }
 }
 
 function skipPhase(id: LaunchVerificationPhaseId, message: string): LaunchVerificationPhase {
-  logInfo("launch_verify.phase_skip", { phase: id, message });
-  return { id, status: "skip", durationMs: 0, message };
+  const phase: LaunchVerificationPhase = {
+    id,
+    status: "skip",
+    durationMs: 0,
+    message,
+    code: "phase.skip",
+  };
+  logInfo("launch_verify.phase_skip", { phase: id, code: phase.code, message });
+  return phase;
 }
 
 function buildLaunchVerificationDiagnostics(
@@ -170,7 +273,7 @@ function buildSandboxHealth(input: {
 async function runRestorePreparedVerification(input: {
   origin: string;
   reason: string;
-}): Promise<string> {
+}): Promise<PhaseExecutionValue> {
   const oracle = await runRestoreOracleCycle(
     {
       origin: input.origin,
@@ -187,19 +290,19 @@ async function runRestorePreparedVerification(input: {
     },
   );
 
-  if (oracle.attestation.reusable) {
-    logInfo("launch_verify.restore_prepared_resolution", {
-      outcome: "already-reusable",
-    });
-    return "Restore target already reusable.";
-  }
-
   const finalMeta = await getInitializedMeta();
   const finalAttestation = buildRestoreTargetAttestation(finalMeta);
-  const resolution = resolveRestorePreparedPhase({
+  const plan = buildRestoreTargetPlan({
+    attestation: finalAttestation,
+    status: finalMeta.status,
+    sandboxId: finalMeta.sandboxId,
+  });
+
+  const evidence = buildRestorePreparedPhaseEvidence({
     blockedReason: oracle.blockedReason,
     initialAttestation: oracle.attestation,
     finalAttestation,
+    plan,
     prepare: oracle.prepare
       ? {
           ok: oracle.prepare.ok,
@@ -210,17 +313,25 @@ async function runRestorePreparedVerification(input: {
   });
 
   logInfo("launch_verify.restore_prepared_resolution", {
-    outcome: resolution.ok ? "sealed" : "not-reusable",
-    finalReusable: finalAttestation.reusable,
-    prepareOk: oracle.prepare?.ok ?? null,
-    message: resolution.message,
+    code: evidence.resolution.code,
+    ok: evidence.resolution.ok,
+    blockedReason: evidence.blockedReason,
+    message: evidence.resolution.message,
+    prepareOk: evidence.prepare?.ok ?? null,
+    snapshotId: evidence.prepare?.snapshotId ?? null,
+    initialReusable: evidence.initialAttestation.reusable,
+    finalReusable: evidence.finalAttestation.reusable,
+    restorePlanActionIds: evidence.plan.actions.map((a) => a.id),
+    restoreReasonIds: evidence.finalAttestation.reasons,
   });
 
-  if (!resolution.ok) {
-    throw new Error(resolution.message);
-  }
-
-  return resolution.message;
+  return {
+    ok: evidence.resolution.ok,
+    message: evidence.resolution.message,
+    error: evidence.resolution.ok ? undefined : evidence.resolution.message,
+    code: toRestorePreparedPhaseCode(evidence.resolution.code),
+    details: evidence,
+  };
 }
 
 // ---------------------------------------------------------------------------
