@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState, useSyncExternalStore } from "react";
 import { ChannelPill } from "@/components/ui/badge";
 import { ConfirmDialog, useConfirm } from "@/components/ui/confirm-dialog";
 import { ConnectabilityNotice } from "@/components/panels/connectability-notice";
@@ -48,6 +48,14 @@ export function getWhatsAppWebhookUrl(
   }
 }
 
+function subscribeToOrigin(): () => void {
+  return () => {};
+}
+
+function getOriginSnapshot(): string | null {
+  return typeof window === "undefined" ? null : window.location.origin;
+}
+
 export function WhatsAppPanel({
   status,
   busy,
@@ -66,14 +74,12 @@ export function WhatsAppPanel({
   const [panelError, setPanelError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [copied, setCopied] = useState(false);
-  const [origin, setOrigin] = useState<string | null>(null);
   const { confirm, dialogProps } = useConfirm();
-
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      setOrigin(window.location.origin);
-    }
-  }, []);
+  const origin = useSyncExternalStore(
+    subscribeToOrigin,
+    getOriginSnapshot,
+    () => null,
+  );
 
   const webhookUrl = getWhatsAppWebhookUrl(origin);
   const hasDraft =
