@@ -20,6 +20,7 @@ type BlockTestResult = {
 };
 
 type FirewallPanelProps = {
+  active: boolean;
   status: StatusPayload;
   busy: boolean;
   runAction: RunAction;
@@ -28,6 +29,7 @@ type FirewallPanelProps = {
 };
 
 export function FirewallPanel({
+  active,
   status,
   busy,
   runAction,
@@ -55,6 +57,7 @@ export function FirewallPanel({
   const { confirm: confirmDismiss, dialogProps: dismissDialogProps } = useConfirm();
 
   const fetchReport = useCallback(async () => {
+    if (!active) return;
     try {
       const res = await fetch("/api/firewall/report", {
         cache: "no-store",
@@ -66,12 +69,13 @@ export function FirewallPanel({
     } catch {
       // Best-effort — report is non-critical, panel falls back to status data
     }
-  }, []);
+  }, [active]);
 
   // Fetch report alongside status refreshes
   useEffect(() => {
+    if (!active) return;
     void fetchReport();
-  }, [status.firewall.updatedAt, fetchReport]);
+  }, [active, status.firewall.updatedAt, fetchReport]);
 
   // Derive firewall data from report when available, fall back to status
   const fw = report?.state ?? status.firewall;
@@ -79,6 +83,7 @@ export function FirewallPanel({
   const groupedLearned = report?.groupedLearned ?? null;
 
   const fetchFirewallLogs = useCallback(async () => {
+    if (!active) return;
     setLogsLoading(true);
     try {
       const res = await fetch("/api/admin/logs?source=firewall", {
@@ -94,14 +99,15 @@ export function FirewallPanel({
     } finally {
       setLogsLoading(false);
     }
-  }, []);
+  }, [active]);
 
   // Fetch firewall logs when section is opened and on each refresh cycle
   useEffect(() => {
+    if (!active) return;
     if (logsOpen) {
       void fetchFirewallLogs();
     }
-  }, [logsOpen, status.firewall.updatedAt, fetchFirewallLogs]);
+  }, [active, logsOpen, status.firewall.updatedAt, fetchFirewallLogs]);
 
   const eventCategoryCounts = useMemo(
     () => computeEventCategoryCounts(fw.events),

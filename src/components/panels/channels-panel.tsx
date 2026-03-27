@@ -22,6 +22,7 @@ type PreflightData = {
 };
 
 type ChannelsPanelProps = {
+  active: boolean;
   status: StatusPayload;
   busy: boolean;
   runAction: RunAction;
@@ -38,6 +39,7 @@ async function loadPreflightData(): Promise<PreflightData | null> {
 }
 
 export function ChannelsPanel({
+  active,
   status,
   busy,
   runAction,
@@ -48,12 +50,13 @@ export function ChannelsPanel({
   const [refreshing, setRefreshing] = useState(false);
 
   useEffect(() => {
+    if (!active) return;
     let cancelled = false;
     void loadPreflightData()
       .then((data) => { if (!cancelled) setPreflight(data); })
       .catch(() => {});
     return () => { cancelled = true; };
-  }, []);
+  }, [active]);
 
   async function refreshPanelData(): Promise<void> {
     const nextPreflight = await loadPreflightData().catch(() => null);

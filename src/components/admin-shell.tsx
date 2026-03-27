@@ -311,61 +311,76 @@ export function AdminShell({
       </section>
 
       <section style={{ marginTop: 16 }}>
-        <Tabs tabs={[...TABS]} defaultTab="status">
-          {(activeTab) => (
+        <Tabs tabs={[...TABS]} defaultTab="status" ariaLabel="Admin panels">
+          {({ activeTab, isMounted, getPanelProps }) => (
             <>
-              {activeTab === "status" && (
-                <StatusPanel
-                  status={status}
-                  statusVersion={statusVersion}
-                  busy={busy}
-                  pendingAction={pendingAction}
-                  runAction={runAction}
-                  checkHealth={checkHealth}
-                />
+              {isMounted("status") && (
+                <section {...getPanelProps("status")}>
+                  <StatusPanel
+                    status={status}
+                    statusVersion={statusVersion}
+                    busy={busy}
+                    pendingAction={pendingAction}
+                    runAction={runAction}
+                    checkHealth={checkHealth}
+                  />
+                </section>
               )}
-              {activeTab === "firewall" && (
-                <FirewallPanel
-                  status={status}
-                  busy={busy}
-                  runAction={runAction}
-                  requestJson={requestJson}
-                  refresh={refreshPassive}
-                />
-              )}
-              {activeTab === "channels" && (
-                <>
-                  <ChannelsPanel
+              {isMounted("firewall") && (
+                <section {...getPanelProps("firewall")}>
+                  <FirewallPanel
+                    active={activeTab === "firewall"}
                     status={status}
                     busy={busy}
                     runAction={runAction}
                     requestJson={requestJson}
                     refresh={refreshPassive}
                   />
-                  <LaunchPanel
+                </section>
+              )}
+              {isMounted("channels") && (
+                <section {...getPanelProps("channels")}>
+                  <div className="tab-panel-stack">
+                    <ChannelsPanel
+                      active={activeTab === "channels"}
+                      status={status}
+                      busy={busy}
+                      runAction={runAction}
+                      requestJson={requestJson}
+                      refresh={refreshPassive}
+                    />
+                    <LaunchPanel
+                      status={status}
+                      busy={busy}
+                      requestJson={requestJson}
+                    />
+                  </div>
+                </section>
+              )}
+              {isMounted("terminal") && (
+                <section {...getPanelProps("terminal")}>
+                  <SshPanel
                     status={status}
                     busy={busy}
                     requestJson={requestJson}
                   />
-                </>
+                </section>
               )}
-              {activeTab === "terminal" && (
-                <SshPanel
-                  status={status}
-                  busy={busy}
-                  requestJson={requestJson}
-                />
+              {isMounted("logs") && (
+                <section {...getPanelProps("logs")}>
+                  <LogsPanel active={activeTab === "logs"} status={status} />
+                </section>
               )}
-              {activeTab === "logs" && (
-                <LogsPanel status={status} />
-              )}
-              {activeTab === "snapshots" && (
-                <SnapshotsPanel
-                  status={status}
-                  busy={busy}
-                  runAction={runAction}
-                  requestJson={requestJson}
-                />
+              {isMounted("snapshots") && (
+                <section {...getPanelProps("snapshots")}>
+                  <SnapshotsPanel
+                    active={activeTab === "snapshots"}
+                    status={status}
+                    busy={busy}
+                    runAction={runAction}
+                    requestJson={requestJson}
+                  />
+                </section>
               )}
             </>
           )}

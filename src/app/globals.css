@@ -1612,9 +1612,43 @@ a[href]:focus-visible {
 
 .tab-list {
   display: flex;
+  flex-wrap: wrap;
   gap: 0;
   border-bottom: 1px solid var(--border);
   margin-bottom: 20px;
+}
+
+.tabs-root {
+  min-width: 0;
+}
+
+.tab-panels {
+  position: relative;
+  min-block-size: min(44rem, 60dvh);
+  overflow: hidden;
+  transition: height 180ms ease;
+}
+
+.tab-panel {
+  width: 100%;
+  min-width: 0;
+}
+
+.tab-panel[data-state="active"] {
+  position: relative;
+  visibility: visible;
+}
+
+.tab-panel[data-state="inactive"] {
+  position: absolute;
+  inset: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.tab-panel-stack {
+  display: grid;
+  gap: 16px;
 }
 
 .tab-trigger {
@@ -1649,6 +1683,12 @@ a[href]:focus-visible {
 .tab-trigger[data-active="true"] {
   color: var(--foreground);
   border-bottom-color: var(--foreground);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tab-panels {
+    transition: none;
+  }
 }
 
 /* ────── Status badge ────── */

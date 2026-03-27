@@ -6,6 +6,7 @@ import type { LogEntry, LogLevel, LogSource } from "@/shared/types";
 import type { StatusPayload } from "@/components/admin-types";
 
 type LogsPanelProps = {
+  active: boolean;
   status: StatusPayload;
 };
 
@@ -29,7 +30,7 @@ const ALL_SOURCES: LogSource[] = [
 
 const POLL_INTERVAL_MS = 3000;
 
-export function LogsPanel({ status }: LogsPanelProps) {
+export function LogsPanel({ active, status }: LogsPanelProps) {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [search, setSearch] = useState("");
   const [levels, setLevels] = useState<Record<LogLevel, boolean>>({
@@ -55,7 +56,7 @@ export function LogsPanel({ status }: LogsPanelProps) {
   const isStopped = sandboxStatus === "stopped";
 
   const fetchLogs = useCallback(async () => {
-    if (!isRunning) return;
+    if (!active || !isRunning) return;
     setLoading(true);
     try {
       const res = await fetch("/api/admin/logs", {
@@ -71,14 +72,15 @@ export function LogsPanel({ status }: LogsPanelProps) {
     } finally {
       setLoading(false);
     }
-  }, [isRunning]);
+  }, [active, isRunning]);
 
   useEffect(() => {
+    if (!active) return;
     void fetchLogs();
-  }, [fetchLogs]);
+  }, [active, fetchLogs]);
 
   useEffect(() => {
-    if (!live || !isRunning) return;
+    if (!active || !live || !isRunning) return;
 
     const interval = window.setInterval(() => {
       void fetchLogs();
@@ -87,15 +89,16 @@ export function LogsPanel({ status }: LogsPanelProps) {
     return () => {
       window.clearInterval(interval);
     };
-  }, [live, isRunning, fetchLogs]);
+  }, [active, live, isRunning, fetchLogs]);
 
   // Auto-scroll to bottom when live and new logs arrive
   useEffect(() => {
+    if (!active) return;
     if (live && vlistRef.current && filtered.length > 0) {
       vlistRef.current.scrollToIndex(filtered.length - 1, { align: "end" });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [logs, live]);
+  }, [active, logs, live]);
 
   const toggleLevel = (level: LogLevel) => {
     setLevels((prev) => ({ ...prev, [level]: !prev[level] }));

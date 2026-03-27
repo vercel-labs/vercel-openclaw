@@ -29,6 +29,7 @@ function relativeTime(timestamp: number): string {
 }
 
 type SnapshotsPanelProps = {
+  active: boolean;
   status: StatusPayload;
   busy: boolean;
   runAction: RunAction;
@@ -36,6 +37,7 @@ type SnapshotsPanelProps = {
 };
 
 export function SnapshotsPanel({
+  active,
   status,
   busy,
   runAction,
@@ -58,6 +60,7 @@ export function SnapshotsPanel({
     busy || lifecycleStatus === "uninitialized" || isLifecycleTransition;
 
   const fetchSnapshots = useCallback(async () => {
+    if (!active) return;
     setLoading(true);
     try {
       const res = await fetch("/api/admin/snapshots", {
@@ -73,11 +76,12 @@ export function SnapshotsPanel({
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [active]);
 
   useEffect(() => {
+    if (!active) return;
     void fetchSnapshots();
-  }, [fetchSnapshots]);
+  }, [active, fetchSnapshots]);
 
   const handleSnapshot = async () => {
     await runAction("/api/admin/snapshots", {

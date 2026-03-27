@@ -129,6 +129,7 @@ function makeStatus(overrides: Partial<StatusPayload> = {}): StatusPayload {
 function renderPanel(status: StatusPayload, busy = false): string {
   return renderToStaticMarkup(
     <SnapshotsPanel
+      active
       status={status}
       busy={busy}
       runAction={RUN_ACTION}
