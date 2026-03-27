@@ -626,16 +626,23 @@ Up to 10 reference images supported for Gemini models.
 
 ## Output
 
-The script saves PNG images to disk and prints their file paths (one per line).
+The script saves PNG images to disk and prints \`MEDIA:\` lines with absolute paths (one per line).
+OpenClaw renders these inline automatically.
 
-**IMPORTANT:** To display images inline, output a \`MEDIA:\` line with the absolute path.
-Do NOT use markdown image syntax. Example:
+**CRITICAL — Channel delivery (Telegram, Slack, WhatsApp, Discord):**
+When you are responding to a message from a channel, you MUST use the \`message\` tool to send the image. Do NOT just print the path or use \`MEDIA:\` — the channel will not receive it. After running gen.mjs, call:
 
+\`\`\`bash
+message send --media /absolute/path/to/generated-image.png
 \`\`\`
-MEDIA:/home/vercel-sandbox/.openclaw/workspace/generated-image.png
+
+You can add a text caption alongside the media:
+
+\`\`\`bash
+message send --media /absolute/path/to/generated-image.png --text "Here's your image!"
 \`\`\`
 
-For Telegram/Discord channels, use \`message send --media /path/to/image.png\` instead.
+For multiple images, send each one separately with \`message send --media\`.
 `;
 }
 
@@ -767,7 +774,7 @@ if (isGemini) {
 }
 
 if (saved.length === 0) { console.error("No images were saved"); process.exit(1); }
-for (const f of saved) console.log(f);
+for (const f of saved) console.log("MEDIA:" + path.resolve(f));
 `;
 }
 
