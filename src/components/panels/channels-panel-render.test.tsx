@@ -176,11 +176,26 @@ test("ChannelsPanel exposes preflight state as data attributes", () => {
 test("ChannelsPanel consistent action labels across all unconfigured channel cards", () => {
   const html = renderChannelsPanel();
 
-  // All four cards now use "Connect" as the primary action label
+  // All four cards show "Connect <Channel>" in the title
   assert.ok(html.includes("Connect Slack"), "Slack shows connect title");
   assert.ok(html.includes("Connect Telegram"), "Telegram shows connect title");
   assert.ok(html.includes("Connect Discord"), "Discord shows connect title");
   assert.ok(html.includes("Connect WhatsApp"), "WhatsApp shows connect title");
+
+  // All four cards render a primary "Connect" button (not just a title containing "Connect")
+  const connectButtons = html.match(/>Connect<\/button>/g) ?? [];
+  assert.equal(
+    connectButtons.length,
+    4,
+    `expected exactly 4 Connect buttons, found ${connectButtons.length}`,
+  );
+
+  // Legacy "Save Credentials" label must not appear anywhere
+  assert.equal(
+    (html.match(/Save Credentials/g) ?? []).length,
+    0,
+    "legacy Save Credentials label must not appear in rendered HTML",
+  );
 });
 
 test("ChannelsPanel exposes machine-readable verification state on the consolidated surface", () => {

@@ -56,7 +56,7 @@ export function DiscordPanel({
   const [editing, setEditing] = useState(false);
   const [panelError, setPanelError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  const [copied, setCopied] = useState(false);
+  const [copiedField, setCopiedField] = useState<"webhook" | "endpoint" | null>(null);
 
   const { confirm, dialogProps } = useConfirm();
   const dc = status.channels.discord;
@@ -65,6 +65,8 @@ export function DiscordPanel({
   function clearDrafts(): void {
     setBotToken("");
     setShowToken(false);
+    setAutoEndpoint(true);
+    setAutoCommand(true);
     setForceOverwrite(false);
     setPanelError(null);
     setSaving(false);
@@ -76,8 +78,8 @@ export function DiscordPanel({
     setSaving(true);
 
     const result = await requestJson("/api/channels/discord", {
-      label: "Save Discord",
-      successMessage: "Discord connected",
+      label: editing ? "Update Discord credentials" : "Connect Discord",
+      successMessage: editing ? "Discord credentials updated" : "Discord connected",
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -128,11 +130,14 @@ export function DiscordPanel({
     }
   }
 
-  function handleCopyWebhook(): void {
-    if (!dc.webhookUrl) return;
-    void navigator.clipboard.writeText(dc.webhookUrl);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+  function handleCopyValue(
+    value: string | null | undefined,
+    field: "webhook" | "endpoint",
+  ): void {
+    if (!value) return;
+    void navigator.clipboard.writeText(value);
+    setCopiedField(field);
+    setTimeout(() => setCopiedField((current) => (current === field ? null : current)), 2000);
   }
 
   return (
@@ -159,9 +164,19 @@ export function DiscordPanel({
           <ChannelCopyValue
             label="Webhook URL"
             value={dc.webhookUrl}
-            copied={copied}
-            onCopy={handleCopyWebhook}
+            copied={copiedField === "webhook"}
+            onCopy={() => handleCopyValue(dc.webhookUrl, "webhook")}
           />
+          {dc.endpointUrl != null &&
+            dc.endpointUrl.trim().length > 0 &&
+            dc.endpointUrl !== dc.webhookUrl ? (
+            <ChannelCopyValue
+              label="Endpoint"
+              value={dc.endpointUrl}
+              copied={copiedField === "endpoint"}
+              onCopy={() => handleCopyValue(dc.endpointUrl, "endpoint")}
+            />
+          ) : null}
           <ChannelInfoRow
             label="Health"
             action={

@@ -148,7 +148,14 @@ test("DiscordPanel does not render simulated multi-phase progress during connect
   // The setup form is a simple credential entry, not a wizard with phases
   assert.ok(html.includes("Connect Discord"), "shows connect title");
   assert.ok(html.includes("Bot token"), "shows bot token field");
-  assert.ok(html.includes("Connect"), "shows connect button");
+  assert.ok(/>Connect<\/button>/.test(html), "primary action button is Connect");
+
+  // Legacy label must not appear
+  assert.equal(
+    (html.match(/Save Credentials/g) ?? []).length,
+    0,
+    "legacy Save Credentials label is gone",
+  );
 });
 
 /* ── Connected card structure ── */
@@ -162,6 +169,7 @@ test("DiscordPanel renders connected card with consistent action ordering", () =
       webhookUrl: "https://openclaw.example/api/channels/discord/webhook",
       endpointConfigured: true,
       commandRegistered: true,
+      inviteUrl: "https://discord.com/oauth2/authorize?client_id=app-123",
       connectability: makeConnectability("discord"),
     }),
   );
@@ -170,12 +178,18 @@ test("DiscordPanel renders connected card with consistent action ordering", () =
   assert.ok(html.includes("Connected · TestBot"), "connected header includes app name");
   assert.ok(html.includes("connected"), "pill shows connected status");
 
-  // Detail rows: Application, Webhook URL, Health
+  // Exactly 3 detail rows: Application, Webhook URL (via ChannelCopyValue which wraps ChannelInfoRow), Health
+  const detailRows = html.match(/channel-detail-row/g) ?? [];
+  assert.equal(detailRows.length, 3, `connected card shows exactly 3 detail rows (found ${detailRows.length})`);
   assert.ok(html.includes("Application"), "shows application row");
   assert.ok(html.includes("Webhook URL"), "shows webhook URL row");
   assert.ok(html.includes("Health"), "shows health row");
   assert.ok(html.includes("Endpoint configured"), "health row includes endpoint status");
   assert.ok(html.includes("/ask registered"), "health row includes command status");
+
+  // Legacy separate rows must not exist
+  assert.ok(!/>Endpoint<\/span>/.test(html), "does not render a separate Endpoint row");
+  assert.ok(!html.includes("/ask command"), "does not render a separate /ask command row");
 
   // Action ordering: Update credentials → Disconnect (with optional Invite bot in between)
   assert.ok(html.includes("Update credentials"), "has update credentials action");
@@ -222,6 +236,54 @@ const REQUEST_JSON_FAILURE: RequestJson = async () => ({
   error: "HTTP 500",
   meta: { requestId: "test", action: "test", label: "test", status: 500, code: "http-error" as const, retryable: true },
 });
+
+/* ── Conditional endpoint row when endpointUrl diverges from webhookUrl ── */
+
+test("DiscordPanel shows separate Endpoint row when endpointUrl differs from webhookUrl", () => {
+  const html = renderPanel(
+    makeStatus({
+      configured: true,
+      appName: "TestBot",
+      applicationId: "app-123",
+      webhookUrl: "https://openclaw.example/api/channels/discord/webhook",
+      endpointUrl: "https://old-deploy.example/api/channels/discord/webhook",
+      endpointConfigured: true,
+      commandRegistered: true,
+      inviteUrl: "https://discord.com/oauth2/authorize?client_id=app-123",
+      connectability: makeConnectability("discord"),
+    }),
+  );
+
+  // 4 detail rows: Application, Webhook URL, Endpoint (divergent), Health
+  const detailRows = html.match(/channel-detail-row/g) ?? [];
+  assert.equal(detailRows.length, 4, `expected 4 detail rows when endpoint diverges (found ${detailRows.length})`);
+  assert.ok(html.includes("Endpoint"), "shows separate Endpoint row");
+  assert.ok(
+    html.includes("https://old-deploy.example/api/channels/discord/webhook"),
+    "endpoint row shows the divergent URL",
+  );
+});
+
+test("DiscordPanel hides Endpoint row when endpointUrl matches webhookUrl", () => {
+  const html = renderPanel(
+    makeStatus({
+      configured: true,
+      appName: "TestBot",
+      applicationId: "app-123",
+      webhookUrl: "https://openclaw.example/api/channels/discord/webhook",
+      endpointUrl: "https://openclaw.example/api/channels/discord/webhook",
+      endpointConfigured: true,
+      commandRegistered: true,
+      connectability: makeConnectability("discord"),
+    }),
+  );
+
+  const detailRows = html.match(/channel-detail-row/g) ?? [];
+  assert.equal(detailRows.length, 3, `expected 3 detail rows when endpoint matches (found ${detailRows.length})`);
+  assert.ok(!/>Endpoint<\/span>/.test(html), "no separate Endpoint row when URLs match");
+});
+
+/* ── Type contract: failure stubs satisfy RunAction and RequestJson ── */
 
 test("DiscordPanel accepts failure-shaped RunAction and RequestJson stubs", () => {
   const html = renderToStaticMarkup(
