@@ -23,8 +23,8 @@ function makeConnectability(
   };
 }
 
-const RUN_ACTION: RunAction = async () => {};
-const REQUEST_JSON: RequestJson = async () => null;
+const RUN_ACTION: RunAction = async () => true;
+const REQUEST_JSON: RequestJson = async () => ({ ok: true, data: null });
 
 function makeStatus(
   whatsappOverrides: Partial<StatusPayload["channels"]["whatsapp"]> = {},
@@ -183,6 +183,37 @@ test("WhatsAppPanel renders the business credential setup flow", () => {
       "Resolve the deployment blockers above before saving WhatsApp credentials.",
     ) === false,
   );
+});
+
+/* ── Type contract: failure stubs satisfy RunAction and RequestJson ── */
+
+const RUN_ACTION_FAILURE: RunAction = async () => false;
+const REQUEST_JSON_FAILURE: RequestJson = async () => ({
+  ok: false,
+  error: "HTTP 500",
+});
+
+test("WhatsAppPanel accepts failure-shaped RunAction and RequestJson stubs", () => {
+  const html = renderToStaticMarkup(
+    <WhatsAppPanel
+      status={makeStatus({
+        configured: true,
+        webhookUrl: "https://openclaw.example/api/channels/whatsapp/webhook",
+        status: "linked",
+        displayName: "Support",
+        connectability: {
+          ...makeConnectability(),
+          status: "pass",
+        },
+      })}
+      busy={false}
+      runAction={RUN_ACTION_FAILURE}
+      requestJson={REQUEST_JSON_FAILURE}
+    />,
+  );
+
+  assert.ok(html.includes("Connected"), "renders connected state with failure stubs");
+  assert.ok(html.includes("Disconnect"), "disconnect button present with failure stubs");
 });
 
 test("WhatsAppPanel renders connected details for configured accounts", () => {

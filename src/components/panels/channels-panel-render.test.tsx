@@ -20,8 +20,8 @@ function makeConnectability(
   };
 }
 
-const RUN_ACTION: RunAction = async () => {};
-const REQUEST_JSON: RequestJson = async () => null;
+const RUN_ACTION: RunAction = async () => true;
+const REQUEST_JSON: RequestJson = async () => ({ ok: true, data: null });
 
 function makeStatus(): StatusPayload {
   return {

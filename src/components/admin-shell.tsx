@@ -157,7 +157,7 @@ export function AdminShell({
   async function requestJson<T>(
     action: string,
     input: RequestInit & { label: string; successMessage?: string; refreshAfter?: boolean },
-  ): Promise<T | null> {
+  ): Promise<{ ok: true; data: T | null } | { ok: false; error: string }> {
     setPendingAction(input.label);
     try {
       const response = await fetch(action, {
@@ -170,7 +170,7 @@ export function AdminShell({
 
       if (response.status === 401) {
         setStatus(null);
-        return null;
+        return { ok: false, error: "Unauthorized" };
       }
 
       if (!response.ok) {
@@ -178,9 +178,9 @@ export function AdminShell({
           | JsonRouteErrorPayload
           | null;
 
-        throw new Error(
-          buildJsonRouteErrorMessage(payload, `${input.label} failed`),
-        );
+        const message = buildJsonRouteErrorMessage(payload, `${input.label} failed`);
+        toast.error(message);
+        return { ok: false, error: message };
       }
 
       const payload = (await response.json().catch(() => null)) as T | null;
@@ -188,14 +188,14 @@ export function AdminShell({
         await refreshPassive();
       }
       toast.success(input.successMessage ?? input.label);
-      return payload;
+      return { ok: true, data: payload };
     } catch (nextError) {
       const message =
         nextError instanceof Error
           ? nextError.message
           : `${input.label} failed`;
       toast.error(message);
-      return null;
+      return { ok: false, error: message };
     } finally {
       setPendingAction(null);
     }
@@ -204,8 +204,9 @@ export function AdminShell({
   async function runAction(
     action: string,
     input: RequestInit & { label: string; successMessage?: string },
-  ): Promise<void> {
-    await requestJson(action, input);
+  ): Promise<boolean> {
+    const result = await requestJson(action, input);
+    return result.ok;
   }
 
   const handleLogin = async (e: React.FormEvent) => {

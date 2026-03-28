@@ -49,7 +49,7 @@ export function SlackPanel({
   async function handleTestToken(): Promise<void> {
     if (!botToken.trim()) return;
     setPanelError(null);
-    const payload = await requestJson<SlackTestPayload>(
+    const result = await requestJson<SlackTestPayload>(
       "/api/channels/slack/test",
       {
         label: "Test Slack token",
@@ -60,36 +60,34 @@ export function SlackPanel({
         refreshAfter: false,
       },
     );
-    if (payload) {
-      setTestResult(payload);
+    if (result.ok && result.data) {
+      setTestResult(result.data);
     }
   }
 
   async function handleConnect(): Promise<void> {
     if (!signingSecret.trim() || !botToken.trim()) return;
     setPanelError(null);
-    try {
-      await requestJson("/api/channels/slack", {
-        label: "Save Slack",
-        successMessage: "Slack connected",
-        method: "PUT",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          signingSecret: signingSecret.trim(),
-          botToken: botToken.trim(),
-        }),
-      });
+    const result = await requestJson("/api/channels/slack", {
+      label: "Save Slack",
+      successMessage: "Slack connected",
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        signingSecret: signingSecret.trim(),
+        botToken: botToken.trim(),
+      }),
+    });
+    if (result.ok) {
       clearDrafts();
       setEditing(false);
-    } catch (error) {
-      setPanelError(
-        error instanceof Error ? error.message : "Failed to connect",
-      );
+    } else {
+      setPanelError(result.error);
     }
   }
 
   async function handleCreateApp(): Promise<void> {
-    const payload = await requestJson<{ createAppUrl: string }>(
+    const result = await requestJson<{ createAppUrl: string }>(
       "/api/channels/slack/manifest",
       {
         label: "Create Slack app",
@@ -98,8 +96,8 @@ export function SlackPanel({
         refreshAfter: false,
       },
     );
-    if (payload?.createAppUrl) {
-      window.open(payload.createAppUrl, "_blank", "noopener,noreferrer");
+    if (result.ok && result.data?.createAppUrl) {
+      window.open(result.data.createAppUrl, "_blank", "noopener,noreferrer");
     }
   }
 
@@ -114,18 +112,14 @@ export function SlackPanel({
     if (!ok) return;
 
     setPanelError(null);
-    try {
-      await runAction("/api/channels/slack", {
-        label: "Disconnect Slack",
-        successMessage: "Slack disconnected",
-        method: "DELETE",
-      });
+    const success = await runAction("/api/channels/slack", {
+      label: "Disconnect Slack",
+      successMessage: "Slack disconnected",
+      method: "DELETE",
+    });
+    if (success) {
       clearDrafts();
       setEditing(false);
-    } catch (error) {
-      setPanelError(
-        error instanceof Error ? error.message : "Failed to disconnect",
-      );
     }
   }
 

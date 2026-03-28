@@ -196,12 +196,16 @@ export type FirewallReportPayload = {
   policyHash: string;
 };
 
+export type ActionResult<T> =
+  | { ok: true; data: T | null }
+  | { ok: false; error: string };
+
 export type RunAction = (
   action: string,
   input: RequestInit & { label: string; successMessage?: string },
-) => Promise<void>;
+) => Promise<boolean>;
 
 export type RequestJson = <T>(
   action: string,
   input: RequestInit & { label: string; successMessage?: string; refreshAfter?: boolean },
-) => Promise<T | null>;
+) => Promise<ActionResult<T>>;

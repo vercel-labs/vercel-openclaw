@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import type { RequestJson, RunAction, StatusPayload } from "@/components/admin-types";
 import type { ChannelConnectability } from "@/shared/channel-connectability";
 
-import { DiscordPanel } from "./discord-panel";
+import { SlackPanel } from "./slack-panel";
 
 function makeConnectability(
   channel: ChannelConnectability["channel"],
@@ -20,11 +20,16 @@ function makeConnectability(
   };
 }
 
-const RUN_ACTION: RunAction = async () => true;
-const REQUEST_JSON: RequestJson = async () => ({ ok: true, data: null });
+const RUN_ACTION_SUCCESS: RunAction = async () => true;
+const RUN_ACTION_FAILURE: RunAction = async () => false;
+const REQUEST_JSON_SUCCESS: RequestJson = async () => ({ ok: true, data: null });
+const REQUEST_JSON_FAILURE: RequestJson = async () => ({
+  ok: false,
+  error: "HTTP 500",
+});
 
 function makeStatus(
-  discordOverrides: Partial<StatusPayload["channels"]["discord"]> = {},
+  slackOverrides: Partial<StatusPayload["channels"]["slack"]> = {},
 ): StatusPayload {
   return {
     authMode: "admin-secret",
@@ -58,7 +63,7 @@ function makeStatus(
     channels: {
       slack: {
         configured: false,
-        webhookUrl: "",
+        webhookUrl: "https://openclaw.example/api/channels/slack/webhook",
         configuredAt: null,
         team: null,
         user: null,
@@ -67,6 +72,7 @@ function makeStatus(
         hasBotToken: false,
         lastError: null,
         connectability: makeConnectability("slack"),
+        ...slackOverrides,
       },
       telegram: {
         configured: false,
@@ -82,7 +88,7 @@ function makeStatus(
       },
       discord: {
         configured: false,
-        webhookUrl: "https://openclaw.example/api/channels/discord/webhook",
+        webhookUrl: "",
         applicationId: null,
         publicKey: null,
         configuredAt: null,
@@ -96,7 +102,6 @@ function makeStatus(
         inviteUrl: null,
         isPublicUrl: false,
         connectability: makeConnectability("discord"),
-        ...discordOverrides,
       },
       whatsapp: {
         configured: false,
@@ -125,110 +130,61 @@ function makeStatus(
   };
 }
 
-function renderPanel(status: StatusPayload): string {
-  return renderToStaticMarkup(
-    <DiscordPanel
-      status={status}
+/* ── Unconfigured form ── */
+
+test("SlackPanel renders connect form when unconfigured", () => {
+  const html = renderToStaticMarkup(
+    <SlackPanel
+      status={makeStatus()}
       busy={false}
-      runAction={RUN_ACTION}
-      requestJson={REQUEST_JSON}
+      runAction={RUN_ACTION_SUCCESS}
+      requestJson={REQUEST_JSON_SUCCESS}
     />,
   );
-}
 
-/* ── No fake progress ── */
-
-test("DiscordPanel does not render simulated multi-phase progress during connect", () => {
-  const html = renderPanel(makeStatus());
-
-  // No progress-step or setup-phase class names
-  assert.ok(!html.includes("progress-step"), "no progress-step elements in setup form");
-  assert.ok(!html.includes("setup-phase"), "no setup-phase elements in setup form");
-
-  // The setup form is a simple credential entry, not a wizard with phases
-  assert.ok(html.includes("Connect Discord"), "shows connect title");
-  assert.ok(html.includes("Bot token"), "shows bot token field");
-  assert.ok(html.includes("Save Credentials"), "shows save button, not a phased progress button");
+  assert.ok(html.includes("Connect Slack"), "shows connect title");
+  assert.ok(html.includes("Signing Secret"), "shows signing secret field");
+  assert.ok(html.includes("Bot Token"), "shows bot token field");
+  assert.ok(html.includes("Save Credentials"), "shows save button");
 });
 
-/* ── Connected card structure ── */
+/* ── Connected card ── */
 
-test("DiscordPanel renders connected card with consistent action ordering", () => {
-  const html = renderPanel(
-    makeStatus({
-      configured: true,
-      appName: "TestBot",
-      applicationId: "app-123",
-      webhookUrl: "https://openclaw.example/api/channels/discord/webhook",
-      endpointConfigured: true,
-      commandRegistered: true,
-      connectability: makeConnectability("discord"),
-    }),
+test("SlackPanel renders connected card with consistent action ordering", () => {
+  const html = renderToStaticMarkup(
+    <SlackPanel
+      status={makeStatus({
+        configured: true,
+        team: "TestWorkspace",
+        botId: "B123",
+        webhookUrl: "https://openclaw.example/api/channels/slack/webhook",
+        connectability: makeConnectability("slack"),
+      })}
+      busy={false}
+      runAction={RUN_ACTION_SUCCESS}
+      requestJson={REQUEST_JSON_SUCCESS}
+    />,
   );
 
-  // Header shows connected state
-  assert.ok(html.includes("Connected · TestBot"), "connected header includes app name");
+  assert.ok(html.includes("Connected · TestWorkspace"), "connected header includes team");
   assert.ok(html.includes("connected"), "pill shows connected status");
-
-  // Detail rows
-  assert.ok(html.includes("Application"), "shows application row");
-  assert.ok(html.includes("Webhook URL"), "shows webhook URL row");
-  assert.ok(html.includes("Endpoint"), "shows endpoint row");
-  assert.ok(html.includes("/ask command"), "shows command row");
-
-  // Action ordering: Update credentials → Disconnect (with optional Invite bot in between)
   assert.ok(html.includes("Update credentials"), "has update credentials action");
   assert.ok(html.includes("Disconnect"), "has disconnect action");
 
-  // Update credentials appears before Disconnect
   const updateIdx = html.indexOf("Update credentials");
   const disconnectIdx = html.indexOf("Disconnect");
   assert.ok(updateIdx < disconnectIdx, "Update credentials appears before Disconnect");
 });
 
-test("DiscordPanel shows webhook URL with copy affordance", () => {
-  const html = renderPanel(
-    makeStatus({
-      configured: true,
-      webhookUrl: "https://openclaw.example/api/channels/discord/webhook",
-      endpointConfigured: true,
-      connectability: makeConnectability("discord"),
-    }),
-  );
-
-  assert.ok(html.includes("channel-copy-row"), "webhook URL has a copy row");
-  assert.ok(html.includes("Copy"), "copy button is present");
-  assert.ok(
-    html.includes("https://openclaw.example/api/channels/discord/webhook"),
-    "webhook URL value is rendered",
-  );
-});
-
-test("DiscordPanel unconfigured form includes checkbox options", () => {
-  const html = renderPanel(makeStatus());
-
-  assert.ok(html.includes("Auto-configure interactions endpoint"), "auto-endpoint checkbox");
-  assert.ok(html.includes("Register /ask command"), "auto-command checkbox");
-  // Force overwrite only appears in editing mode, not initial connect
-  assert.ok(!html.includes("Force overwrite"), "no force overwrite on initial connect");
-});
-
 /* ── Type contract: failure stubs satisfy RunAction and RequestJson ── */
 
-const RUN_ACTION_FAILURE: RunAction = async () => false;
-const REQUEST_JSON_FAILURE: RequestJson = async () => ({
-  ok: false,
-  error: "HTTP 500",
-});
-
-test("DiscordPanel accepts failure-shaped RunAction and RequestJson stubs", () => {
+test("SlackPanel accepts failure-shaped RunAction and RequestJson stubs", () => {
   const html = renderToStaticMarkup(
-    <DiscordPanel
+    <SlackPanel
       status={makeStatus({
         configured: true,
-        appName: "TestBot",
-        webhookUrl: "https://openclaw.example/api/channels/discord/webhook",
-        connectability: makeConnectability("discord"),
+        team: "TestWorkspace",
+        connectability: makeConnectability("slack"),
       })}
       busy={false}
       runAction={RUN_ACTION_FAILURE}

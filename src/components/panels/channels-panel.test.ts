@@ -12,6 +12,7 @@ import {
   getVerificationViewModel,
   formatLaunchVerificationFetchError,
   getVerificationSurfaceState,
+  createVerificationRequestId,
 } from "./channels-panel";
 
 test("getPreflightBlockerIds returns failing check IDs", () => {
@@ -260,4 +261,23 @@ test("getVerificationSurfaceState returns idle when nothing is set", () => {
     }),
     "idle",
   );
+});
+
+/* ── createVerificationRequestId tests ── */
+
+test("createVerificationRequestId returns a string starting with verify-", () => {
+  const id = createVerificationRequestId();
+  assert.ok(id.startsWith("verify-"), `Expected prefix "verify-", got "${id}"`);
+});
+
+test("createVerificationRequestId returns unique IDs on successive calls", () => {
+  const a = createVerificationRequestId();
+  const b = createVerificationRequestId();
+  assert.notEqual(a, b);
+});
+
+test("createVerificationRequestId returns a non-empty suffix after verify-", () => {
+  const id = createVerificationRequestId();
+  const suffix = id.slice("verify-".length);
+  assert.ok(suffix.length > 0, `Expected non-empty suffix, got "${suffix}"`);
 });

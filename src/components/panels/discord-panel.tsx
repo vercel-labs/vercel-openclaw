@@ -50,43 +50,35 @@ export function DiscordPanel({
     setPanelError(null);
     setSaving(true);
 
-    try {
-      await requestJson("/api/channels/discord", {
-        label: "Save Discord",
-        successMessage: "Discord connected",
-        method: "PUT",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          botToken: botToken.trim(),
-          autoConfigureEndpoint: autoEndpoint,
-          autoRegisterCommand: autoCommand,
-          forceOverwriteEndpoint: forceOverwrite,
-        }),
-      });
+    const result = await requestJson("/api/channels/discord", {
+      label: "Save Discord",
+      successMessage: "Discord connected",
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        botToken: botToken.trim(),
+        autoConfigureEndpoint: autoEndpoint,
+        autoRegisterCommand: autoCommand,
+        forceOverwriteEndpoint: forceOverwrite,
+      }),
+    });
 
+    if (result.ok) {
       setEditing(false);
       clearDrafts();
-    } catch (error) {
+    } else {
       setSaving(false);
-      setPanelError(
-        error instanceof Error ? error.message : "Failed to connect",
-      );
+      setPanelError(result.error);
     }
   }
 
   async function handleRegisterCommand(): Promise<void> {
     setPanelError(null);
-    try {
-      await runAction("/api/channels/discord/register-command", {
-        label: "Register Discord command",
-        successMessage: "Discord command registered",
-        method: "POST",
-      });
-    } catch (error) {
-      setPanelError(
-        error instanceof Error ? error.message : "Failed to register command",
-      );
-    }
+    await runAction("/api/channels/discord/register-command", {
+      label: "Register Discord command",
+      successMessage: "Discord command registered",
+      method: "POST",
+    });
   }
 
   async function handleDisconnect(): Promise<void> {
@@ -100,18 +92,14 @@ export function DiscordPanel({
     if (!ok) return;
 
     setPanelError(null);
-    try {
-      await runAction("/api/channels/discord", {
-        label: "Disconnect Discord",
-        successMessage: "Discord disconnected",
-        method: "DELETE",
-      });
+    const success = await runAction("/api/channels/discord", {
+      label: "Disconnect Discord",
+      successMessage: "Discord disconnected",
+      method: "DELETE",
+    });
+    if (success) {
       clearDrafts();
       setEditing(false);
-    } catch (error) {
-      setPanelError(
-        error instanceof Error ? error.message : "Failed to disconnect",
-      );
     }
   }
 

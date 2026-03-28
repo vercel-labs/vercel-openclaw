@@ -212,8 +212,8 @@ export function FirewallPanel({
         body: JSON.stringify({ domain }),
         refreshAfter: false,
       });
-      if (result) {
-        setTestResult(result);
+      if (result.ok && result.data) {
+        setTestResult(result.data);
       }
     } finally {
       setTestLoading(false);

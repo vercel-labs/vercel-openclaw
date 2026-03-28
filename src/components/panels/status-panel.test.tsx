@@ -90,7 +90,7 @@ const CHANNELS: StatusPayload["channels"] = {
   },
 };
 
-const RUN_ACTION: RunAction = async () => {};
+const RUN_ACTION: RunAction = async () => true;
 const CHECK_HEALTH = async () => {};
 
 function makeStatus(overrides: Partial<LifecycleAwareStatus> = {}): LifecycleAwareStatus {
@@ -290,6 +290,39 @@ test("getAutoSleepDisplay shows source labels and estimated sleep warning", () =
     "Past estimated sleep time — sandbox may be asleep",
   );
   assert.equal(getAutoSleepDisplay({ timeoutSource: "none" }, null), "Unknown");
+});
+
+test("StatusPanel keeps failed setup progress visible when status is error", () => {
+  const html = renderPanel(
+    makeStatus({
+      status: "error",
+      lastError: "gateway never became ready",
+      setupProgress: {
+        attemptId: "a1",
+        active: false,
+        phase: "failed",
+        phaseLabel: "Starting gateway",
+        startedAt: 1,
+        updatedAt: 2,
+        preview: "gateway never became ready",
+        lines: [
+          { ts: 3, stream: "stderr", text: "gateway never became ready" },
+        ],
+      },
+    }),
+  );
+
+  // Failed step rail is visible
+  assert.ok(html.includes('data-state="failed"'), "failed step rail should render");
+  assert.ok(html.includes("Starting gateway"), "phase label should be visible");
+  // Recent setup logs are visible
+  assert.ok(html.includes("Recent setup logs"), "setup logs disclosure should render");
+  assert.ok(
+    html.includes("[stderr] gateway never became ready"),
+    "log line should be visible",
+  );
+  // Error banner also renders
+  assert.ok(html.includes("Gateway didn&#x27;t respond in time"), "error banner should render");
 });
 
 test("deriveEffectiveStatus returns asleep only for expired estimated running status", () => {

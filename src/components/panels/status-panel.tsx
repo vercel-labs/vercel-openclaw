@@ -281,7 +281,9 @@ export function StatusPanel({
   const errorCopy = status.lastError ? friendlyError(status.lastError) : null;
   const isCheckingHealth = pendingAction === "Check health";
   const setupProgress = status.setupProgress;
-  const showSetupProgress = Boolean(setupProgress && isLifecycleTransition);
+  const showSetupProgress = Boolean(
+    setupProgress && (isLifecycleTransition || setupProgress.phase === "failed"),
+  );
   const activeStepIndex = getSetupStepIndex(setupProgress);
   const setupFailed = setupProgress?.phase === "failed";
 

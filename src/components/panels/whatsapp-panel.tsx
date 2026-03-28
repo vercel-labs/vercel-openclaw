@@ -122,27 +122,25 @@ export function WhatsAppPanel({
     }
 
     setPanelError(null);
-    try {
-      await requestJson("/api/channels/whatsapp", {
-        label: "Save WhatsApp",
-        successMessage: "WhatsApp connected",
-        method: "PUT",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          enabled: true,
-          phoneNumberId: draft.phoneNumberId.trim(),
-          accessToken: draft.accessToken.trim(),
-          verifyToken: draft.verifyToken.trim(),
-          appSecret: draft.appSecret.trim(),
-          businessAccountId: draft.businessAccountId.trim() || undefined,
-        }),
-      });
+    const result = await requestJson("/api/channels/whatsapp", {
+      label: "Save WhatsApp",
+      successMessage: "WhatsApp connected",
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        enabled: true,
+        phoneNumberId: draft.phoneNumberId.trim(),
+        accessToken: draft.accessToken.trim(),
+        verifyToken: draft.verifyToken.trim(),
+        appSecret: draft.appSecret.trim(),
+        businessAccountId: draft.businessAccountId.trim() || undefined,
+      }),
+    });
+    if (result.ok) {
       clearDraft();
       setEditing(false);
-    } catch (error) {
-      setPanelError(
-        error instanceof Error ? error.message : "Failed to save WhatsApp credentials",
-      );
+    } else {
+      setPanelError(result.error);
     }
   }
 
@@ -159,18 +157,14 @@ export function WhatsAppPanel({
     }
 
     setPanelError(null);
-    try {
-      await runAction("/api/channels/whatsapp", {
-        label: "Disconnect WhatsApp",
-        successMessage: "WhatsApp disconnected",
-        method: "DELETE",
-      });
+    const success = await runAction("/api/channels/whatsapp", {
+      label: "Disconnect WhatsApp",
+      successMessage: "WhatsApp disconnected",
+      method: "DELETE",
+    });
+    if (success) {
       clearDraft();
       setEditing(false);
-    } catch (error) {
-      setPanelError(
-        error instanceof Error ? error.message : "Failed to disconnect WhatsApp",
-      );
     }
   }
 

@@ -183,6 +183,16 @@ test("paginateItems — exactly EVENTS_PER_PAGE items on page 0 returns all", ()
   assert.equal(page.length, EVENTS_PER_PAGE);
 });
 
+test("paginateItems — 21 items split into 20-item first page and 1-item second page", () => {
+  const items = makeEvents(21);
+  const firstPage = paginateItems(items, 0);
+  const secondPage = paginateItems(items, 1);
+  assert.equal(firstPage.length, 20, "first page has 20 items");
+  assert.equal(secondPage.length, 1, "second page has 1 item");
+  assert.equal(firstPage[0].id, items[0].id);
+  assert.equal(secondPage[0].id, items[20].id);
+});
+
 // ---------------------------------------------------------------------------
 // Regression: page clamp after filter/data shrink
 // ---------------------------------------------------------------------------

@@ -38,7 +38,7 @@ export function TelegramPanel({
   async function handlePreview(): Promise<void> {
     if (!botToken.trim()) return;
     setPanelError(null);
-    const payload = await requestJson<TelegramPreviewPayload>(
+    const result = await requestJson<TelegramPreviewPayload>(
       "/api/channels/telegram/preview",
       {
         label: "Preview Telegram bot",
@@ -49,30 +49,28 @@ export function TelegramPanel({
         refreshAfter: false,
       },
     );
-    if (payload) {
-      setPreview(payload);
+    if (result.ok && result.data) {
+      setPreview(result.data);
     }
   }
 
   async function handleConnect(): Promise<void> {
     if (!botToken.trim()) return;
     setPanelError(null);
-    try {
-      await requestJson("/api/channels/telegram", {
-        label: "Save Telegram",
-        successMessage: "Telegram connected",
-        method: "PUT",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ botToken: botToken.trim() }),
-      });
+    const result = await requestJson("/api/channels/telegram", {
+      label: "Save Telegram",
+      successMessage: "Telegram connected",
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ botToken: botToken.trim() }),
+    });
+    if (result.ok) {
       setBotToken("");
       setPreview(null);
       setEditing(false);
       setShowToken(false);
-    } catch (error) {
-      setPanelError(
-        error instanceof Error ? error.message : "Failed to connect",
-      );
+    } else {
+      setPanelError(result.error);
     }
   }
 
@@ -87,39 +85,28 @@ export function TelegramPanel({
     if (!ok) return;
 
     setPanelError(null);
-    try {
-      await runAction("/api/channels/telegram", {
-        label: "Disconnect Telegram",
-        successMessage: "Telegram disconnected",
-        method: "DELETE",
-      });
+    const success = await runAction("/api/channels/telegram", {
+      label: "Disconnect Telegram",
+      successMessage: "Telegram disconnected",
+      method: "DELETE",
+    });
+    if (success) {
       setEditing(false);
       setBotToken("");
       setPreview(null);
       setShowToken(false);
-    } catch (error) {
-      setPanelError(
-        error instanceof Error ? error.message : "Failed to disconnect",
-      );
     }
   }
 
   async function handleSyncCommands(): Promise<void> {
     setPanelError(null);
     setSyncingCommands(true);
-    try {
-      await runAction("/api/channels/telegram/sync-commands", {
-        label: "Sync Telegram commands",
-        successMessage: "Telegram commands synced",
-        method: "POST",
-      });
-    } catch (error) {
-      setPanelError(
-        error instanceof Error ? error.message : "Failed to sync commands",
-      );
-    } finally {
-      setSyncingCommands(false);
-    }
+    await runAction("/api/channels/telegram/sync-commands", {
+      label: "Sync Telegram commands",
+      successMessage: "Telegram commands synced",
+      method: "POST",
+    });
+    setSyncingCommands(false);
   }
 
   return (

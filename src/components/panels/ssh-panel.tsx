@@ -169,13 +169,13 @@ export function SshPanel({ status, busy, requestJson }: SshPanelProps) {
         refreshAfter: false,
       });
 
-      if (result) {
+      if (result.ok && result.data) {
         setResults((prev) => [
           {
             command: trimmed,
-            stdout: result.stdout,
-            stderr: result.stderr,
-            exitCode: result.exitCode,
+            stdout: result.data!.stdout,
+            stderr: result.data!.stderr,
+            exitCode: result.data!.exitCode,
             timestamp: Date.now(),
           },
           ...prev,

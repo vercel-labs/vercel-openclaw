@@ -128,7 +128,7 @@ export function SnapshotsPanel({
       label: `Delete ${snapshotId.slice(0, 12)}...`,
       successMessage: "Snapshot deleted",
     });
-    if (result?.ok) {
+    if (result.ok) {
       await fetchSnapshots();
     }
   };
@@ -143,11 +143,14 @@ export function SnapshotsPanel({
     });
     if (!ok) return;
 
-    await runAction("/api/admin/reset", {
+    const success = await runAction("/api/admin/reset", {
       label: "Reset Sandbox",
       successMessage: "Sandbox reset initiated",
       method: "POST",
     });
+    if (success) {
+      setSnapshots([]);
+    }
   };
 
   return (
