@@ -419,6 +419,150 @@ test("batch execute does not inject AI Gateway env when passAiGatewayKey is not 
 });
 
 // ---------------------------------------------------------------------------
+// passAiGatewayKey=true fails fast when no host credential
+// ---------------------------------------------------------------------------
+
+test("batch execute fails clearly when passAiGatewayKey=true but no host credential is available", async () => {
+  const h = createScenarioHarness();
+  const previousApiKey = process.env.AI_GATEWAY_API_KEY;
+  try {
+    delete process.env.AI_GATEWAY_API_KEY;
+    _setAiGatewayTokenOverrideForTesting(null);
+
+    const route = getRoute();
+    const token = await buildWorkerSandboxBearerToken();
+
+    const req = buildPostRequest(
+      "/api/internal/worker-sandboxes/execute-batch",
+      JSON.stringify({
+        task: "needs-ai-auth",
+        passAiGatewayKey: true,
+        jobs: [
+          {
+            id: "job-1",
+            request: {
+              task: "sub-job-1",
+              command: { cmd: "bash", args: ["-lc", "echo should-not-run"] },
+            },
+          },
+        ],
+      }),
+      { authorization: `Bearer ${token}` },
+    );
+
+    const result = await callRoute(route.POST, req);
+    assert.equal(result.status, 200);
+
+    const body = result.json as WorkerSandboxBatchExecuteResponse;
+    assert.equal(body.ok, false);
+    assert.equal(body.totalJobs, 1);
+    assert.equal(body.succeeded, 0);
+    assert.equal(body.failed, 1);
+    assert.equal(body.results.length, 1);
+    assert.match(
+      body.results[0]?.result.error ?? "",
+      /AI Gateway credential unavailable on host/,
+    );
+
+    // No child sandboxes should have been created
+    assert.equal(h.controller.eventsOfKind("create").length, 0);
+  } finally {
+    if (previousApiKey === undefined) {
+      delete process.env.AI_GATEWAY_API_KEY;
+    } else {
+      process.env.AI_GATEWAY_API_KEY = previousApiKey;
+    }
+    _setAiGatewayTokenOverrideForTesting(null);
+    h.teardown();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Duplicate job ID rejection
+// ---------------------------------------------------------------------------
+
+test("batch execute rejects duplicate job ids", async () => {
+  const h = createScenarioHarness();
+  try {
+    const route = getRoute();
+    const token = await buildWorkerSandboxBearerToken();
+
+    const req = buildPostRequest(
+      "/api/internal/worker-sandboxes/execute-batch",
+      JSON.stringify({
+        task: "duplicate-ids",
+        jobs: [
+          { id: "doc-1", request: { task: "sub-a", command: { cmd: "echo", args: ["a"] } } },
+          { id: "doc-1", request: { task: "sub-b", command: { cmd: "echo", args: ["b"] } } },
+        ],
+      }),
+      { authorization: `Bearer ${token}` },
+    );
+
+    const result = await callRoute(route.POST, req);
+    assert.equal(result.status, 400);
+
+    const body = result.json as { error: { code: string; message: string } };
+    assert.equal(body.error.code, "INVALID_REQUEST");
+    assert.match(body.error.message, /Duplicate id "doc-1"/);
+    assert.equal(h.controller.eventsOfKind("create").length, 0);
+  } finally {
+    h.teardown();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Fail-fast with concurrency > 1
+// ---------------------------------------------------------------------------
+
+test("batch execute stops scheduling new jobs after the first failure once in-flight jobs finish", async () => {
+  const h = createScenarioHarness();
+  try {
+    h.controller.defaultResponders.unshift(() => ({
+      exitCode: 1,
+      output: async (stream?: "stdout" | "stderr" | "both") => {
+        if (stream === "stderr") return "fail\n";
+        if (stream === "both") return "fail\n";
+        return "";
+      },
+    }));
+
+    const route = getRoute();
+    const token = await buildWorkerSandboxBearerToken();
+
+    const jobs = Array.from({ length: 5 }, (_, i) => ({
+      id: `job-${i}`,
+      request: {
+        task: `sub-${i}`,
+        command: { cmd: "bash", args: ["-lc", "exit 1"] },
+      },
+    }));
+
+    const req = buildPostRequest(
+      "/api/internal/worker-sandboxes/execute-batch",
+      JSON.stringify({
+        task: "fail-fast-concurrency-two",
+        maxConcurrency: 2,
+        continueOnError: false,
+        jobs,
+      }),
+      { authorization: `Bearer ${token}` },
+    );
+
+    const result = await callRoute(route.POST, req);
+    assert.equal(result.status, 200);
+
+    const body = result.json as WorkerSandboxBatchExecuteResponse;
+    assert.equal(body.ok, false);
+    assert.equal(body.results.length, 2);
+    assert.equal(body.failed, 2);
+    assert.equal(h.controller.eventsOfKind("create").length, 2);
+  } finally {
+    h.teardown();
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Singleton isolation
 // ---------------------------------------------------------------------------
 

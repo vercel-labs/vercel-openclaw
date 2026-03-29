@@ -16,6 +16,33 @@ export function clampBatchConcurrency(value: number | undefined): number {
   return Math.min(value, MAX_BATCH_CONCURRENCY);
 }
 
+function buildBatchConfigErrorResult(
+  request: WorkerSandboxBatchExecuteRequest,
+  message: string,
+): WorkerSandboxBatchExecuteResponse {
+  const results: WorkerSandboxBatchJobResult[] = request.jobs.map((job) => ({
+    id: job.id,
+    result: {
+      ok: false,
+      task: job.request.task,
+      sandboxId: null,
+      exitCode: null,
+      stdout: "",
+      stderr: "",
+      capturedFiles: [],
+      error: message,
+    },
+  }));
+  return {
+    ok: false,
+    task: request.task,
+    totalJobs: request.jobs.length,
+    succeeded: 0,
+    failed: results.length,
+    results,
+  };
+}
+
 export async function executeWorkerSandboxBatch(
   request: WorkerSandboxBatchExecuteRequest,
 ): Promise<WorkerSandboxBatchExecuteResponse> {
@@ -27,6 +54,13 @@ export async function executeWorkerSandboxBatch(
   const aiGatewayApiKey = request.passAiGatewayKey
     ? await getAiGatewayBearerTokenOptional()
     : undefined;
+
+  if (request.passAiGatewayKey && !aiGatewayApiKey) {
+    return buildBatchConfigErrorResult(
+      request,
+      "AI Gateway credential unavailable on host. Set AI_GATEWAY_API_KEY or enable Vercel OIDC before using passAiGatewayKey=true.",
+    );
+  }
 
   const workers = Array.from(
     { length: Math.min(maxConcurrency, queue.length) },

@@ -24,23 +24,37 @@ function validateBatchExecuteRequest(
     return { ok: false, message: "`jobs` must be a non-empty array." };
   }
 
-  for (const job of body.jobs) {
+  const seenJobIds = new Set<string>();
+  const jobs: WorkerSandboxBatchExecuteRequest["jobs"] = [];
+
+  for (const rawJob of body.jobs) {
     if (
-      !isRecord(job) ||
-      typeof job.id !== "string" ||
-      (job.id as string).trim() === "" ||
-      !isRecord(job.request)
+      !isRecord(rawJob) ||
+      typeof rawJob.id !== "string" ||
+      (rawJob.id as string).trim() === "" ||
+      !isRecord(rawJob.request)
     ) {
       return { ok: false, message: "Each job must have `id` and `request`." };
     }
 
-    const requestValidation = validateExecuteRequest(job.request);
+    const id = (rawJob.id as string).trim();
+    if (seenJobIds.has(id)) {
+      return {
+        ok: false,
+        message: `Job ids must be unique. Duplicate id "${id}".`,
+      };
+    }
+    seenJobIds.add(id);
+
+    const requestValidation = validateExecuteRequest(rawJob.request);
     if (!requestValidation.ok) {
       return {
         ok: false,
-        message: `Job "${job.id}" has invalid request: ${requestValidation.message}`,
+        message: `Job "${id}" has invalid request: ${requestValidation.message}`,
       };
     }
+
+    jobs.push({ id, request: requestValidation.value });
   }
 
   if (
@@ -64,7 +78,16 @@ function validateBatchExecuteRequest(
     return { ok: false, message: "`passAiGatewayKey` must be boolean." };
   }
 
-  return { ok: true, value: body as WorkerSandboxBatchExecuteRequest };
+  return {
+    ok: true,
+    value: {
+      task: (body.task as string).trim(),
+      jobs,
+      maxConcurrency: body.maxConcurrency as number | undefined,
+      continueOnError: body.continueOnError as boolean | undefined,
+      passAiGatewayKey: body.passAiGatewayKey as boolean | undefined,
+    },
+  };
 }
 
 export async function POST(request: Request): Promise<Response> {

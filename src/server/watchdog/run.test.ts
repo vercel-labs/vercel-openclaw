@@ -378,6 +378,58 @@ test("cron wake clears wake key when cron restore verified", async () => {
   assert.ok(findCheck(report, "cron.wake")?.message?.includes("restored-verified"));
 });
 
+test("cron wake retains wake key when cron restore outcome is undefined", async () => {
+  let cronCleared = false;
+
+  const report = await runSandboxWatchdog(
+    { request: new Request("https://app.test/api/cron/watchdog") },
+    makeDeps({
+      getMeta: async () =>
+        ({ status: "stopped", sandboxId: null, snapshotId: "snap_123" }) as SingleMeta,
+      getCronNextWakeMs: async () => 1,
+      ensureReady: async () => ({
+        status: "running",
+      }) as unknown as SingleMeta,
+      clearCronNextWake: async () => {
+        cronCleared = true;
+      },
+    }),
+  );
+
+  assert.equal(cronCleared, false, "Wake key must be retained when cron restore outcome is undefined");
+  assert.equal(findCheck(report, "cron.wake")?.status, "pass");
+  assert.ok(findCheck(report, "cron.wake")?.message?.includes("wake key retained"));
+  assert.equal(report.triggeredRepair, true);
+});
+
+test("cron wake retains wake key when cron restore outcome is store-invalid", async () => {
+  let cronCleared = false;
+
+  const report = await runSandboxWatchdog(
+    { request: new Request("https://app.test/api/cron/watchdog") },
+    makeDeps({
+      getMeta: async () =>
+        ({ status: "stopped", sandboxId: null, snapshotId: "snap_123" }) as SingleMeta,
+      getCronNextWakeMs: async () => 1,
+      ensureReady: async () => ({
+        status: "running",
+        lastRestoreMetrics: {
+          cronRestoreOutcome: "store-invalid",
+        },
+      }) as SingleMeta,
+      clearCronNextWake: async () => {
+        cronCleared = true;
+      },
+    }),
+  );
+
+  assert.equal(cronCleared, false, "Wake key must be retained when cron restore outcome is store-invalid");
+  assert.equal(findCheck(report, "cron.wake")?.status, "pass");
+  assert.ok(findCheck(report, "cron.wake")?.message?.includes("store-invalid"));
+  assert.ok(findCheck(report, "cron.wake")?.message?.includes("wake key retained"));
+  assert.equal(report.triggeredRepair, true);
+});
+
 test("stuck-busy recovery passes schedule callback to reconcile", async () => {
   let receivedSchedule: unknown = undefined;
   const fakeSchedule = () => {};
