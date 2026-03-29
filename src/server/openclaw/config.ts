@@ -42,6 +42,8 @@ export const OPENCLAW_COMPARE_SKILL_PATH = `${OPENCLAW_STATE_DIR}/skills/compare
 export const OPENCLAW_COMPARE_SCRIPT_PATH = `${OPENCLAW_STATE_DIR}/skills/compare-models/scripts/compare.mjs`;
 export const OPENCLAW_WORKER_SANDBOX_SKILL_PATH = `${OPENCLAW_STATE_DIR}/skills/worker-sandbox/SKILL.md`;
 export const OPENCLAW_WORKER_SANDBOX_SCRIPT_PATH = `${OPENCLAW_STATE_DIR}/skills/worker-sandbox/scripts/execute.mjs`;
+export const OPENCLAW_WORKER_SANDBOX_BATCH_SKILL_PATH = `${OPENCLAW_STATE_DIR}/skills/worker-sandbox-batch/SKILL.md`;
+export const OPENCLAW_WORKER_SANDBOX_BATCH_SCRIPT_PATH = `${OPENCLAW_STATE_DIR}/skills/worker-sandbox-batch/scripts/execute-batch.mjs`;
 
 // The built-in skill shipped with the openclaw npm package uses a Python
 // gen.py script that requires a direct sk-* OPENAI_API_KEY.  We overwrite
@@ -2351,6 +2353,132 @@ const body = await readFile(requestPath, "utf8");
 
 const response = await fetch(
   origin.replace(/\\/+$/, "") + "/api/internal/worker-sandboxes/execute",
+  {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: "Bearer " + bearer,
+    },
+    body,
+  },
+);
+
+const text = await response.text();
+if (!response.ok) {
+  console.error(text);
+  process.exit(1);
+}
+console.log(text);
+`;
+}
+
+export function buildWorkerSandboxBatchSkill(): string {
+  return `---
+name: worker-sandbox-batch
+description: Fan out multiple bounded jobs into fresh Vercel Sandboxes and collect structured results.
+---
+
+Use this when you need to run multiple isolated tasks in parallel — each in its own fresh sandbox.
+
+1. Write a JSON request file that matches WorkerSandboxBatchExecuteRequest.
+2. Run: \`node ${OPENCLAW_WORKER_SANDBOX_BATCH_SCRIPT_PATH} /path/to/request.json\`
+3. Parse the JSON response from stdout.
+
+### WorkerSandboxBatchExecuteRequest shape
+
+\`\`\`json
+{
+  "task": "parallel-summaries",
+  "maxConcurrency": 2,
+  "continueOnError": true,
+  "passAiGatewayKey": true,
+  "jobs": [
+    {
+      "id": "doc-1",
+      "request": {
+        "task": "summarize-doc-1",
+        "files": [{ "path": "/workspace/input.txt", "contentBase64": "<base64>" }],
+        "command": { "cmd": "bash", "args": ["-lc", "cat /workspace/input.txt > /workspace/output.txt"] },
+        "capturePaths": ["/workspace/output.txt"],
+        "vcpus": 1,
+        "sandboxTimeoutMs": 300000
+      }
+    }
+  ]
+}
+\`\`\`
+
+### Options
+
+- **maxConcurrency** (default 2, max 4): How many sandboxes run in parallel.
+- **continueOnError** (default false): When false, stops scheduling after the first failure.
+- **passAiGatewayKey** (default false): When true, injects AI_GATEWAY_API_KEY, OPENAI_API_KEY, and OPENAI_BASE_URL into each child sandbox so AI SDK calls work.
+
+### Response shape
+
+\`\`\`json
+{
+  "ok": true,
+  "task": "parallel-summaries",
+  "totalJobs": 1,
+  "succeeded": 1,
+  "failed": 0,
+  "results": [
+    {
+      "id": "doc-1",
+      "result": {
+        "ok": true,
+        "task": "summarize-doc-1",
+        "sandboxId": "sbx_123",
+        "exitCode": 0,
+        "stdout": "",
+        "stderr": "",
+        "capturedFiles": [{ "path": "/workspace/output.txt", "contentBase64": "<base64>" }]
+      }
+    }
+  ]
+}
+\`\`\`
+
+### Scheduling with cron
+
+\`\`\`bash
+openclaw cron add \\
+  --name "nightly-parallel-ai" \\
+  --cron "0 3 * * *" \\
+  --message "Run the worker-sandbox-batch skill with /workspace/nightly-batch.json and post the structured summary." \\
+  --session isolated
+\`\`\`
+`;
+}
+
+export function buildWorkerSandboxBatchScript(): string {
+  return `import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
+
+const requestPath = process.argv[2];
+if (!requestPath) {
+  console.error("Usage: execute-batch.mjs <request-json-path>");
+  process.exit(1);
+}
+
+const gatewayToken = (await readFile("${OPENCLAW_GATEWAY_TOKEN_PATH}", "utf8")).trim();
+const config = JSON.parse(await readFile("${OPENCLAW_CONFIG_PATH}", "utf8"));
+const origin = config?.gateway?.controlUi?.allowedOrigins?.[0];
+if (typeof origin !== "string" || origin.length === 0) {
+  console.error("Could not resolve host origin from openclaw.json");
+  process.exit(1);
+}
+
+const bearer = createHash("sha256")
+  .update("worker-sandbox:v1\\0")
+  .update(gatewayToken)
+  .digest("hex");
+
+const body = await readFile(requestPath, "utf8");
+
+const response = await fetch(
+  origin.replace(/\\/+$/, "") + "/api/internal/worker-sandboxes/execute-batch",
   {
     method: "POST",
     headers: {

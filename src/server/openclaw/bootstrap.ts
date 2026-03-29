@@ -30,6 +30,8 @@ import {
   buildCompareScript,
   buildWorkerSandboxSkill,
   buildWorkerSandboxScript,
+  buildWorkerSandboxBatchSkill,
+  buildWorkerSandboxBatchScript,
   OPENCLAW_AI_GATEWAY_API_KEY_PATH,
   BUN_BIN,
   BUN_DOWNLOAD_SHA256,
@@ -65,6 +67,8 @@ import {
   OPENCLAW_COMPARE_SCRIPT_PATH,
   OPENCLAW_WORKER_SANDBOX_SKILL_PATH,
   OPENCLAW_WORKER_SANDBOX_SCRIPT_PATH,
+  OPENCLAW_WORKER_SANDBOX_BATCH_SKILL_PATH,
+  OPENCLAW_WORKER_SANDBOX_BATCH_SCRIPT_PATH,
   OPENCLAW_STARTUP_SCRIPT_PATH,
   OPENCLAW_STATE_DIR,
   OPENCLAW_TELEGRAM_BOT_TOKEN_PATH,
@@ -399,6 +403,14 @@ export async function setupOpenClaw(
     {
       path: OPENCLAW_WORKER_SANDBOX_SCRIPT_PATH,
       content: Buffer.from(buildWorkerSandboxScript()),
+    },
+    {
+      path: OPENCLAW_WORKER_SANDBOX_BATCH_SKILL_PATH,
+      content: Buffer.from(buildWorkerSandboxBatchSkill()),
+    },
+    {
+      path: OPENCLAW_WORKER_SANDBOX_BATCH_SCRIPT_PATH,
+      content: Buffer.from(buildWorkerSandboxBatchScript()),
     },
     ...(options.telegramBotToken
       ? [{ path: OPENCLAW_TELEGRAM_BOT_TOKEN_PATH, content: Buffer.from(options.telegramBotToken) }]

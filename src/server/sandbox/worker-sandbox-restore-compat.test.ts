@@ -11,7 +11,10 @@ import {
   OPENCLAW_GATEWAY_TOKEN_PATH,
   OPENCLAW_WORKER_SANDBOX_SCRIPT_PATH,
   OPENCLAW_WORKER_SANDBOX_SKILL_PATH,
+  OPENCLAW_WORKER_SANDBOX_BATCH_SCRIPT_PATH,
+  OPENCLAW_WORKER_SANDBOX_BATCH_SKILL_PATH,
   buildWorkerSandboxScript,
+  buildWorkerSandboxBatchScript,
 } from "@/server/openclaw/config";
 import {
   buildRestoreAssetManifest,
@@ -810,6 +813,200 @@ test("restore runtime env gives the worker-sandbox script the current deployment
   );
   assert.ok(authorizationHeader);
   assert.match(authorizationHeader, /^Bearer [0-9a-f]{64}$/);
+});
+
+test("restore preloads batch launcher files alongside single-execute launcher", async () => {
+  const h = createScenarioHarness();
+  try {
+    await h.mutateMeta((meta) => {
+      meta.status = "stopped";
+      meta.snapshotId = "snap-pre-batch-launcher";
+      meta.snapshotAssetSha256 = null;
+      meta.lastRestoreMetrics = null;
+      meta.sandboxId = null;
+      meta.portUrls = null;
+    });
+
+    h.fakeFetch.onGet(/fake\.vercel\.run/, () =>
+      new Response('<div id="openclaw-app">ready</div>', { status: 200 }),
+    );
+
+    const callbacks: Array<() => Promise<void> | void> = [];
+    await ensureSandboxRunning({
+      origin: "https://test.example.com",
+      reason: "restore-preload-batch-launcher",
+      schedule(cb) {
+        callbacks.push(cb);
+      },
+    });
+
+    assert.equal(callbacks.length, 1);
+    await callbacks[0]!();
+
+    const handle = h.controller.lastCreated()!;
+    const writtenPaths = handle.writtenFiles.map((file) => file.path);
+
+    // Single launcher files
+    assert.ok(writtenPaths.includes(OPENCLAW_WORKER_SANDBOX_SKILL_PATH));
+    assert.ok(writtenPaths.includes(OPENCLAW_WORKER_SANDBOX_SCRIPT_PATH));
+
+    // Batch launcher files
+    assert.ok(
+      writtenPaths.includes(OPENCLAW_WORKER_SANDBOX_BATCH_SKILL_PATH),
+      "batch skill should be preloaded during restore",
+    );
+    assert.ok(
+      writtenPaths.includes(OPENCLAW_WORKER_SANDBOX_BATCH_SCRIPT_PATH),
+      "batch script should be preloaded during restore",
+    );
+
+    // Both must be written before boot
+    const batchWriteIndex = h.controller.events.findIndex((event) => {
+      if (event.kind !== "write_files") return false;
+      const detail = event.detail as { paths?: unknown } | undefined;
+      return (
+        Array.isArray(detail?.paths) &&
+        (detail.paths as string[]).includes(OPENCLAW_WORKER_SANDBOX_BATCH_SKILL_PATH)
+      );
+    });
+
+    const bootIndex = h.controller.events.findIndex((event) => {
+      if (event.kind !== "command") return false;
+      const detail = event.detail as { command?: unknown; args?: unknown } | undefined;
+      return (
+        detail?.command === "bash" &&
+        Array.isArray(detail.args) &&
+        detail.args[0] === OPENCLAW_FAST_RESTORE_SCRIPT_PATH
+      );
+    });
+
+    assert.ok(batchWriteIndex >= 0, "batch launcher files should be written during restore");
+    assert.ok(bootIndex >= 0, "fast restore script should run");
+    assert.ok(
+      batchWriteIndex < bootIndex,
+      "batch launcher files must exist before gateway boot",
+    );
+  } finally {
+    h.teardown();
+  }
+});
+
+test("restored batch launcher script resolves correct endpoint and auth", async () => {
+  const h = createScenarioHarness();
+  try {
+    await h.mutateMeta((meta) => {
+      meta.status = "stopped";
+      meta.snapshotId = "snap-batch-launcher-script";
+      meta.gatewayToken = "test-gw-token";
+      meta.snapshotAssetSha256 = null;
+      meta.snapshotDynamicConfigHash = null;
+      meta.snapshotConfigHash = null;
+      meta.lastRestoreMetrics = null;
+      meta.sandboxId = null;
+      meta.portUrls = null;
+    });
+
+    h.fakeFetch.onGet(/fake\.vercel\.run/, () =>
+      new Response('<div id="openclaw-app">ready</div>', { status: 200 }),
+    );
+
+    const callbacks: Array<() => Promise<void> | void> = [];
+    await ensureSandboxRunning({
+      origin: "https://test.example.com",
+      reason: "restore-batch-launcher-script",
+      schedule(cb) {
+        callbacks.push(cb);
+      },
+    });
+
+    assert.equal(callbacks.length, 1);
+    await callbacks[0]!();
+
+    const restoredHandle = h.controller.lastCreated()!;
+    const scriptFile = restoredHandle.writtenFiles.find(
+      (file) => file.path === OPENCLAW_WORKER_SANDBOX_BATCH_SCRIPT_PATH,
+    );
+
+    assert.ok(
+      scriptFile,
+      "restore should write batch launcher script",
+    );
+    assert.equal(
+      scriptFile.content.toString("utf8"),
+      buildWorkerSandboxBatchScript(),
+      "restored batch launcher should match the current generated script",
+    );
+
+    const before = await getInitializedMeta();
+
+    let seenUrl: string | null = null;
+    let seenAuth: string | null = null;
+
+    const batchRequest = {
+      task: "batch-test",
+      jobs: [
+        {
+          id: "job-1",
+          request: {
+            task: "sub-1",
+            command: { cmd: "echo", args: ["ok"] },
+          },
+        },
+      ],
+    };
+
+    const configFile = restoredHandle.writtenFiles.find(
+      (file) => file.path === OPENCLAW_CONFIG_PATH,
+    );
+    assert.ok(configFile, "restore should rewrite openclaw.json");
+
+    const scriptRun = await runWorkerSandboxScriptForTest({
+      scriptContent: scriptFile.content.toString("utf8"),
+      gatewayToken: before.gatewayToken,
+      configJson: configFile.content.toString("utf8"),
+      requestJson: JSON.stringify(batchRequest),
+      fetchImpl: async (input, init) => {
+        const url =
+          typeof input === "string"
+            ? input
+            : input instanceof URL
+              ? input.toString()
+              : input.url;
+        seenUrl = url;
+        const headers = new Headers(init?.headers);
+        seenAuth = headers.get("authorization");
+
+        // Return a mock batch response
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            task: "batch-test",
+            totalJobs: 1,
+            succeeded: 1,
+            failed: 0,
+            results: [],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      },
+    });
+
+    assert.equal(scriptRun.exitCode, 0);
+    assert.equal(
+      seenUrl,
+      "https://test.example.com/api/internal/worker-sandboxes/execute-batch",
+    );
+
+    const expectedToken = await buildWorkerSandboxBearerToken();
+    assert.equal(seenAuth, `Bearer ${expectedToken}`);
+
+    // Singleton metadata must not change
+    const after = await getInitializedMeta();
+    assert.equal(after.status, before.status, "status must not change");
+    assert.equal(after.sandboxId, before.sandboxId, "sandboxId must not change");
+  } finally {
+    h.teardown();
+  }
 });
 
 test("worker-sandbox launcher prints non-ok host responses to stderr and exits non-zero", async () => {

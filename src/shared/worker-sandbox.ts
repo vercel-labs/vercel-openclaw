@@ -33,3 +33,34 @@ export type WorkerSandboxExecuteResponse = {
   capturedFiles: WorkerSandboxCapturedFile[];
   error?: string;
 };
+
+// ---------------------------------------------------------------------------
+// Batch types
+// ---------------------------------------------------------------------------
+
+export type WorkerSandboxBatchJob = {
+  id: string;
+  request: WorkerSandboxExecuteRequest;
+};
+
+export type WorkerSandboxBatchExecuteRequest = {
+  task: string;
+  jobs: WorkerSandboxBatchJob[];
+  maxConcurrency?: number;
+  continueOnError?: boolean;
+  passAiGatewayKey?: boolean;
+};
+
+export type WorkerSandboxBatchJobResult = {
+  id: string;
+  result: WorkerSandboxExecuteResponse;
+};
+
+export type WorkerSandboxBatchExecuteResponse = {
+  ok: boolean;
+  task: string;
+  totalJobs: number;
+  succeeded: number;
+  failed: number;
+  results: WorkerSandboxBatchJobResult[];
+};

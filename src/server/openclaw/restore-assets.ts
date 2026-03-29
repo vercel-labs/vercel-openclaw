@@ -23,6 +23,8 @@ import {
   buildCompareSkill,
   buildWorkerSandboxScript,
   buildWorkerSandboxSkill,
+  buildWorkerSandboxBatchScript,
+  buildWorkerSandboxBatchSkill,
   buildTtsScript,
   buildTtsSkill,
   buildVisionScript,
@@ -54,6 +56,8 @@ import {
   OPENCLAW_COMPARE_SKILL_PATH,
   OPENCLAW_WORKER_SANDBOX_SCRIPT_PATH,
   OPENCLAW_WORKER_SANDBOX_SKILL_PATH,
+  OPENCLAW_WORKER_SANDBOX_BATCH_SCRIPT_PATH,
+  OPENCLAW_WORKER_SANDBOX_BATCH_SKILL_PATH,
   OPENCLAW_TTS_SCRIPT_PATH,
   OPENCLAW_TTS_SKILL_PATH,
   OPENCLAW_VISION_SCRIPT_PATH,
@@ -75,6 +79,8 @@ export function buildWorkerSandboxRestoreFiles(): { path: string; content: Buffe
   return [
     { path: OPENCLAW_WORKER_SANDBOX_SKILL_PATH, content: Buffer.from(buildWorkerSandboxSkill()) },
     { path: OPENCLAW_WORKER_SANDBOX_SCRIPT_PATH, content: Buffer.from(buildWorkerSandboxScript()) },
+    { path: OPENCLAW_WORKER_SANDBOX_BATCH_SKILL_PATH, content: Buffer.from(buildWorkerSandboxBatchSkill()) },
+    { path: OPENCLAW_WORKER_SANDBOX_BATCH_SCRIPT_PATH, content: Buffer.from(buildWorkerSandboxBatchScript()) },
   ];
 }
 
