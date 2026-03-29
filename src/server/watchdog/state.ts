@@ -1,9 +1,8 @@
 import { logInfo } from "@/server/log";
 import { getStore } from "@/server/store/store";
+import { watchdogReportKey } from "@/server/store/keyspace";
 import { getCurrentDeploymentId } from "@/server/launch-verify/state";
 import type { WatchdogReport } from "@/shared/watchdog";
-
-const STORE_KEY = "watchdog:latest";
 
 export function defaultWatchdogReport(
   deploymentId = getCurrentDeploymentId(),
@@ -22,7 +21,7 @@ export function defaultWatchdogReport(
 
 export async function readWatchdogReport(): Promise<WatchdogReport> {
   const deploymentId = getCurrentDeploymentId();
-  const stored = await getStore().getValue<WatchdogReport>(STORE_KEY);
+  const stored = await getStore().getValue<WatchdogReport>(watchdogReportKey());
 
   if (!stored || stored.deploymentId !== deploymentId) {
     return defaultWatchdogReport(deploymentId);
@@ -34,7 +33,7 @@ export async function readWatchdogReport(): Promise<WatchdogReport> {
 export async function writeWatchdogReport(
   report: WatchdogReport,
 ): Promise<WatchdogReport> {
-  await getStore().setValue(STORE_KEY, report);
+  await getStore().setValue(watchdogReportKey(), report);
 
   logInfo("watchdog.report_written", {
     deploymentId: report.deploymentId,

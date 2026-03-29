@@ -2,13 +2,12 @@ import { createHash } from "node:crypto";
 
 import { logInfo } from "@/server/log";
 import { getStore } from "@/server/store/store";
+import { launchVerifyReadinessKey } from "@/server/store/keyspace";
 import type {
   ChannelReadiness,
   LaunchVerificationPayload,
 } from "@/shared/launch-verification";
 import { isChannelReady } from "@/shared/launch-verification";
-
-const STORE_KEY = "launch-verify:channel-readiness";
 
 export function getCurrentDeploymentId(): string {
   const deploymentId = process.env.VERCEL_DEPLOYMENT_ID?.trim();
@@ -46,7 +45,7 @@ export async function readChannelReadiness(): Promise<ChannelReadiness> {
     return _readinessOverrideForTesting ?? defaultReadiness(getCurrentDeploymentId());
   }
   const currentId = getCurrentDeploymentId();
-  const stored = await getStore().getValue<ChannelReadiness>(STORE_KEY);
+  const stored = await getStore().getValue<ChannelReadiness>(launchVerifyReadinessKey());
 
   if (!stored || stored.deploymentId !== currentId) {
     logInfo("launch_verify.readiness_miss", {
@@ -78,7 +77,7 @@ export async function writeChannelReadiness(
     phases: payload.phases,
   };
 
-  await getStore().setValue(STORE_KEY, readiness);
+  await getStore().setValue(launchVerifyReadinessKey(), readiness);
 
   logInfo("launch_verify.readiness_written", {
     deploymentId,

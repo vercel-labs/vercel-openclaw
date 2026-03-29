@@ -93,3 +93,11 @@ export function channelSessionHistoryKey(
 export function channelDedupKey(channel: ChannelName, dedupId: string): string {
   return buildKey(`channels:${channel}:dedup:${dedupId}`);
 }
+
+export function watchdogReportKey(): string {
+  return buildKey("watchdog:latest");
+}
+
+export function launchVerifyReadinessKey(): string {
+  return buildKey("launch-verify:channel-readiness");
+}
