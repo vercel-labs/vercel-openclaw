@@ -28,6 +28,8 @@ import {
   buildReasoningScript,
   buildCompareSkill,
   buildCompareScript,
+  buildWorkerSandboxSkill,
+  buildWorkerSandboxScript,
   OPENCLAW_AI_GATEWAY_API_KEY_PATH,
   BUN_BIN,
   BUN_DOWNLOAD_SHA256,
@@ -61,6 +63,8 @@ import {
   OPENCLAW_REASONING_SCRIPT_PATH,
   OPENCLAW_COMPARE_SKILL_PATH,
   OPENCLAW_COMPARE_SCRIPT_PATH,
+  OPENCLAW_WORKER_SANDBOX_SKILL_PATH,
+  OPENCLAW_WORKER_SANDBOX_SCRIPT_PATH,
   OPENCLAW_STARTUP_SCRIPT_PATH,
   OPENCLAW_STATE_DIR,
   OPENCLAW_TELEGRAM_BOT_TOKEN_PATH,
@@ -387,6 +391,14 @@ export async function setupOpenClaw(
     {
       path: OPENCLAW_COMPARE_SCRIPT_PATH,
       content: Buffer.from(buildCompareScript()),
+    },
+    {
+      path: OPENCLAW_WORKER_SANDBOX_SKILL_PATH,
+      content: Buffer.from(buildWorkerSandboxSkill()),
+    },
+    {
+      path: OPENCLAW_WORKER_SANDBOX_SCRIPT_PATH,
+      content: Buffer.from(buildWorkerSandboxScript()),
     },
     ...(options.telegramBotToken
       ? [{ path: OPENCLAW_TELEGRAM_BOT_TOKEN_PATH, content: Buffer.from(options.telegramBotToken) }]

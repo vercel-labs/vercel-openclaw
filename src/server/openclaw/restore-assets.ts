@@ -21,6 +21,8 @@ import {
   buildReasoningSkill,
   buildCompareScript,
   buildCompareSkill,
+  buildWorkerSandboxScript,
+  buildWorkerSandboxSkill,
   buildTtsScript,
   buildTtsSkill,
   buildVisionScript,
@@ -50,6 +52,8 @@ import {
   OPENCLAW_REASONING_SKILL_PATH,
   OPENCLAW_COMPARE_SCRIPT_PATH,
   OPENCLAW_COMPARE_SKILL_PATH,
+  OPENCLAW_WORKER_SANDBOX_SCRIPT_PATH,
+  OPENCLAW_WORKER_SANDBOX_SKILL_PATH,
   OPENCLAW_TTS_SCRIPT_PATH,
   OPENCLAW_TTS_SKILL_PATH,
   OPENCLAW_VISION_SCRIPT_PATH,
@@ -110,6 +114,8 @@ export function buildStaticRestoreFiles(): { path: string; content: Buffer }[] {
     { path: OPENCLAW_REASONING_SCRIPT_PATH, content: Buffer.from(buildReasoningScript()) },
     { path: OPENCLAW_COMPARE_SKILL_PATH, content: Buffer.from(buildCompareSkill()) },
     { path: OPENCLAW_COMPARE_SCRIPT_PATH, content: Buffer.from(buildCompareScript()) },
+    { path: OPENCLAW_WORKER_SANDBOX_SKILL_PATH, content: Buffer.from(buildWorkerSandboxSkill()) },
+    { path: OPENCLAW_WORKER_SANDBOX_SCRIPT_PATH, content: Buffer.from(buildWorkerSandboxScript()) },
   ];
 }
 

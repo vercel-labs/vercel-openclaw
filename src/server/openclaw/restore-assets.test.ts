@@ -23,6 +23,8 @@ import {
   OPENCLAW_REASONING_SCRIPT_PATH,
   OPENCLAW_COMPARE_SKILL_PATH,
   OPENCLAW_COMPARE_SCRIPT_PATH,
+  OPENCLAW_WORKER_SANDBOX_SKILL_PATH,
+  OPENCLAW_WORKER_SANDBOX_SCRIPT_PATH,
 } from "@/server/openclaw/config";
 
 // --- buildRestoreAssetManifest ---
@@ -64,6 +66,8 @@ test("static restore files include startup, force-pair, and restart scripts", ()
   assert.ok(paths.includes(OPENCLAW_REASONING_SCRIPT_PATH));
   assert.ok(paths.includes(OPENCLAW_COMPARE_SKILL_PATH));
   assert.ok(paths.includes(OPENCLAW_COMPARE_SCRIPT_PATH));
+  assert.ok(paths.includes(OPENCLAW_WORKER_SANDBOX_SKILL_PATH));
+  assert.ok(paths.includes(OPENCLAW_WORKER_SANDBOX_SCRIPT_PATH));
 });
 
 test("static restore files produce non-empty buffers", () => {

@@ -40,6 +40,8 @@ export const OPENCLAW_REASONING_SKILL_PATH = `${OPENCLAW_STATE_DIR}/skills/reaso
 export const OPENCLAW_REASONING_SCRIPT_PATH = `${OPENCLAW_STATE_DIR}/skills/reasoning/scripts/reason.mjs`;
 export const OPENCLAW_COMPARE_SKILL_PATH = `${OPENCLAW_STATE_DIR}/skills/compare-models/SKILL.md`;
 export const OPENCLAW_COMPARE_SCRIPT_PATH = `${OPENCLAW_STATE_DIR}/skills/compare-models/scripts/compare.mjs`;
+export const OPENCLAW_WORKER_SANDBOX_SKILL_PATH = `${OPENCLAW_STATE_DIR}/skills/worker-sandbox/SKILL.md`;
+export const OPENCLAW_WORKER_SANDBOX_SCRIPT_PATH = `${OPENCLAW_STATE_DIR}/skills/worker-sandbox/scripts/execute.mjs`;
 
 // The built-in skill shipped with the openclaw npm package uses a Python
 // gen.py script that requires a direct sk-* OPENAI_API_KEY.  We overwrite
@@ -2278,6 +2280,93 @@ if (values.output) {
 } else {
   console.log(output);
 }
+`;
+}
+
+export function buildWorkerSandboxSkill(): string {
+  return `---
+name: worker-sandbox
+description: Execute a bounded job in a fresh Vercel Sandbox created by the host app.
+---
+
+Use this when you need isolated compute, temporary filesystem state, or extra packages for a short task.
+
+1. Write a JSON request file that matches WorkerSandboxExecuteRequest.
+2. Run: \`node ${OPENCLAW_WORKER_SANDBOX_SCRIPT_PATH} /path/to/request.json\`
+3. Parse the JSON response and inspect \`capturedFiles\`, \`stdout\`, and \`stderr\`.
+
+### WorkerSandboxExecuteRequest shape
+
+\`\`\`json
+{
+  "task": "short-description",
+  "files": [{ "path": "/workspace/input.txt", "contentBase64": "<base64>" }],
+  "command": { "cmd": "bash", "args": ["-lc", "your command here"] },
+  "capturePaths": ["/workspace/output.txt"],
+  "vcpus": 1,
+  "sandboxTimeoutMs": 300000
+}
+\`\`\`
+
+### Response shape
+
+\`\`\`json
+{
+  "ok": true,
+  "task": "short-description",
+  "sandboxId": "sbx_...",
+  "exitCode": 0,
+  "stdout": "...",
+  "stderr": "...",
+  "capturedFiles": [{ "path": "/workspace/output.txt", "contentBase64": "<base64>" }]
+}
+\`\`\`
+`;
+}
+
+export function buildWorkerSandboxScript(): string {
+  return `import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
+
+const requestPath = process.argv[2];
+if (!requestPath) {
+  console.error("Usage: execute.mjs <request-json-path>");
+  process.exit(1);
+}
+
+const gatewayToken = (await readFile("${OPENCLAW_GATEWAY_TOKEN_PATH}", "utf8")).trim();
+const config = JSON.parse(await readFile("${OPENCLAW_CONFIG_PATH}", "utf8"));
+const origin = config?.gateway?.controlUi?.allowedOrigins?.[0];
+if (typeof origin !== "string" || origin.length === 0) {
+  console.error("Could not resolve host origin from openclaw.json");
+  process.exit(1);
+}
+
+const bearer = createHash("sha256")
+  .update("worker-sandbox:v1\\0")
+  .update(gatewayToken)
+  .digest("hex");
+
+const body = await readFile(requestPath, "utf8");
+
+const response = await fetch(
+  origin.replace(/\\/+$/, "") + "/api/internal/worker-sandboxes/execute",
+  {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: "Bearer " + bearer,
+    },
+    body,
+  },
+);
+
+const text = await response.text();
+if (!response.ok) {
+  console.error(text);
+  process.exit(1);
+}
+console.log(text);
 `;
 }
 
