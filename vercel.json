@@ -1,7 +1,6 @@
 {
   "regions": ["iad1"],
   "installCommand": "npm install",
-  "fluid": true,
   "crons": [
     { "path": "/api/cron/watchdog", "schedule": "*/5 * * * *" }
   ],
