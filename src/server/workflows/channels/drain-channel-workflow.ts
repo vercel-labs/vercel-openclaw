@@ -143,8 +143,10 @@ export async function processChannelStep(
     const job = buildQueuedChannelJob(payload, origin, requestId);
 
     const { getStore } = await import("@/server/store/store");
+    const { instanceKeyPrefix } = await import("@/server/store/keyspace");
+    const debugKey = `${instanceKeyPrefix()}debug:workflow-step`;
     const store = getStore();
-    await store.setValue("debug:workflow-step", JSON.stringify({
+    await store.setValue(debugKey, JSON.stringify({
       phase: "starting",
       channel,
       requestId,
@@ -155,7 +157,7 @@ export async function processChannelStep(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await resolvedDependencies.processChannelJob(options as any, job, undefined, existingBootHandle);
 
-    await store.setValue("debug:workflow-step", JSON.stringify({
+    await store.setValue(debugKey, JSON.stringify({
       phase: "completed",
       channel,
       requestId,
@@ -164,8 +166,9 @@ export async function processChannelStep(
   } catch (error) {
     try {
       const { getStore } = await import("@/server/store/store");
+      const { instanceKeyPrefix } = await import("@/server/store/keyspace");
       const store = getStore();
-      await store.setValue("debug:workflow-step", JSON.stringify({
+      await store.setValue(`${instanceKeyPrefix()}debug:workflow-step`, JSON.stringify({
         phase: "error",
         channel,
         requestId,
