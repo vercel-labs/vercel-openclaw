@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from "react";
-import { toast } from "sonner";
 import {
   buildJsonRouteErrorMessage,
   type JsonRouteErrorPayload,
@@ -13,11 +12,10 @@ import { TelegramPanel } from "@/components/panels/telegram-panel";
 import { SlackPanel } from "@/components/panels/slack-panel";
 import { WhatsAppPanel } from "@/components/panels/whatsapp-panel";
 import { DiscordPanel } from "@/components/panels/discord-panel";
-import {
-  LAUNCH_PHASE_COUNT,
-  type LaunchVerificationPayload,
-  type LaunchVerificationPhase,
-  type ChannelReadiness,
+import type {
+  LaunchVerificationPayload,
+  LaunchVerificationPhase,
+  ChannelReadiness,
 } from "@/shared/launch-verification";
 
 type PreflightCheck = {
@@ -127,33 +125,7 @@ async function loadPreflightData(): Promise<PreflightData> {
   return payload;
 }
 
-/* ── Launch verification helpers ── */
-
-function phaseStatusIcon(phase: LaunchVerificationPhase): string {
-  switch (phase.status) {
-    case "pass":
-      return "\u2713";
-    case "fail":
-      return "\u2717";
-    case "skip":
-      return "\u2013";
-    case "running":
-      return "\u2026";
-  }
-}
-
-function phaseStatusClass(phase: LaunchVerificationPhase): string {
-  switch (phase.status) {
-    case "pass":
-      return "launch-phase-pass";
-    case "fail":
-      return "launch-phase-fail";
-    case "skip":
-      return "launch-phase-skip";
-    case "running":
-      return "launch-phase-running";
-  }
-}
+/* ── Launch verification helpers (kept for exported API surface) ── */
 
 function formatTimestamp(iso: string): string {
   try {
@@ -238,25 +210,6 @@ export function getVerificationViewModel({
     showQuickCheck: true,
   };
 }
-
-async function loadPersistedReadiness(): Promise<ChannelReadiness | null> {
-  try {
-    const res = await fetch("/api/admin/launch-verify", {
-      cache: "no-store",
-      headers: { accept: "application/json" },
-    });
-    return res.ok ? ((await res.json()) as ChannelReadiness) : null;
-  } catch {
-    return null;
-  }
-}
-
-type StreamPhaseEvent = { type: "phase"; phase: LaunchVerificationPhase };
-type StreamResultEvent = {
-  type: "result";
-  payload: LaunchVerificationPayload & { channelReadiness?: ChannelReadiness };
-};
-type StreamEvent = StreamPhaseEvent | StreamResultEvent;
 
 /* ── Structured verification telemetry ── */
 
@@ -399,56 +352,11 @@ export function ChannelsPanel({
   const preflightRequestIdRef = useRef(0);
   const mountedRef = useRef(true);
 
-  /* Launch verification state */
-  const [verifyResult, setVerifyResult] = useState<LaunchVerificationPayload | null>(null);
-  const [readiness, setReadiness] = useState<ChannelReadiness | null>(null);
-  const [verifyRunning, setVerifyRunning] = useState(false);
-  const [streamingPhases, setStreamingPhases] = useState<LaunchVerificationPhase[]>([]);
-  const [detailsExpanded, setDetailsExpanded] = useState(false);
-  const abortRef = useRef<AbortController | null>(null);
-  const verifyRequestIdRef = useRef("");
-  const verifyModeRef = useRef<VerificationRunMode | "">("");
-
   const preflightSummary = summarizePreflight(preflight);
   const preflightBlockerIds =
     preflightSummary.ok === false
       ? new Set(preflightSummary.blockerIds)
       : null;
-
-  /* Derived verification state */
-  const isStreaming = verifyRunning && streamingPhases.length > 0;
-
-  const totalMs = verifyResult
-    ? new Date(verifyResult.completedAt).getTime() - new Date(verifyResult.startedAt).getTime()
-    : 0;
-
-  const verificationView = getVerificationViewModel({
-    readiness,
-    verifyResult,
-    verifyRunning,
-    totalMs,
-  });
-
-  const showPersistedPhases = !verifyResult && !isStreaming && readiness && readiness.phases.length > 0;
-
-  const completedStreamCount = streamingPhases.filter(
-    (p) => p.status !== "running",
-  ).length;
-  const progressPct = isStreaming
-    ? Math.round((completedStreamCount / LAUNCH_PHASE_COUNT) * 100)
-    : 0;
-
-  const isFailed = verifyResult && !verifyResult.ok;
-  const showDetails = detailsExpanded || isStreaming || isFailed;
-
-  const verificationSurfaceState = getVerificationSurfaceState({
-    readiness,
-    verifyResult,
-    verifyRunning,
-  });
-  const verificationPhaseCount = isStreaming
-    ? streamingPhases.length
-    : verifyResult?.phases.length ?? readiness?.phases.length ?? 0;
 
   /* ── Preflight fetching ── */
 
@@ -495,214 +403,12 @@ export function ChannelsPanel({
   useEffect(() => {
     if (!active) return;
     const timer = window.setTimeout(() => {
-      void Promise.all([refreshPreflight(), refreshReadiness()]);
+      void refreshPreflight();
     }, 0);
     return () => {
       window.clearTimeout(timer);
     };
   }, [active]);
-
-  /* Load persisted readiness on mount */
-  useEffect(() => {
-    let cancelled = false;
-    void loadPersistedReadiness().then((data) => {
-      if (!cancelled && data) {
-        setReadiness(data);
-      }
-    });
-    return () => { cancelled = true; };
-  }, []);
-
-  /* ── Launch verification ── */
-
-  async function runVerification(mode: VerificationRunMode): Promise<void> {
-    const requestId = createVerificationRequestId();
-    verifyRequestIdRef.current = requestId;
-    verifyModeRef.current = mode;
-    setVerifyRunning(true);
-    setStreamingPhases([]);
-    setVerifyResult(null);
-    setDetailsExpanded(false);
-
-    emitChannelsPanelEvent({
-      event: "channels.verify.start",
-      requestId,
-      mode,
-    });
-
-    const controller = new AbortController();
-    abortRef.current = controller;
-
-    try {
-      const response = await fetch("/api/admin/launch-verify", {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          accept: "application/x-ndjson",
-        },
-        body: JSON.stringify({ mode }),
-        signal: controller.signal,
-      });
-
-      if (response.status === 401) {
-        const message = "Verification requires an authenticated session.";
-        emitChannelsPanelEvent({
-          event: "channels.verify.error",
-          requestId,
-          mode,
-          error: message,
-        });
-        toast.error(message);
-        return;
-      }
-
-      if (!response.ok) {
-        const payload = (await response.json().catch(() => null)) as
-          | { error?: { message?: string }; message?: string }
-          | null;
-        const message = formatLaunchVerificationFetchError(
-          payload,
-          response.status,
-        );
-        emitChannelsPanelEvent({
-          event: "channels.verify.error",
-          requestId,
-          mode,
-          error: message,
-        });
-        toast.error(message);
-        return;
-      }
-
-      const reader = response.body?.getReader();
-      if (!reader) {
-        const message =
-          "Verification stream was empty. Refresh the panel or open /api/admin/launch-verify.";
-        emitChannelsPanelEvent({
-          event: "channels.verify.error",
-          requestId,
-          mode,
-          error: message,
-        });
-        toast.error(message);
-        return;
-      }
-
-      const decoder = new TextDecoder();
-      let buffer = "";
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() ?? "";
-
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed) continue;
-          try {
-            const event = JSON.parse(trimmed) as StreamEvent;
-            if (event.type === "phase") {
-              emitChannelsPanelEvent({
-                event: "channels.verify.phase",
-                requestId,
-                mode,
-                phaseId: event.phase.id,
-                phaseStatus: event.phase.status,
-                durationMs: event.phase.durationMs,
-                message: event.phase.message,
-                error: event.phase.error,
-              });
-              setStreamingPhases((prev) => {
-                const existing = prev.findIndex(
-                  (p) => p.id === event.phase.id,
-                );
-                if (existing >= 0) {
-                  const next = [...prev];
-                  next[existing] = event.phase;
-                  return next;
-                }
-                return [...prev, event.phase];
-              });
-              continue;
-            }
-
-            const resultTotalMs =
-              new Date(event.payload.completedAt).getTime() -
-              new Date(event.payload.startedAt).getTime();
-            emitChannelsPanelEvent({
-              event: "channels.verify.result",
-              requestId,
-              mode,
-              ok: event.payload.ok,
-              totalMs: resultTotalMs,
-              verifiedAt:
-                event.payload.channelReadiness?.verifiedAt ?? null,
-            });
-            setVerifyResult(event.payload);
-            setStreamingPhases([]);
-            if (event.payload.channelReadiness) {
-              setReadiness(event.payload.channelReadiness);
-            }
-            if (!event.payload.ok) {
-              setDetailsExpanded(true);
-              const failing = event.payload.phases.find(
-                (p) => p.status === "fail",
-              );
-              if (failing) {
-                toast.error(
-                  `Verification failed at ${failing.id}: ${failing.error ?? failing.message}`,
-                );
-              }
-            }
-          } catch {
-            emitChannelsPanelEvent({
-              event: "channels.verify.error",
-              requestId,
-              mode,
-              error: `Malformed verification stream event: ${trimmed.slice(0, 160)}`,
-            });
-          }
-        }
-      }
-    } catch (err) {
-      if (err instanceof DOMException && err.name === "AbortError") {
-        emitChannelsPanelEvent({
-          event: "channels.verify.error",
-          requestId,
-          mode,
-          error: "Verification aborted",
-        });
-        return;
-      }
-      const message = err instanceof Error ? err.message : String(err);
-      emitChannelsPanelEvent({
-        event: "channels.verify.error",
-        requestId,
-        mode,
-        error: message,
-      });
-      toast.error(message);
-    } finally {
-      abortRef.current = null;
-      setVerifyRunning(false);
-    }
-  }
-
-  /* ── Readiness refresh ── */
-
-  async function refreshReadiness(): Promise<void> {
-    const nextReadiness = await loadPersistedReadiness();
-    if (!mountedRef.current) return;
-    setReadiness(nextReadiness);
-    emitChannelsPanelEvent({
-      event: "channels.readiness.refresh",
-      ok: nextReadiness?.ready === true,
-      verifiedAt: nextReadiness?.verifiedAt ?? null,
-    });
-  }
 
   return (
     <article
@@ -712,181 +418,24 @@ export function ChannelsPanel({
       }
       data-preflight-blocker-ids={preflightSummary.blockerIds.join(",")}
       data-preflight-required-action-ids={preflightSummary.requiredActionIds.join(",")}
-      data-verification-state={verificationSurfaceState}
-      data-verification-request-id={verifyRequestIdRef.current}
-      data-verification-mode={verifyModeRef.current}
-      data-verification-ok={
-        verifyResult
-          ? String(verifyResult.ok)
-          : readiness?.ready
-            ? "true"
-            : "false"
-      }
-      data-verification-phase-count={String(verificationPhaseCount)}
     >
       <div className="panel-head">
         <div>
           <p className="eyebrow">Channels</p>
           <h2>External entry points</h2>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, minHeight: 36 }}>
-          {verificationView.badgeText ? (
-            <span className={verificationView.badgeClassName}>{verificationView.badgeText}</span>
-          ) : null}
-          <button
-            className="button ghost"
-            disabled={busy || refreshing}
-            onClick={() => {
-              setRefreshing(true);
-              void Promise.all([refresh(), refreshPreflight(), refreshReadiness()])
-                .finally(() => setRefreshing(false));
-            }}
-          >
-            {refreshing ? "Refreshing\u2026" : "Refresh"}
-          </button>
-        </div>
+        <button
+          className="button ghost"
+          disabled={busy || refreshing}
+          onClick={() => {
+            setRefreshing(true);
+            void Promise.all([refresh(), refreshPreflight()])
+              .finally(() => setRefreshing(false));
+          }}
+        >
+          {refreshing ? "Refreshing\u2026" : "Refresh"}
+        </button>
       </div>
-
-      {/* ── Compact readiness row ── */}
-      <div className="launch-verified-summary">
-        <span className="muted-copy">{verificationView.summaryText}</span>
-        <div style={{ display: "flex", gap: 8 }}>
-          {(showPersistedPhases || verifyResult) && !verifyRunning && (
-            <button
-              className="button ghost"
-              disabled={busy || verifyRunning}
-              onClick={() => setDetailsExpanded((v) => !v)}
-            >
-              {detailsExpanded ? "Hide details" : "Show details"}
-            </button>
-          )}
-          {verificationView.showQuickCheck && !verifyRunning && (
-            <button
-              className="button ghost"
-              disabled={busy || verifyRunning}
-              onClick={() => void runVerification("safe")}
-              title="Quick diagnostic — does not unlock channels"
-            >
-              Quick check
-            </button>
-          )}
-          <button
-            className={verificationView.primaryActionClassName}
-            disabled={busy || verifyRunning}
-            onClick={() => void runVerification("destructive")}
-            title="Full verification including stop/restore cycle"
-          >
-            {verificationView.primaryActionLabel}
-          </button>
-        </div>
-      </div>
-
-      {/* ── Streaming progress ── */}
-      {isStreaming && (
-        <div style={{ marginTop: 16 }}>
-          <div className="launch-progress-bar" style={{ marginBottom: 12 }}>
-            <div
-              className="launch-progress-fill"
-              style={{ width: `${progressPct}%` }}
-            />
-          </div>
-          <div className="launch-phases">
-            {streamingPhases.map((phase) => (
-              <div
-                key={phase.id}
-                className={`launch-phase-row ${phaseStatusClass(phase)}`}
-              >
-                <span className="launch-phase-icon">{phaseStatusIcon(phase)}</span>
-                <span className="launch-phase-id">{phase.id}</span>
-                <span className="launch-phase-message">{phase.message}</span>
-                {phase.durationMs > 0 && (
-                  <span className="launch-phase-duration">{formatDuration(phase.durationMs)}</span>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* ── Detail view: latest result ── */}
-      {verifyResult && showDetails && (
-        <div style={{ marginTop: 16 }}>
-          <div className="metrics-grid" style={{ marginBottom: 12 }}>
-            <div>
-              <dt>Mode</dt>
-              <dd>{verifyResult.mode}</dd>
-            </div>
-            <div>
-              <dt>Duration</dt>
-              <dd>{formatDuration(totalMs)}</dd>
-            </div>
-            <div>
-              <dt>Last run</dt>
-              <dd>{formatTimestamp(verifyResult.completedAt)}</dd>
-            </div>
-          </div>
-
-          <div className="launch-phases">
-            {verifyResult.phases.map((phase) => (
-              <div
-                key={phase.id}
-                className={`launch-phase-row ${phaseStatusClass(phase)}`}
-              >
-                <span className="launch-phase-icon">{phaseStatusIcon(phase)}</span>
-                <span className="launch-phase-id">{phase.id}</span>
-                <span className="launch-phase-message">{phase.message}</span>
-                {phase.durationMs > 0 && (
-                  <span className="launch-phase-duration">{formatDuration(phase.durationMs)}</span>
-                )}
-              </div>
-            ))}
-          </div>
-
-          {verifyResult.phases.some((p) => p.status === "fail" && p.error) && (
-            <div className="error-banner" style={{ marginTop: 12 }}>
-              {verifyResult.phases
-                .filter((p) => p.status === "fail" && p.error)
-                .map((p) => (
-                  <p key={p.id} style={{ margin: "4px 0" }}>
-                    <strong>{p.id}:</strong> {p.error}
-                  </p>
-                ))}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* ── Detail view: persisted phases (no fresh result) ── */}
-      {showPersistedPhases && showDetails && (
-        <div style={{ marginTop: 16 }}>
-          <div className="metrics-grid" style={{ marginBottom: 12 }}>
-            <div>
-              <dt>Mode</dt>
-              <dd>{readiness.mode ?? "\u2014"}</dd>
-            </div>
-            <div>
-              <dt>Last verified</dt>
-              <dd>{readiness.verifiedAt ? formatTimestamp(readiness.verifiedAt) : "\u2014"}</dd>
-            </div>
-          </div>
-
-          <div className="launch-phases">
-            {readiness.phases.map((phase) => (
-              <div
-                key={phase.id}
-                className={`launch-phase-row ${phaseStatusClass(phase)}`}
-              >
-                <span className="launch-phase-icon">{phaseStatusIcon(phase)}</span>
-                <span className="launch-phase-id">{phase.id}</span>
-                <span className="launch-phase-message">{phase.message}</span>
-                {phase.durationMs > 0 && (
-                  <span className="launch-phase-duration">{formatDuration(phase.durationMs)}</span>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
 
       {/* ── Preflight error ── */}
       {preflightError ? (

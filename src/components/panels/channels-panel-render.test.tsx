@@ -134,21 +134,6 @@ function renderChannelsPanel(status?: StatusPayload): string {
   );
 }
 
-test("ChannelsPanel renders a single compact readiness summary by default", () => {
-  const html = renderChannelsPanel();
-
-  // Compact readiness row is always present
-  assert.ok(html.includes("launch-verified-summary"), "compact readiness summary row must render");
-  assert.ok(html.includes("Not yet verified"), "initial state shows not-yet-verified text");
-
-  // Verify button is present
-  assert.ok(html.includes("Verify"), "verify button must be visible");
-
-  // Detail views (launch phases, metrics grid) are NOT expanded by default
-  assert.ok(!html.includes("metrics-grid"), "metrics grid must not render by default");
-  assert.ok(!html.includes("launch-phases"), "launch phase list must not render by default");
-});
-
 test("ChannelsPanel does not show detail toggle when no readiness data exists", () => {
   const html = renderChannelsPanel();
 
@@ -197,23 +182,6 @@ test("ChannelsPanel consistent action labels across all unconfigured channel car
   );
 });
 
-test("ChannelsPanel exposes machine-readable verification state on the consolidated surface", () => {
-  const html = renderChannelsPanel();
-
-  assert.ok(
-    html.includes("data-verification-state="),
-    "verification state attribute must be present",
-  );
-  assert.ok(
-    html.includes("data-verification-ok="),
-    "verification ok attribute must be present",
-  );
-  assert.ok(
-    html.includes("data-verification-phase-count="),
-    "verification phase count attribute must be present",
-  );
-});
-
 test("ChannelsPanel exposes machine-readable channel card state", () => {
   const html = renderChannelsPanel();
 
@@ -229,17 +197,4 @@ test("ChannelsPanel exposes machine-readable channel card state", () => {
   assert.equal(configuredAttrs.length, 4, "all four cards have data-configured");
   assert.equal(connectableAttrs.length, 4, "all four cards have data-can-connect");
   assert.equal(statusAttrs.length, 4, "all four cards have data-connectability-status");
-});
-
-test("ChannelsPanel keeps verification controls inside the consolidated channels surface", () => {
-  const html = renderChannelsPanel();
-
-  // Verification affordances live within the consolidated Channels panel
-  assert.ok(html.includes("External entry points"), "panel heading must be present");
-  assert.ok(html.includes("Quick check"), "Quick check button must be present");
-  assert.ok(html.includes(">Verify</button>"), "Verify primary action must be present");
-  assert.ok(html.includes("launch-verified-summary"), "compact readiness row must be present");
-
-  // A separate Launch Verification card must not be reintroduced
-  assert.ok(!html.includes("Launch Verification"), "separate Launch Verification card must not exist");
 });

@@ -46,7 +46,7 @@ export const DEFAULT_STATUS_RESTORE_TARGET: StatusPayload["restoreTarget"] = {
   },
 };
 
-export const DEFAULT_STATUS_LIFECYCLE: NonNullable<StatusPayload["lifecycle"]> = {
+export const DEFAULT_STATUS_LIFECYCLE: StatusPayload["lifecycle"] = {
   lastRestoreMetrics: null,
   restoreHistory: [],
   lastTokenRefreshAt: null,

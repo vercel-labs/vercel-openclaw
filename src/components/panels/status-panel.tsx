@@ -183,16 +183,6 @@ export function deriveEffectiveStatus(
 
 type StatusFact = { label: string; value: string; detail?: string; warn?: boolean };
 
-const EMPTY_LIFECYCLE: NonNullable<StatusPayload["lifecycle"]> = {
-  lastRestoreMetrics: null,
-  restoreHistory: [],
-  lastTokenRefreshAt: null,
-  lastTokenSource: null,
-  lastTokenExpiresAt: null,
-  lastTokenRefreshError: null,
-  consecutiveTokenRefreshFailures: 0,
-  breakerOpenUntil: null,
-};
 
 function getChannelSummary(channels: StatusPayload["channels"]): StatusFact | null {
   const items: string[] = [];
@@ -204,7 +194,7 @@ function getChannelSummary(channels: StatusPayload["channels"]): StatusFact | nu
   return { label: "Channels", value: items.join(", ") };
 }
 
-function getTokenHealthFact(lifecycle: NonNullable<StatusPayload["lifecycle"]>): StatusFact | null {
+function getTokenHealthFact(lifecycle: StatusPayload["lifecycle"]): StatusFact | null {
   if (lifecycle.consecutiveTokenRefreshFailures > 0) {
     const msg = lifecycle.breakerOpenUntil && lifecycle.breakerOpenUntil > Date.now()
       ? `Paused (${lifecycle.consecutiveTokenRefreshFailures} failures)`
@@ -217,7 +207,7 @@ function getTokenHealthFact(lifecycle: NonNullable<StatusPayload["lifecycle"]>):
   return null;
 }
 
-function getRestoreEstimate(lifecycle: NonNullable<StatusPayload["lifecycle"]>): string | null {
+function getRestoreEstimate(lifecycle: StatusPayload["lifecycle"]): string | null {
   const metrics = lifecycle.lastRestoreMetrics;
   if (!metrics) return null;
   const time = formatDurationSeconds(metrics.totalMs);
@@ -241,7 +231,7 @@ function getRestoreReadiness(restoreTarget: StatusPayload["restoreTarget"]): Sta
 
 function getStoppedFacts(status: StatusPayload): StatusFact[] {
   const facts: StatusFact[] = [];
-  const lifecycle = status.lifecycle ?? EMPTY_LIFECYCLE;
+  const lifecycle = status.lifecycle;
 
   // Restore point + speed estimate
   const estimate = getRestoreEstimate(lifecycle);
@@ -276,7 +266,7 @@ function getStoppedFacts(status: StatusPayload): StatusFact[] {
 
 function getRunningFacts(status: StatusPayload): StatusFact[] {
   const facts: StatusFact[] = [];
-  const lifecycle = status.lifecycle ?? EMPTY_LIFECYCLE;
+  const lifecycle = status.lifecycle;
 
   // Gateway
   facts.push({
