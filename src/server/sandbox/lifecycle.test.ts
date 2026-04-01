@@ -1437,6 +1437,46 @@ test("restoreSandboxFromSnapshot passes credentials and config via env to fast-r
   });
 });
 
+test("persistent resume passes restore env to fast-restore script", async () => {
+  const fake = new FakeSandboxController();
+  const originalFetch = globalThis.fetch;
+
+  fake.defaultResponders.push((cmd, args) => {
+    if (cmd === OPENCLAW_BIN && args?.[0] === "--version") {
+      return { exitCode: 0, output: async () => "openclaw 9.9.9" };
+    }
+    return undefined;
+  });
+
+  await withTestEnv(fake, async () => {
+    await mutateMeta((meta) => {
+      meta.status = "stopped";
+      meta.sandboxId = "sbx-persistent";
+      meta.gatewayToken = "test-gw-token";
+    });
+
+    globalThis.fetch = async () =>
+      new Response('<div id="openclaw-app"></div>', { status: 200 });
+
+    try {
+      const meta = await runCreatePath();
+      assert.equal(meta.status, "running");
+
+      const handle = fake.created[0];
+      assert.ok(handle, "sandbox handle should be tracked");
+
+      const bashCmd = handle.commands.find(
+        (c) => c.cmd === "bash" && c.args?.[0] === OPENCLAW_FAST_RESTORE_SCRIPT_PATH,
+      );
+      assert.ok(bashCmd, "Should run fast-restore script for persistent resume");
+      assert.equal(bashCmd.env?.OPENCLAW_GATEWAY_TOKEN, "test-gw-token");
+      assert.equal(bashCmd.env?.AI_GATEWAY_API_KEY, undefined);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
 
 test("restoreSandboxFromSnapshot passes gateway token via env even without API key", async () => {
   const fake = new FakeSandboxController();

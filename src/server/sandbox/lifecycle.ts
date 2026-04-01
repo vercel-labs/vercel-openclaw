@@ -2326,10 +2326,14 @@ async function createAndBootstrapSandboxWithinLifecycleLock(
 
       progress.setPhase("starting-gateway", "Running fast restore script");
       const READINESS_TIMEOUT_SECONDS = 30;
-      const restoreResult = await sandbox.runCommand("bash", [
-        OPENCLAW_FAST_RESTORE_SCRIPT_PATH,
-        String(READINESS_TIMEOUT_SECONDS),
-      ]);
+      const restoreResult = await sandbox.runCommand({
+        cmd: "bash",
+        args: [
+          OPENCLAW_FAST_RESTORE_SCRIPT_PATH,
+          String(READINESS_TIMEOUT_SECONDS),
+        ],
+        env: restoreEnv,
+      });
 
       if (restoreResult.exitCode !== 0) {
         const output = await restoreResult.output("both");

@@ -19,6 +19,7 @@ import type {
 } from "@/server/sandbox/controller";
 import {
   OPENCLAW_FAST_RESTORE_SCRIPT_PATH,
+  OPENCLAW_BIN,
 } from "@/server/openclaw/config";
 
 // ---------------------------------------------------------------------------
@@ -78,6 +79,7 @@ export class FakeSandboxHandle implements SandboxHandle {
   createTimeNetworkPolicy?: import("@vercel/sandbox").NetworkPolicy;
   private portDomain: string;
   private eventLog: SandboxEvent[];
+  private openclawInstalled = false;
 
   /**
    * Optional responders checked in order for each `runCommand` call.
@@ -155,6 +157,39 @@ export class FakeSandboxHandle implements SandboxHandle {
           if (stream === "stdout") return stdoutJson;
           if (stream === "stderr") return stderrEvents;
           return `${stdoutJson}\n${stderrEvents}`;
+        },
+      };
+    }
+    if (cmd === "npm" && cmdArgs?.[0] === "install" && cmdArgs?.[1] === "-g") {
+      this.openclawInstalled = true;
+      writeToStream(stdout, "");
+      writeToStream(stderr, "");
+      return { exitCode: 0, output: async () => "" };
+    }
+    // Fresh fake sandboxes do not have OpenClaw installed until bootstrap
+    // succeeds, unless a test explicitly simulates a resumed persistent
+    // sandbox via a responder.
+    if (cmd === OPENCLAW_BIN && cmdArgs?.[0] === "--version") {
+      if (!this.openclawInstalled) {
+        writeToStream(stdout, "");
+        writeToStream(stderr, "openclaw: command not found");
+        return {
+          exitCode: 127,
+          output: async (stream?: "stdout" | "stderr" | "both") => {
+            if (stream === "stdout") return "";
+            if (stream === "stderr") return "openclaw: command not found";
+            return "openclaw: command not found";
+          },
+        };
+      }
+      writeToStream(stdout, "openclaw 0.0.0-test");
+      writeToStream(stderr, "");
+      return {
+        exitCode: 0,
+        output: async (stream?: "stdout" | "stderr" | "both") => {
+          if (stream === "stdout") return "openclaw 0.0.0-test";
+          if (stream === "stderr") return "";
+          return "openclaw 0.0.0-test";
         },
       };
     }
