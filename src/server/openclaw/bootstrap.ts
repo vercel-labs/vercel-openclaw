@@ -626,13 +626,16 @@ export async function waitForGatewayReady(
         stderrHead: stderr.slice(0, 400),
         hasOpenclawMarker: body.includes("openclaw-app"),
       };
-      // Accept any HTTP response that contains the openclaw marker,
-      // even non-200 status (e.g. 500 during plugin init).
-      if (body.includes("openclaw-app")) {
+      // Accept any HTTP response from the gateway — the openclaw-app marker
+      // is preferred, but a plain HTTP response (even 500) means the gateway
+      // is running.  Plugin init errors (e.g. missing @slack/web-api) cause
+      // 500 without the marker but the gateway is functional.
+      if (body.includes("openclaw-app") || (httpStatus > 0 && httpStatus < 600)) {
         logInfo("openclaw.gateway_wait_ok", {
           sandboxId: sandbox.sandboxId,
           attempts: attempt + 1,
           httpStatus,
+          hasMarker: body.includes("openclaw-app"),
         });
         return;
       }
