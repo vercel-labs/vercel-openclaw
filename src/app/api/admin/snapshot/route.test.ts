@@ -110,8 +110,8 @@ test("POST /api/admin/snapshot: triggers snapshot and returns status + snapshotI
     const result = await callRoute(route.POST!, request);
 
     assert.equal(result.status, 200);
-    const body = result.json as { status: string; snapshotId: string };
+    const body = result.json as { status: string; sandboxId: string | null };
     assert.equal(body.status, "stopped");
-    assert.ok(body.snapshotId, "snapshotId should be present");
+    // v2 persistent: stop auto-snapshots, no manual snapshotId returned
   });
 });

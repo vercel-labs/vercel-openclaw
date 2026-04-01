@@ -191,9 +191,9 @@ test("SnapshotsPanel reset button is disabled when busy", () => {
   assert.match(html, /<button[^>]*disabled=""[^>]*>Reset Sandbox<\/button>/);
 });
 
-test("SnapshotsPanel renders restore-point summary from status", () => {
-  const html = renderPanel(makeStatus({ snapshotId: "snap-abc123" }));
+test("SnapshotsPanel renders version summary from status", () => {
+  const html = renderPanel(makeStatus({ openclawVersion: "2026.3.31" }));
 
-  assert.ok(html.includes("snap-abc123"), "Should display the current snapshot ID");
-  assert.ok(html.includes("Restore point"), "Should label the restore point");
+  assert.ok(html.includes("OpenClaw"), "Should label the OpenClaw version");
+  assert.ok(html.includes("SDK"), "Should label the SDK version");
 });
