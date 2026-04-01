@@ -85,7 +85,7 @@ export async function processChannelStep(
   try {
     // --- Phase 1: Wake the sandbox with boot message updates ---
     // Use runWithBootMessages to poll sandbox status and progressively
-    // update the boot message ("Restoring…" → "Starting gateway…" → etc.)
+    // update the boot message ("🦞 Restoring…" → "🦞 Starting gateway…" → etc.)
     // runWithBootMessages needs an adapter for the boot message handle.
     // We only need the existing boot handle (already built above).
     // Use a minimal adapter shim — the real message extraction is not needed

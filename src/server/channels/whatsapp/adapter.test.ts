@@ -167,11 +167,11 @@ test("createWhatsAppAdapter sendBootMessage sends starting message", async () =>
         messageId: "wamid.input",
         phoneNumberId: CONFIG.phoneNumberId,
       },
-      "Starting up...",
+      "🦞 Waking up\u2026 one moment.",
     );
 
     const body = JSON.parse(bodies[0] ?? "{}");
-    assert.equal(body.text.body, "Starting up...");
+    assert.equal(body.text.body, "🦞 Waking up\u2026 one moment.");
     await handle?.update("ignored");
     await handle?.clear();
   } finally {

@@ -104,7 +104,7 @@ When a Telegram update arrives at the webhook:
 
 1. The route validates the webhook secret header.
 2. If the sandbox is running, the raw update is forwarded to OpenClaw's native Telegram handler on port 8787 inside the sandbox (the fast path). This preserves full native Telegram features — slash commands, media, inline keyboards, etc.
-3. If the sandbox is stopped, the route sends a boot message ("Starting up...") to the user, then starts a durable Workflow that resumes the sandbox, sends the message via chat completions, delivers the reply, and deletes the boot message.
+3. If the sandbox is stopped, the route sends a boot message ("🦞 Waking up…") to the user, then starts a durable Workflow that resumes the sandbox, sends the message via chat completions, delivers the reply, and deletes the boot message.
 
 ## Protected deployments
 
@@ -127,11 +127,11 @@ No Workflow is started. No boot message is sent. The response comes back as quic
 
 When the sandbox is stopped and a channel message arrives, both platforms use a durable delivery path powered by Vercel Workflow:
 
-1. **Telegram only:** a boot message ("Starting up…") is sent to the user so they know the sandbox is waking.
+1. **Telegram and WhatsApp:** a boot message ("🦞 Waking up… one moment.") is sent to the user so they know the sandbox is waking.
 2. The Workflow step resumes the sandbox if needed.
 3. The message is sent to the gateway via `POST /v1/chat/completions`.
 4. The reply is delivered back to the originating channel.
-5. **Telegram only:** the boot message is deleted after the reply is delivered.
+5. **Telegram and WhatsApp:** the boot message is deleted after the reply is delivered.
 
 The Workflow-based path is durable — it survives function restarts and retries on transient failures. On deployed Vercel environments, that durability depends on Upstash-backed state and missing Upstash is a hard blocker for channel setup. In local or non-Vercel environments the app can still run with the in-memory store, but queue state and wake/retry durability do not survive cold starts.
 

@@ -167,14 +167,14 @@ export async function POST(request: Request): Promise<Response> {
       }
     }
 
-    // Send "Starting up" boot message from the webhook route (before workflow)
+    // Send "Waking up" boot message from the webhook route (before workflow)
     // so the user gets immediate feedback. The message ID is passed to the
     // workflow so the step can edit/delete it during processing.
     let bootMessageId: number | null = null;
     const chatId = extractTelegramChatId(payload);
     if (effectiveMeta.status !== "running" && chatId) {
       try {
-        const result = await sendMessage(config.botToken, Number(chatId), "Starting up\u2026 I'll respond in a moment.");
+        const result = await sendMessage(config.botToken, Number(chatId), "🦞 Waking up\u2026 one moment.");
         bootMessageId = result.message_id;
         logInfo("channels.telegram_boot_message_sent", withOperationContext(op, { chatId, bootMessageId }));
       } catch (err) {

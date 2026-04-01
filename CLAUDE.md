@@ -373,10 +373,10 @@ Channel delivery flow:
 
 1. the public webhook route validates the platform signature or secret
 2. **Telegram fast path**: if the sandbox is running, the route forwards the raw update to OpenClaw's native Telegram handler on port 8787 and returns 200. This preserves full native Telegram features (slash commands, media, inline keyboards, etc.)
-3. **Telegram stopped path / Slack**: the route sends a boot message (Telegram only, "Starting up…"), then calls `start(drainChannelWorkflow)` from `workflow/api`
+3. **Telegram stopped path / Slack**: the route sends a boot message ("🦞 Waking up…"), then calls `start(drainChannelWorkflow)` from `workflow/api`
 4. the workflow step (`processChannelStep`) restores the sandbox if needed, then sends the message to `POST /v1/chat/completions` on the OpenClaw gateway
 5. the app delivers the reply back to the originating channel
-6. the workflow step deletes the Telegram boot message after processing
+6. the workflow step deletes the boot message after processing
 
 Channel delivery uses Workflow DevKit (`workflow` package) as the primary durable transport. The `withWorkflow()` wrapper in `next.config.ts` enables the `"use workflow"` and `"use step"` directives. Launch verification uses a separate `@vercel/queue` consumer at `/api/queues/launch-verify`.
 

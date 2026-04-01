@@ -216,7 +216,7 @@ export async function POST(request: Request): Promise<Response> {
             config.accessToken,
             config.phoneNumberId,
             extracted.message.from,
-            "Starting up… I will respond in a moment.",
+            "🦞 Waking up\u2026 one moment.",
           );
           bootMessageId = result.id;
           logInfo("channels.whatsapp_boot_message_sent", withOperationContext(op, {

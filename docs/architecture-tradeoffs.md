@@ -11,7 +11,7 @@ vercel-openclaw owns the channel layer (Slack, Telegram) in the control plane. m
 The app provides dedicated webhook routes (`/api/channels/telegram/webhook`, `/api/channels/slack/webhook`). When a message arrives:
 
 1. The Vercel Function validates the platform signature (always running, even when sandbox is stopped).
-2. For Telegram: sends an immediate "Starting up..." boot message so the user knows something is happening.
+2. For Telegram/WhatsApp: sends an immediate "🦞 Waking up…" boot message so the user knows something is happening.
 3. Starts a Vercel Workflow that durably holds the message payload.
 4. The Workflow restores the sandbox if stopped, delivers the message to OpenClaw, and sends the reply back to the channel.
 5. The Workflow deletes the boot message after delivery.
