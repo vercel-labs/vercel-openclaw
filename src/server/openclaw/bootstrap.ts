@@ -177,6 +177,40 @@ export async function setupOpenClaw(
   });
   await assertCommandSuccess("npm install", installResult);
 
+  // Install missing peer dependencies into the openclaw package directory.
+  // OpenClaw 2026.3.31+ ships @buape/carbon only inside the Discord extension
+  // bundle, but the UI module also imports it. Without this, the gateway UI
+  // routes return 500 while API routes work fine.
+  progress?.setPhase("installing-peer-deps", "Installing missing peer dependencies");
+  const peerDepResult = await sandbox.runCommand({
+    cmd: "bash",
+    args: [
+      "-lc",
+      [
+        "set -e",
+        "OC_PKG=/home/vercel-sandbox/.global/npm/lib/node_modules/openclaw",
+        "mkdir -p /tmp/openclaw-peer-deps && cd /tmp/openclaw-peer-deps",
+        "npm init -y > /dev/null 2>&1",
+        "npm install @buape/carbon --no-save --ignore-scripts --loglevel warn 2>&1",
+        "mkdir -p $OC_PKG/node_modules",
+        "cp -r node_modules/@buape $OC_PKG/node_modules/",
+        "rm -rf /tmp/openclaw-peer-deps",
+      ].join(" && "),
+    ],
+    stdout: progress?.makeWritable("stdout"),
+    stderr: progress?.makeWritable("stderr"),
+  });
+  if (peerDepResult.exitCode !== 0) {
+    const stderr = (await peerDepResult.output("stderr")).trim();
+    logWarn("openclaw.setup.peer_deps_install_failed", {
+      sandboxId: sandbox.sandboxId,
+      exitCode: peerDepResult.exitCode,
+      stderr: stderr.slice(-500),
+    });
+  } else {
+    logInfo("openclaw.setup.peer_deps_installed", { sandboxId: sandbox.sandboxId });
+  }
+
   // Install Bun for faster gateway startup on snapshot restore.
   // Bun's JSC engine loads the 577MB/10K-file openclaw package ~33% faster
   // than Node.js v22 on 1 vCPU.  Best-effort — restore falls back to Node

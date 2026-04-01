@@ -30,8 +30,8 @@ Reachability and readiness are different things.
 
 - **Deployment Protection** decides whether Slack or Telegram can reach the app at all.
 - **Preflight** tells you whether the deployment is configured well enough to expose those webhooks.
-- **Safe launch verification** proves queue delivery, sandbox boot or restore, and a real completion.
-- **Destructive launch verification** adds wake-from-sleep and restore-target preparation.
+- **Safe launch verification** proves queue delivery, sandbox boot or resume, and a real completion.
+- **Destructive launch verification** adds wake-from-sleep and resume-target preparation.
 
 Run destructive launch verification before treating Slack or Telegram as ready for real traffic. A deployment is channel-ready only after destructive launch verification passes and `channelReadiness.ready` is `true`.
 

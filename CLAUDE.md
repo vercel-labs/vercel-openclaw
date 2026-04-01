@@ -9,7 +9,7 @@ This file explains how to work in `vercel-openclaw`.
 The app handles:
 
 - auth in front of the proxy
-- on-demand sandbox create and restore
+- on-demand sandbox create and resume (persistent sandboxes with auto-snapshot on stop)
 - proxying the OpenClaw UI at `/gateway`
 - HTML injection for WebSocket rewriting and gateway token handoff
 - learning and enforcing egress firewall state
@@ -47,7 +47,7 @@ npm run smoke:remote -- --base-url https://my-app.vercel.app --request-timeout 1
 Flags:
 
 - `--base-url` (required) — the deployed app URL to test
-- `--destructive` — include destructive phases (ensure, snapshot, restore). Omit for safe read-only checks only.
+- `--destructive` — include destructive phases (ensure, stop, resume). Omit for safe read-only checks only.
 - `--timeout` — timeout in seconds for polling phases (default: 120)
 - `--request-timeout` — per-request fetch timeout in seconds (default: 30)
 - `--auth-cookie` — auth cookie value, overrides `SMOKE_AUTH_COOKIE` env var. The raw value is never logged.
@@ -75,10 +75,10 @@ Channel phases (`channelRoundTrip`, `channelWakeFromSleep`) call `POST /api/admi
 | `/api/admin/preflight` | Deploy-readiness report: public origin, webhook bypass, durable state, AI Gateway auth detection |
 | `/api/admin/launch-verify` | Full launch verification: preflight + queue delivery probe + sandbox ensure + chat completions + wake from sleep (destructive) |
 | `/api/queues/launch-verify` | Private Vercel Queues consumer for launch verification probes (not publicly reachable on Vercel) |
-| `/api/admin/ensure` | Trigger sandbox create or restore |
-| `/api/admin/stop` | Snapshot and stop the sandbox |
-| `/api/admin/snapshot` | Snapshot and stop (same as stop for now) |
-| `/api/admin/snapshots/delete` | Delete a past snapshot from Vercel and local history (cannot delete current restore target) |
+| `/api/admin/ensure` | Trigger sandbox create or resume |
+| `/api/admin/stop` | Stop the sandbox (v2 auto-snapshots on stop) |
+| `/api/admin/snapshot` | Stop the sandbox (same as stop for now; v2 auto-snapshots on stop) |
+| `/api/admin/snapshots/delete` | Delete a past snapshot from Vercel and local history |
 | `/api/admin/channel-secrets` | Configure smoke credentials and dispatch server-signed synthetic Slack/Telegram webhooks. Raw secrets are never returned. Smoke dispatch URLs use `buildPublicUrl()` (bypass included when configured) for all channels, including Telegram — this is intentionally different from provider-facing Telegram webhook registration, which omits the bypass parameter. |
 | `/api/cron/watchdog` | Runs every 5 minutes via Vercel Cron. Health-checks running sandboxes, repairs stuck states, and **wakes stopped sandboxes when OpenClaw cron jobs are due**. |
 | `/api/admin/watchdog` | GET reads cached watchdog report; POST runs a fresh check |
@@ -87,11 +87,11 @@ Channel phases (`channelRoundTrip`, `channelWakeFromSleep`) call `POST /api/admi
 
 OpenClaw has a built-in cron scheduler (`croner` library) that persists jobs to `~/.openclaw/cron/jobs.json`. When the sandbox sleeps, the scheduler dies. The watchdog bridges this gap:
 
-1. **Before snapshot** (`stopSandbox()`): reads `jobs.json` from the sandbox, extracts the earliest `nextRunAtMs` across all enabled jobs, and saves it to the host store as `openclaw-single:cron-next-wake-ms`. Also persists the full `jobs.json` content to `openclaw-single:cron-jobs-json`.
+1. **Before stop** (`stopSandbox()`): reads `jobs.json` from the sandbox, extracts the earliest `nextRunAtMs` across all enabled jobs, and saves it to the host store as `openclaw-single:cron-next-wake-ms`. Also persists the full `jobs.json` content to `openclaw-single:cron-jobs-json`.
 2. **On heartbeat** (`touchRunningSandbox()`): keeps both the wake time and jobs JSON fresh in the store, so they survive even when the sandbox times out naturally without an explicit stop.
-3. **Every 5 minutes** (`/api/cron/watchdog`): if the sandbox is stopped (or in a recoverable error state with a snapshot) and the saved wake time has passed, calls `ensureSandboxReady()` to restore the sandbox. OpenClaw's native cron handles everything from there.
-4. **After restore**: checks if `jobs.json` is empty on the restored sandbox. If jobs were lost but the store has a copy, writes the stored jobs back and restarts the gateway so the cron module loads them.
-5. **After wake**: the wake key is cleared only when the cron restore outcome is `no-store-jobs`, `already-present`, or `restored-verified`. If restore fails or is unverified, the key is retained so the next watchdog run can retry. OpenClaw reschedules the next run internally, and the next heartbeat/snapshot will persist the updated time.
+3. **Every 5 minutes** (`/api/cron/watchdog`): if the sandbox is stopped (or in a recoverable error state) and the saved wake time has passed, calls `ensureSandboxReady()` to resume the sandbox. OpenClaw's native cron handles everything from there.
+4. **After resume**: checks if `jobs.json` is empty on the resumed sandbox. If jobs were lost but the store has a copy, writes the stored jobs back and restarts the gateway so the cron module loads them.
+5. **After wake**: the wake key is cleared only when the cron restore outcome is `no-store-jobs`, `already-present`, or `restored-verified`. If resume fails or is unverified, the key is retained so the next watchdog run can retry. OpenClaw reschedules the next run internally, and the next heartbeat will persist the updated time.
 
 The watchdog never runs chat completions, delivers messages, or interacts with Telegram/Slack. It only wakes the sandbox — OpenClaw handles the rest.
 
@@ -104,15 +104,15 @@ Watchdog observability notes:
 
 ### Cron jobs persistence (important)
 
-Cron jobs can be lost during snapshot restore in edge cases: partial writes during gateway restarts, config-triggered re-initialization, or snapshots taken after a transient empty state. OpenClaw's gateway normally preserves `jobs.json` across restarts (it reads, normalizes, and writes back with a `.bak` safety backup), but the store-based persistence acts as a belt-and-suspenders safety net.
+Cron jobs can be lost during resume in edge cases: partial writes during gateway restarts, config-triggered re-initialization, or auto-snapshots taken after a transient empty state. OpenClaw's gateway normally preserves `jobs.json` across restarts (it reads, normalizes, and writes back with a `.bak` safety backup), but the store-based persistence acts as a belt-and-suspenders safety net.
 
 - **Store keys**: `openclaw-single:cron-next-wake-ms` (wake timestamp) and `openclaw-single:cron-jobs-json` (full jobs payload)
 - **Save path**: `stopSandbox()` and `touchRunningSandbox()` both persist to the store
-- **Restore path**: after gateway readiness in `restoreSandboxFromSnapshot()`, if the store has jobs and the sandbox has none, the jobs are written back and the gateway is restarted via `OPENCLAW_GATEWAY_RESTART_SCRIPT_PATH`. When the snapshot already preserved the jobs (the common case), no restart is needed.
+- **Resume path**: after gateway readiness in the resume flow, if the store has jobs and the sandbox has none, the jobs are written back and the gateway is restarted via `OPENCLAW_GATEWAY_RESTART_SCRIPT_PATH`. When the persistent sandbox already preserved the jobs (the common case), no restart is needed.
 - **Metrics**: `RestorePhaseMetrics.cronRestoreOutcome` records `no-store-jobs`, `already-present`, `restored-verified`, `restore-failed`, `restore-unverified`, or `store-invalid`.
 - **Watchdog clear behavior**: `/api/cron/watchdog` clears the saved wake key only after `no-store-jobs`, `already-present`, or `restored-verified`; otherwise it retains the wake key so the next run can retry.
 
-If you change the restore flow, ensure the cron check happens **after** the gateway is ready and **before** marking the sandbox as `running`.
+If you change the resume flow, ensure the cron check happens **after** the gateway is ready and **before** marking the sandbox as `running`.
 
 To use cron in OpenClaw, the `tools.profile` must be `"full"` (not the default `"coding"`) so the `cron` tool is available to the agent. The gateway must also have `OPENCLAW_GATEWAY_PORT` set to match the `--port` flag so internal tools can connect.
 
@@ -221,17 +221,24 @@ Rules:
 
 ## Lifecycle
 
-Main file:
+Main files:
 
 - `src/server/sandbox/lifecycle.ts`
+- `src/server/sandbox/controller.ts`
+
+The project uses `@vercel/sandbox@^2.0.0-beta` with persistent sandboxes. Sandboxes are created with `{ name: "oc-xxx", persistent: true }` and auto-snapshot on stop. Resume from stop uses `Sandbox.create()` which handles name-conflict (409) by falling back to `get()` for auto-resume. There is no manual `snapshot()` call — v2 handles this automatically.
 
 Important behavior:
 
-- `ensureSandboxRunning()` schedules create or restore work with `after()` and returns a waiting state to the caller
-- `stopSandbox()` snapshots and stops
-- `snapshotSandbox()` currently delegates to the same snapshot-and-stop flow
+- `ensureSandboxRunning()` schedules create or resume work with `after()` and returns a waiting state to the caller
+- `stopSandbox()` stops the sandbox (v2 auto-snapshots); keeps `sandboxId` in metadata for resume
+- `snapshotSandbox()` currently delegates to the same stop flow
 - `touchRunningSandbox()` extends sandbox timeout
-- `probeGatewayReady()` fetches the sandbox root and checks for `openclaw-app`
+- `probeGatewayReady()` fetches the sandbox root and checks for readiness (accepts any HTTP status, not just 200 with openclaw-app marker)
+
+Sandbox identification uses `sandbox.name` (human-readable names like `oc-prj-rmayazjosjflloz94grssevda4yr`) rather than system-generated `sandboxId` values. The controller uses `sandbox.update({ networkPolicy })` for firewall policy (replacing the deprecated `updateNetworkPolicy()`).
+
+Gateway launch uses shell `setsid ... &` (detached SDK commands don't work reliably for openclaw). Process termination uses `ps/grep/kill` pattern instead of `pkill` (which returns exit 255 on v2 API).
 
 Statuses:
 
@@ -241,26 +248,25 @@ Statuses:
 - `booting`
 - `running`
 - `stopped`
-- `restoring`
 - `error`
 
 If you change lifecycle behavior, keep the waiting-page flow intact. The proxy depends on it.
 
-### Restore fast path
+### Resume fast path
 
 `src/server/openclaw/restore-assets.ts` owns the restore asset split:
 
 - **static files**: startup script, force-pair script, skill markdown, skill scripts, and the built-in image-gen override
 - **dynamic files**: `openclaw.json` (rewritten with the current proxy origin and API key)
 
-On snapshot restore, dynamic files are always rewritten. Static files are only rewritten when `${OPENCLAW_STATE_DIR}/.restore-assets-manifest.json` has a different `sha256`. This manifest-based skipping avoids redundant uploads on repeat restores when the app version has not changed.
+On resume, dynamic files are always rewritten. Static files are only rewritten when `${OPENCLAW_STATE_DIR}/.restore-assets-manifest.json` has a different `sha256`. This manifest-based skipping avoids redundant uploads on repeat resumes when the app version has not changed.
 
 Readiness is checked in two stages:
 
-1. **local-first readiness** — `curl http://localhost:3000/` inside the sandbox
+1. **local-first readiness** — `curl http://localhost:3000/` inside the sandbox (accepts any HTTP response, not just 200)
 2. **public readiness** — fetch through the proxied route URL
 
-This separates sandbox boot failures from proxy/DNS failures and keeps restores fast.
+This separates sandbox boot failures from proxy/DNS failures and keeps resumes fast.
 
 Dynamic restore config verification is hash-based: `snapshotConfigHash` is compared against `computeGatewayConfigHash()`, and restore metrics record `dynamicConfigHash`, `dynamicConfigReason`, and `skippedDynamicConfigSync`.
 
@@ -292,7 +298,7 @@ type RestorePhaseMetrics = {
 };
 ```
 
-These metrics are stored on metadata after every restore and are visible via `/api/status`.
+These metrics are stored on metadata after every resume and are visible via `/api/status`.
 
 ## OpenClaw bootstrap
 
@@ -475,12 +481,12 @@ The admin page is intentionally small. It is a control surface, not a dashboard 
 
 - Do not add `export const runtime = "nodejs"` to route handlers. This repo uses `cacheComponents: true` in `next.config.ts`, and explicit `runtime` exports break the Next.js 16 build.
 - Keep the sandbox exposed on ports `3000` (gateway) and `8787` (Telegram native handler) unless you update bootstrap, lifecycle, proxy, and docs together. Both ports must be in `SANDBOX_PORTS`.
-- `POST /api/admin/snapshot` currently snapshots and stops. If you change that to a hot snapshot flow, update the README and this file.
+- `POST /api/admin/snapshot` currently stops the sandbox (v2 auto-snapshots on stop). If you change that to a hot snapshot flow, update the README and this file.
 - If you add environment variables, update `.env.example`, `README.md`, and this file in the same change.
 - If you change metadata shape, update tests and migration logic in `ensureMetaShape`.
 - All new Redis keys must go through `src/server/store/keyspace.ts` — never hardcode the `openclaw-single` prefix.
-- Telegram `webhookSecret` must flow through ALL config paths: `buildGatewayConfig()`, `buildDynamicRestoreFiles()`, `syncRestoreAssetsIfNeeded()`, and `computeGatewayConfigHash()`. Missing it causes OpenClaw config validation failure ("webhookUrl requires webhookSecret").
-- `_setSandboxControllerForTesting()` only works when `NODE_ENV=test`. In production, `getSandboxController()` always returns the real `@vercel/sandbox` SDK wrapper. This prevents fake sandbox IDs from contaminating Upstash metadata.
+- Telegram `webhookSecret` must flow through ALL config paths: `buildGatewayConfig()`, `buildDynamicResumeFiles()`, `syncRestoreAssetsIfNeeded()`, and `computeGatewayConfigHash()`. Missing it causes OpenClaw config validation failure ("webhookUrl requires webhookSecret").
+- `_setSandboxControllerForTesting()` only works when `NODE_ENV=test`. In production, `getSandboxController()` always returns the real `@vercel/sandbox` v2 beta SDK wrapper. This prevents fake sandbox names from contaminating Upstash metadata.
 - Upstash store only connects on deployed Vercel runtimes (`isVercelDeployment()`). Local dev and CI always use the memory store, even if Upstash env vars are present.
 
 ## Verification
@@ -528,8 +534,8 @@ These variables are checked by `buildDeploymentContract()` in `src/server/deploy
 | `UPSTASH_REDIS_REST_URL` | All deployments | Required for persistent state. Provision via Vercel Marketplace. |
 | `UPSTASH_REDIS_REST_TOKEN` | All deployments | Required for persistent state. Paired with the URL above. |
 | `OPENCLAW_INSTANCE_ID` | All environments | Optional. Namespace token for Redis key isolation. On Vercel deployments, automatically uses `VERCEL_PROJECT_ID` when unset, giving each project its own namespace. Falls back to `openclaw-single` in local/non-Vercel environments. Can be set explicitly to override auto-detection. Changing it later points the app at a new namespace; it does not migrate existing state. |
-| `OPENCLAW_PACKAGE_SPEC` | All environments | Optional locally, recommended on Vercel. Defaults to `openclaw@latest` when unset in local dev. On Vercel deployments, the deployment contract **warns** — it does not fail — when unset or unpinned (e.g. `openclaw@latest`). The runtime still falls back to `openclaw@latest`, but restores are non-deterministic. Pin to an exact version like `openclaw@1.2.3` for deterministic sandbox restores. |
-| `OPENCLAW_SANDBOX_VCPUS` | All environments | Optional. vCPU count for sandbox create and snapshot restore (valid: 1, 2, 4, 8; default: 1). Keep this fixed during benchmarks so restore timings stay comparable. |
+| `OPENCLAW_PACKAGE_SPEC` | All environments | Optional locally, recommended on Vercel. Defaults to `openclaw@latest` when unset in local dev. On Vercel deployments, the deployment contract **warns** — it does not fail — when unset or unpinned (e.g. `openclaw@latest`). The runtime still falls back to `openclaw@latest`, but resumes are non-deterministic. Pin to an exact version like `openclaw@1.2.3` for deterministic sandbox resumes. |
+| `OPENCLAW_SANDBOX_VCPUS` | All environments | Optional. vCPU count for sandbox create and resume (valid: 1, 2, 4, 8; default: 1). Keep this fixed during benchmarks so resume timings stay comparable. |
 | `OPENCLAW_SANDBOX_SLEEP_AFTER_MS` | All environments | Optional. How long the sandbox stays alive after last activity, in milliseconds (60000–2700000; default: 1800000 = 30 min). Heartbeat and touch-throttle intervals are derived proportionally. Existing running sandboxes cannot be shortened in place. If you increase this value, the next touch/heartbeat can top the sandbox timeout up to the new target. If you decrease it, the lower value becomes exact on the next create or restore. |
 | `NEXT_PUBLIC_VERCEL_APP_CLIENT_ID` | `sign-in-with-vercel` mode | Required for OAuth flow. |
 | `VERCEL_APP_CLIENT_SECRET` | `sign-in-with-vercel` mode | Required for OAuth flow. |

@@ -70,14 +70,14 @@ See `CLAUDE.md` for the full list of smoke test flags.
 
 The app has two planes:
 
-- **Control plane** — a single metadata record in Upstash Redis (or in-memory for local dev). Tracks sandbox ID, snapshot ID, lifecycle status, firewall state, and the OpenClaw gateway token.
-- **Enforcement plane** — the `@vercel/sandbox` SDK creates, restores, snapshots, and updates the sandbox network policy.
+- **Control plane** — a single metadata record in Upstash Redis (or in-memory for local dev). Tracks sandbox name, lifecycle status, firewall state, and the OpenClaw gateway token.
+- **Enforcement plane** — the `@vercel/sandbox` v2 beta SDK creates, resumes, stops, and updates the sandbox network policy. Sandboxes are persistent (auto-snapshot on stop, auto-resume on get).
 
 ### Request flow
 
 1. User opens `/gateway`
 2. App authenticates the request
-3. If no sandbox is running, schedules create/restore with `after()` and returns a waiting page
+3. If no sandbox is running, schedules create/resume with `after()` and returns a waiting page
 4. Once ready, proxies the request to the sandbox on port `3000`
 5. HTML responses are modified to rewrite WebSocket connections and inject the gateway token
 
@@ -85,11 +85,13 @@ The app has two planes:
 
 `uninitialized` → `creating` → `setup` → `booting` → `running` → `stopped`
 
-Also: `restoring`, `error`
+Also: `error`
 
-### Restore fast path
+Note: The `restoring` status from v1 snapshot-based flow has been removed. With v2 persistent sandboxes, resume goes through the same `creating` → `setup` → `booting` path.
 
-`src/server/openclaw/restore-assets.ts` splits restore files into static (scripts, skills) and dynamic (`openclaw.json`). Static files use a manifest-based hash (`RestorePhaseMetrics.assetSha256`) to skip redundant uploads. Readiness is probed locally first, then publicly. Per-phase timings are recorded as `RestorePhaseMetrics` on metadata.
+### Resume fast path
+
+`src/server/openclaw/restore-assets.ts` splits restore files into static (scripts, skills) and dynamic (`openclaw.json`). Static files use a manifest-based hash (`RestorePhaseMetrics.assetSha256`) to skip redundant uploads. Readiness is probed locally first, then publicly. Per-phase timings are recorded as `RestorePhaseMetrics` on metadata. With v2 persistent sandboxes, resume from stop takes ~10s vs v1's ~5-30s snapshot restore.
 
 ### Firewall modes
 
@@ -145,8 +147,8 @@ Full reference:
 | `SESSION_SECRET` | Required on Vercel (`sign-in-with-vercel` mode) | Cookie encryption secret. Must be explicitly set on deployed Vercel environments. |
 | `AI_GATEWAY_API_KEY` | No | Optional fallback when Vercel OIDC is unavailable (e.g. local dev without `vercel env pull`). OIDC is the default on deployed Vercel. |
 | `OPENCLAW_INSTANCE_ID` | No | Optional Redis key namespace. Defaults to `openclaw-single`. Required when multiple deployments share one Upstash database. Changing it later points the app at a new namespace and does not migrate existing state. |
-| `OPENCLAW_PACKAGE_SPEC` | No | OpenClaw version to install (defaults to `openclaw@latest`). On Vercel deployments, the deployment contract **warns** — it does not fail — when unset or unpinned (e.g. `openclaw@latest`). The runtime still falls back to `openclaw@latest`, but restores are non-deterministic. Pin to an exact version like `openclaw@1.2.3`. |
-| `OPENCLAW_SANDBOX_VCPUS` | No | vCPU count for sandbox create and snapshot restore (valid: 1, 2, 4, 8; default: 1). Keep fixed during benchmarks. |
+| `OPENCLAW_PACKAGE_SPEC` | No | OpenClaw version to install (defaults to `openclaw@latest`). On Vercel deployments, the deployment contract **warns** — it does not fail — when unset or unpinned (e.g. `openclaw@latest`). The runtime still falls back to `openclaw@latest`, but resumes are non-deterministic. Pin to an exact version like `openclaw@1.2.3`. |
+| `OPENCLAW_SANDBOX_VCPUS` | No | vCPU count for sandbox create and resume (valid: 1, 2, 4, 8; default: 1). Keep fixed during benchmarks. |
 | `OPENCLAW_SANDBOX_SLEEP_AFTER_MS` | No | How long the sandbox stays alive after last activity, in milliseconds (60000–2700000; default: 1800000 = 30 min). Heartbeat and touch-throttle intervals are derived proportionally. Existing running sandboxes cannot be shortened in place. If you increase this value, the next touch/heartbeat can top the sandbox timeout up to the new target. If you decrease it, the lower value becomes exact on the next create or restore. |
 | `VERCEL_AUTOMATION_BYPASS_SECRET` | No | Enables protected webhook delivery when Deployment Protection is on. Slack URLs use it when configured; Telegram intentionally does not include the bypass query parameter and relies on webhook-secret validation instead. On protected deployments, Telegram needs a Deployment Protection Exception. |
 | `NEXT_PUBLIC_APP_URL` | No | Base origin override |
@@ -167,9 +169,9 @@ When you add or change Redis keys, route every key through `src/server/store/key
 | `/api/admin/preflight` | Deployment readiness checks |
 | `/api/admin/launch-verify` | Full launch verification |
 | `/api/queues/launch-verify` | Private queue consumer used by launch verification |
-| `/api/admin/ensure` | Trigger create or restore |
-| `/api/admin/stop` | Snapshot and stop |
-| `/api/admin/snapshot` | Snapshot and stop (same as stop for now) |
+| `/api/admin/ensure` | Trigger create or resume |
+| `/api/admin/stop` | Stop the sandbox (v2 auto-snapshots on stop) |
+| `/api/admin/snapshot` | Stop the sandbox (same as stop for now; v2 auto-snapshots) |
 | `/api/admin/snapshots/delete` | Delete a past snapshot from Vercel and local history |
 | `/api/admin/channel-secrets` | Configure smoke credentials and dispatch signed synthetic Slack/Telegram webhooks. Smoke dispatch uses `buildPublicUrl()` (bypass included) for all channels including Telegram — distinct from provider-facing registration which omits bypass for Telegram. |
 | `/api/cron/watchdog` | Cron watchdog for health repair and scheduled OpenClaw cron wake |

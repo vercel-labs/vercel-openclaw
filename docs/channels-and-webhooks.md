@@ -27,9 +27,9 @@ These warnings do **not** block channel save by themselves:
 - `VERCEL_AUTOMATION_BYPASS_SECRET` not set
 - `CRON_SECRET` not set
 
-They still matter for deterministic restores, protected webhook reachability, and cron recovery, but they are not part of the channel connectability hard-blocker set.
+They still matter for deterministic resumes, protected webhook reachability, and cron recovery, but they are not part of the channel connectability hard-blocker set.
 
-Destructive launch verification is a separate operational proof step. It is what proves queue delivery, sandbox boot or restore, real completions, wake-from-sleep, and restore-target sealing. The app does not currently use `channelReadiness.ready` as a save-time blocker; it is the signal that tells operators whether the current deployment is truly channel-ready.
+Destructive launch verification is a separate operational proof step. It is what proves queue delivery, sandbox boot or resume, real completions, wake-from-sleep, and resume-target sealing. The app does not currently use `channelReadiness.ready` as a save-time blocker; it is the signal that tells operators whether the current deployment is truly channel-ready.
 
 ## Preflight vs channel readiness
 
@@ -37,14 +37,14 @@ These checks answer different questions.
 
 **Preflight** answers: "Is the deployment configured well enough to expose a channel webhook?" It is config-only. It checks origin resolution, store availability, auth, and webhook prerequisites without touching the sandbox.
 
-**Safe launch verification** answers: "Can the deployment boot or restore the sandbox and get a real completion right now?" It runs `preflight`, `queuePing`, `ensureRunning`, and `chatCompletions`.
+**Safe launch verification** answers: "Can the deployment boot or resume the sandbox and get a real completion right now?" It runs `preflight`, `queuePing`, `ensureRunning`, and `chatCompletions`.
 
-**Destructive launch verification** answers: "Can the deployment survive the full delivery path, including stop, wake-from-sleep, and restore-target preparation?" It adds `wakeFromSleep` and `restorePrepared`. This is the only mode that can make `channelReadiness.ready` true.
+**Destructive launch verification** answers: "Can the deployment survive the full delivery path, including stop, wake-from-sleep, and resume-target preparation?" It adds `wakeFromSleep` and `restorePrepared`. This is the only mode that can make `channelReadiness.ready` true.
 
 The operator rule is simple:
 
 - Use **preflight** to see whether channel setup is blocked by config.
-- Use **safe mode** to prove the live runtime path without testing sleep and restore.
+- Use **safe mode** to prove the live runtime path without testing sleep and resume.
 - Use **destructive mode** before calling the deployment channel-ready.
 
 ## Recommended operator order
@@ -85,7 +85,7 @@ When a Slack message arrives at the webhook:
 
 1. The route validates the Slack signature.
 2. If the sandbox is running, the message is forwarded directly to the OpenClaw gateway's `/slack/events` endpoint on port 3000 inside the sandbox (the fast path).
-3. If the sandbox is stopped, the route starts a durable Workflow that restores the sandbox, sends the message to the gateway via `POST /v1/chat/completions`, and delivers the reply back to Slack.
+3. If the sandbox is stopped, the route starts a durable Workflow that resumes the sandbox, sends the message to the gateway via `POST /v1/chat/completions`, and delivers the reply back to Slack.
 4. Slack uses threaded replies for responses.
 
 ## Telegram
@@ -104,7 +104,7 @@ When a Telegram update arrives at the webhook:
 
 1. The route validates the webhook secret header.
 2. If the sandbox is running, the raw update is forwarded to OpenClaw's native Telegram handler on port 8787 inside the sandbox (the fast path). This preserves full native Telegram features — slash commands, media, inline keyboards, etc.
-3. If the sandbox is stopped, the route sends a boot message ("Starting up…") to the user, then starts a durable Workflow that restores the sandbox, sends the message via chat completions, delivers the reply, and deletes the boot message.
+3. If the sandbox is stopped, the route sends a boot message ("Starting up...") to the user, then starts a durable Workflow that resumes the sandbox, sends the message via chat completions, delivers the reply, and deletes the boot message.
 
 ## Protected deployments
 
@@ -128,7 +128,7 @@ No Workflow is started. No boot message is sent. The response comes back as quic
 When the sandbox is stopped and a channel message arrives, both platforms use a durable delivery path powered by Vercel Workflow:
 
 1. **Telegram only:** a boot message ("Starting up…") is sent to the user so they know the sandbox is waking.
-2. The Workflow step restores the sandbox if needed.
+2. The Workflow step resumes the sandbox if needed.
 3. The message is sent to the gateway via `POST /v1/chat/completions`.
 4. The reply is delivered back to the originating channel.
 5. **Telegram only:** the boot message is deleted after the reply is delivered.
@@ -143,7 +143,7 @@ The admin panel shows a channel as blocked when deployment prerequisites are sti
 
 ### Preflight passes but channel still is not trusted
 
-This means config looks good, but the current deployment has not yet proven the full delivery path. Preflight only checks config. Safe mode proves boot or restore plus a real completion, but destructive launch verification is still required before `channelReadiness.ready` becomes `true`.
+This means config looks good, but the current deployment has not yet proven the full delivery path. Preflight only checks config. Safe mode proves boot or resume plus a real completion, but destructive launch verification is still required before `channelReadiness.ready` becomes `true`.
 
 ### Slack works but Telegram registration fails on a protected deployment
 
@@ -155,16 +155,16 @@ Even when individual phases pass, `ok: false` means something is still wrong. Ch
 
 - `runtime.dynamicConfigVerified` — was the running sandbox config in sync with the deployment?
 - `sandboxHealth.configReconciled` — did stale config get successfully fixed?
-- `runtime.restorePreparedStatus` — is the restore target reusable for future boots?
+- `runtime.restorePreparedStatus` — is the resume target reusable for future boots?
 
-A partial pass with `ok: false` usually means dynamic config drifted or the restore target is not sealed. Re-running destructive verification after fixing the underlying issue is the right next step.
+A partial pass with `ok: false` usually means dynamic config drifted or the resume target is not sealed. Re-running destructive verification after fixing the underlying issue is the right next step.
 
 | Symptom | Likely meaning | Where to look |
 | ------- | -------------- | ------------- |
 | Channel connect is blocked | Deployment prerequisites are still failing | preflight checks, required actions |
 | Preflight passes but channel still is not trusted | Full runtime path has not been verified yet | `channelReadiness.ready`, destructive launch verification |
 | Slack works but Telegram registration fails on a protected deployment | Telegram is hitting protection behavior, not app auth | deployment protection exception, Telegram webhook URL behavior |
-| Launch verification phases look mostly healthy but overall result is false | Dynamic config or restore-target state is still unhealthy | `runtime.dynamicConfigVerified`, `sandboxHealth.configReconciled`, `restorePreparedStatus` |
+| Launch verification phases look mostly healthy but overall result is false | Dynamic config or resume-target state is still unhealthy | `runtime.dynamicConfigVerified`, `sandboxHealth.configReconciled`, `restorePreparedStatus` |
 
 ## Related docs
 

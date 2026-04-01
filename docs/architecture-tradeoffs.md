@@ -27,7 +27,7 @@ The sandbox sleeps after inactivity (default: 30 minutes). When it sleeps, there
 - Accept a webhook while the sandbox is stopped
 - Send a boot message to the user immediately
 - Durably queue the message until the sandbox is ready
-- Guarantee delivery even if the restore takes minutes
+- Guarantee delivery even if the resume takes seconds
 
 Without control plane channels, messages sent to a sleeping sandbox would be lost or delayed with no user feedback.
 
@@ -124,7 +124,7 @@ moltworker's always-on container is 0.5 vCPU. The cost is constant but low.
 
 ### Why vercel-openclaw sleeps
 
-Vercel Sandbox billing is usage-based. Sleeping the sandbox when idle reduces cost significantly for infrequent users. The tradeoff is the complexity of the wake path: restoring from snapshot, syncing config, re-establishing channel connections, and handling messages that arrive during the transition.
+Vercel Sandbox billing is usage-based. Sleeping the sandbox when idle reduces cost significantly for infrequent users. The tradeoff is the complexity of the wake path: resuming the persistent sandbox, syncing config, re-establishing channel connections, and handling messages that arrive during the transition.
 
 The `OPENCLAW_SANDBOX_SLEEP_AFTER_MS` variable controls the timeout (default: 1,800,000ms = 30 minutes). Setting it very high effectively mimics always-on behavior at higher cost.
 

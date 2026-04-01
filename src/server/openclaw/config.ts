@@ -542,8 +542,28 @@ if [ -n "$ai_gateway_api_key" ]; then
   export OPENAI_API_KEY="$ai_gateway_api_key"
   export OPENAI_BASE_URL="$ai_gateway_base_url"
 fi
-# Start gateway immediately — no pkill needed (snapshots have no running
-# processes) and no Telegram webhook delete needed before boot.
+# Install missing peer dependencies if not already present.
+# OpenClaw 2026.3.31+ ships @buape/carbon only inside the Discord extension
+# bundle, but the UI module also imports it — without this the gateway UI
+# returns 500 while API routes work fine.
+OC_PKG="/home/vercel-sandbox/.global/npm/lib/node_modules/openclaw"
+if [ ! -d "\$OC_PKG/node_modules/@buape/carbon" ]; then
+  echo '{"event":"fast_restore.installing_peer_deps"}' >&2
+  (
+    set -e
+    mkdir -p /tmp/openclaw-peer-deps && cd /tmp/openclaw-peer-deps
+    npm init -y > /dev/null 2>&1
+    npm install @buape/carbon --no-save --ignore-scripts --loglevel warn 2>&1
+    mkdir -p "\$OC_PKG/node_modules"
+    cp -r node_modules/@buape "\$OC_PKG/node_modules/"
+    rm -rf /tmp/openclaw-peer-deps
+  ) || echo '{"event":"fast_restore.peer_deps_failed"}' >&2
+fi
+# Kill any existing gateway process — persistent sandboxes may still have
+# the previous gateway running after resume.  Snapshots have no running
+# processes so this is a no-op for snapshot restores.
+pkill -f 'openclaw.gateway' 2>/dev/null || true
+sleep 1
 echo '{"event":"fast_restore.start_gateway"}' >&2
 # Always use Node for the gateway — Bun's WebSocket implementation does not
 # expose socket._socket.remoteAddress, which causes isLocalClient to return
@@ -563,7 +583,7 @@ while [ "\$(date +%s)" -lt "\$_deadline" ]; do
   if [ "\$((_attempts % 20))" = "0" ] && [ "\$_attempts" -gt 0 ]; then
     echo "{\"event\":\"fast_restore.probe\",\"attempt\":\$_attempts,\"http_code\":\"\$_http_code\"}" >&2
   fi
-  if [ "\$_http_code" -gt 0 ] 2>/dev/null && [ "\$_http_code" -lt 600 ] 2>/dev/null; then
+  if [ "\$_http_code" -gt 0 ] 2>/dev/null && [ "\$_http_code" -lt 500 ] 2>/dev/null; then
     _ready=1
     break
   fi

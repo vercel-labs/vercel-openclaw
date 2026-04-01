@@ -18,7 +18,7 @@
 
 ## What is this?
 
-This is a Next.js app that wraps [OpenClaw](https://openclaw.vercel.app) in a full control plane — auth, snapshots, channel integrations, and an egress firewall — and runs it inside a [Vercel Sandbox](https://vercel.com/docs/vercel-sandbox).
+This is a Next.js app that wraps [OpenClaw](https://openclaw.vercel.app) in a full control plane — auth, persistent sandboxes, channel integrations, and an egress firewall — and runs it inside a [Vercel Sandbox](https://vercel.com/docs/vercel-sandbox).
 
 Click **Deploy with Vercel** above, set a password, and you're up.
 
@@ -26,14 +26,14 @@ Click **Deploy with Vercel** above, set a password, and you're up.
 
 1. **Deploy** — the button auto-provisions an [Upstash Redis](https://vercel.com/marketplace/upstash-redis) database and asks for an `ADMIN_SECRET` (your password).
 2. **Sign in** — open the deployment and enter your admin secret.
-3. **Use OpenClaw** — visit `/gateway` or click **Start** in the admin panel. The first boot takes about a minute while OpenClaw is installed into the sandbox. After that, restores from snapshot take just a few seconds.
+3. **Use OpenClaw** — visit `/gateway` or click **Start** in the admin panel. The first boot takes about a minute while OpenClaw is installed into the sandbox. After that, resuming from stop takes about 10 seconds (the sandbox auto-snapshots on stop and auto-resumes on get).
 4. **Verify** — run destructive launch verification from the admin panel before connecting channels. Preflight is a config-readiness check. It does not prove the sandbox can complete a real channel delivery.
 5. **Connect channels** — optionally wire up Slack or Telegram from the admin panel so people can chat with your instance. For Slack, set `SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET`, and `SLACK_SIGNING_SECRET` to enable one-click OAuth install, or enter credentials manually. A deployment is channel-ready only after destructive launch verification passes and channelReadiness.ready is true.
 
 ## What you get
 
 - **Full OpenClaw UI** proxied at `/gateway` with auth and WebSocket rewriting
-- **Snapshot & restore** — save your sandbox state and roll back after experiments
+- **Persistent sandboxes** — sandbox state is automatically preserved on stop and restored on resume
 - **Slack & Telegram** — channel integrations with durable delivery
 - **Egress firewall** — learn which domains your agent talks to, then lock it down
 - **Auto-wake** — a cron watchdog wakes your sandbox when scheduled OpenClaw jobs are due
@@ -43,7 +43,7 @@ Click **Deploy with Vercel** above, set a password, and you're up.
 | Technology | Role |
 | ---------- | ---- |
 | [Next.js](https://nextjs.org) | App framework |
-| [Vercel Sandbox](https://vercel.com/docs/vercel-sandbox) | Runs the OpenClaw instance (create, snapshot, restore) |
+| [Vercel Sandbox](https://vercel.com/docs/vercel-sandbox) | Runs the OpenClaw instance (persistent sandboxes with auto-snapshot on stop, auto-resume on get) |
 | [Vercel AI Gateway](https://vercel.com/docs/ai-gateway) | OIDC-authenticated model access for the agent |
 | [Upstash Redis](https://vercel.com/marketplace/upstash-redis) | Persistent state — metadata, snapshots, channel config |
 | [Vercel Workflow](https://vercel.com/docs/workflow) | Durable channel message delivery (Slack, Telegram) |
@@ -73,7 +73,7 @@ npm run dev                      # http://localhost:3000
 | Document | Contents |
 | -------- | -------- |
 | [Architecture](docs/architecture.md) | System overview and subsystem map |
-| [Sandbox Lifecycle and Restore](docs/lifecycle-and-restore.md) | State transitions, snapshots, restore behavior |
+| [Sandbox Lifecycle and Restore](docs/lifecycle-and-restore.md) | State transitions, persistent sandboxes, resume behavior |
 | [Preflight and Launch Verification](docs/preflight-and-launch-verification.md) | Deployment readiness and runtime verification |
 | [Channels and Webhooks](docs/channels-and-webhooks.md) | Slack/Telegram setup, readiness, protection behavior |
 | [Environment Variables](docs/environment-variables.md) | Full env var reference |

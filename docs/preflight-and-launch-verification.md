@@ -17,7 +17,7 @@ Preflight is a config-readiness check. It does not prove the sandbox can complet
 
 Launch verification is the runtime check. It always starts with preflight, then runs one of two runtime paths.
 
-- **Safe mode** proves the deployment can receive a queue callback, boot or restore the sandbox, and get a real completion from the gateway.
+- **Safe mode** proves the deployment can receive a queue callback, boot or resume the sandbox, and get a real completion from the gateway.
 - **Destructive mode** proves everything in safe mode, then proves the stop-and-wake path and seals a reusable restore target.
 
 ## Safe mode vs destructive mode
@@ -38,7 +38,7 @@ Safe mode does **not** run these phases:
 - `wakeFromSleep`
 - `restorePrepared`
 
-That means safe mode can prove "the deployment works right now," but it does not prove wake-from-sleep or that the current restore target is ready to reuse. Safe mode does not make `channelReadiness.ready` true.
+That means safe mode can prove "the deployment works right now," but it does not prove wake-from-sleep or that the current resume target is ready to reuse. Safe mode does not make `channelReadiness.ready` true.
 
 ### Destructive mode
 
@@ -53,7 +53,7 @@ This is the only mode that proves the full channel-delivery path end to end. It 
 
 `GET /api/admin/preflight` and automation flags such as `--preflight-only` are config-only checks. They never touch the sandbox.
 
-Safe mode is stronger than preflight-only because it still runs `ensureRunning` and `chatCompletions`.
+Safe mode is stronger than preflight-only because it still runs `ensureRunning` (which creates or resumes the sandbox) and `chatCompletions`.
 
 ## Launch verification phases
 
@@ -61,10 +61,10 @@ Safe mode is stronger than preflight-only because it still runs `ensureRunning` 
 | ----- | ----------------- | ------------------------ | -------------- |
 | `preflight` | yes | yes | Config readiness — deployment requirements are met |
 | `queuePing` | yes | yes | Queue delivery loopback works |
-| `ensureRunning` | yes | yes | The sandbox can start from scratch or restore and become ready |
+| `ensureRunning` | yes | yes | The sandbox can start from scratch or resume and become ready |
 | `chatCompletions` | yes | yes | The gateway can answer a real completions request |
 | `wakeFromSleep` | no | yes | The stop-and-wake path works |
-| `restorePrepared` | no | yes | A fresh reusable restore target is sealed and verified |
+| `restorePrepared` | no | yes | A fresh reusable resume target is sealed and verified |
 
 ## Example safe mode result
 
@@ -94,15 +94,15 @@ When launch verification reports `ok: false`, these fields explain why:
 - `runtime.dynamicConfigReason` — `hash-match`, `hash-miss`, or `no-snapshot-hash`
 - `sandboxHealth.configReconciled` — whether stale config was successfully fixed
 - `sandboxHealth.configReconcileReason` — what happened during reconciliation
-- `runtime.restorePreparedStatus` — whether the restore target is reusable
-- `runtime.restorePreparedReason` — why the restore target is in its current state
+- `runtime.restorePreparedStatus` — whether the resume target is reusable
+- `runtime.restorePreparedReason` — why the resume target is in its current state
 
 ## Important nuances
 
 **`ok: true` means more than "the sandbox booted once."** The payload can still be unhealthy when:
 
 - Dynamic config has drifted since the last restore (`dynamicConfigVerified: false`)
-- The restore target is not reusable (`restorePreparedStatus` is not `ready`)
+- The resume target is not reusable (`restorePreparedStatus` is not `ready`)
 - Config reconciliation failed after an otherwise successful boot
 
 **`ok: false` is authoritative.** Even when individual phases look healthy, treat `ok: false` as a real problem. Stale dynamic config that could not be reconciled is a hard failure.

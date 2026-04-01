@@ -155,20 +155,20 @@ Both arrays always carry the same IDs. `warningChannelIds` exists solely so olde
 
 Automation should treat `payload.ok=false` as authoritative even when the main runtime phases look healthy, because stale dynamic config that could not be reconciled is a hard failure.
 
-### Restore-readiness fields
+### Resume-readiness fields
 
-Newer launch verification payloads expose restore-target readiness, not just "can the sandbox answer right now." These fields explain whether the current deployment has a reusable restore target and what action is still needed when it does not.
+Newer launch verification payloads expose resume-target readiness, not just "can the sandbox answer right now." These fields explain whether the current deployment has a reusable resume target and what action is still needed when it does not.
 
 - `runtime.restorePreparedStatus` — `unknown`, `dirty`, `preparing`, `ready`, or `failed`
 - `runtime.restorePreparedReason` — why the status is what it is (e.g. `prepared`, `dynamic-config-changed`, `snapshot-missing`)
-- `runtime.snapshotDynamicConfigHash` — config hash baked into the current snapshot
+- `runtime.snapshotDynamicConfigHash` — config hash baked into the current sandbox state
 - `runtime.runtimeDynamicConfigHash` — config hash the running deployment wants
-- `runtime.snapshotAssetSha256` — static asset hash in the snapshot
+- `runtime.snapshotAssetSha256` — static asset hash in the sandbox state
 - `runtime.runtimeAssetSha256` — static asset hash the running deployment expects
-- `runtime.restoreAttestation` — machine-readable attestation of whether the snapshot is reusable
+- `runtime.restoreAttestation` — machine-readable attestation of whether the sandbox is reusable for resume
 - `runtime.restorePlan` — action plan for making the restore target ready
 
-Example restore-readiness payload:
+Example resume-readiness payload:
 
 ```json
 {
@@ -191,7 +191,7 @@ Example restore-readiness payload:
 }
 ```
 
-See [Sandbox Lifecycle and Restore](lifecycle-and-restore.md) for a plain-English explanation of restore-prepared state.
+See [Sandbox Lifecycle and Restore](lifecycle-and-restore.md) for a plain-English explanation of resume-prepared state.
 
 ### Example blocked channel connect response
 
@@ -257,9 +257,9 @@ The response is a flat JSON object with several logical areas described below. E
 | `authMode` | `"admin-secret"` \| `"sign-in-with-vercel"` | Active auth mode for the deployment |
 | `storeBackend` | `"upstash"` \| `"memory"` | Which persistence backend is in use |
 | `persistentStore` | boolean | `true` when `storeBackend` is not `"memory"` |
-| `status` | string | Sandbox lifecycle state: `uninitialized`, `creating`, `setup`, `booting`, `running`, `stopped`, `restoring`, or `error` |
-| `sandboxId` | string \| null | Current sandbox ID, if one exists |
-| `snapshotId` | string \| null | Most recent snapshot ID used for restores |
+| `status` | string | Sandbox lifecycle state: `uninitialized`, `creating`, `setup`, `booting`, `running`, `stopped`, or `error` |
+| `sandboxId` | string \| null | Current sandbox ID, if one exists. With v2, this is preserved across stop/resume cycles. |
+| `snapshotId` | string \| null | Most recent snapshot ID (v2 auto-generates on stop). |
 | `lastError` | string \| null | Human-readable error from the last failed lifecycle operation |
 
 ##### Gateway readiness
@@ -312,17 +312,17 @@ Connectability is a **config-time** check. It tells you whether deployment prere
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `restoreTarget.restorePreparedStatus` | `"unknown"` \| `"dirty"` \| `"preparing"` \| `"ready"` \| `"failed"` | Current restore-target health |
+| `restoreTarget.restorePreparedStatus` | `"unknown"` \| `"dirty"` \| `"preparing"` \| `"ready"` \| `"failed"` | Current resume-target health |
 | `restoreTarget.restorePreparedReason` | string \| null | Why the status is what it is (e.g. `"prepared"`, `"dynamic-config-changed"`, `"snapshot-missing"`) |
 | `restoreTarget.restorePreparedAt` | number \| null | When the restore target was last prepared (Unix ms) |
-| `restoreTarget.snapshotDynamicConfigHash` | string \| null | Config hash baked into the current snapshot |
+| `restoreTarget.snapshotDynamicConfigHash` | string \| null | Config hash baked into the current sandbox state |
 | `restoreTarget.runtimeDynamicConfigHash` | string \| null | Config hash the running deployment wants |
-| `restoreTarget.snapshotAssetSha256` | string \| null | Static asset hash in the snapshot |
+| `restoreTarget.snapshotAssetSha256` | string \| null | Static asset hash in the sandbox state |
 | `restoreTarget.runtimeAssetSha256` | string \| null | Static asset hash the running deployment expects |
-| `restoreTarget.attestation` | object | Machine-readable check of whether the snapshot is reusable |
-| `restoreTarget.attestation.reusable` | boolean | `true` when the snapshot can be restored without resync |
-| `restoreTarget.attestation.needsPrepare` | boolean | `true` when a prepare cycle is needed before the snapshot is reusable |
-| `restoreTarget.attestation.reasons` | string[] | Why the snapshot is not reusable (empty when `reusable` is `true`) |
+| `restoreTarget.attestation` | object | Machine-readable check of whether the sandbox is reusable for resume |
+| `restoreTarget.attestation.reusable` | boolean | `true` when the sandbox can be resumed without resync |
+| `restoreTarget.attestation.needsPrepare` | boolean | `true` when a prepare cycle is needed before the sandbox is reusable |
+| `restoreTarget.attestation.reasons` | string[] | Why the sandbox is not reusable (empty when `reusable` is `true`) |
 | `restoreTarget.plan` | object | Machine-readable next actions to make the restore target ready |
 | `restoreTarget.plan.schemaVersion` | number | Always `1` |
 | `restoreTarget.plan.status` | string | Plan status (e.g. `"ready"`, `"action-needed"`) |
@@ -331,19 +331,19 @@ Connectability is a **config-time** check. It tells you whether deployment prere
 | `restoreTarget.plan.actions` | array | Ordered list of actions to take |
 | `restoreTarget.oracle` | object \| null | Background restore-prepare/oracle state |
 
-Read `attestation.reusable` and `plan.blocking` together: if the attestation says the snapshot is reusable and the plan is not blocking, the next restore will be fast and clean. If `attestation.reusable` is `false`, check `attestation.reasons` for what changed.
+Read `attestation.reusable` and `plan.blocking` together: if the attestation says the sandbox is reusable and the plan is not blocking, the next resume will be fast and clean. If `attestation.reusable` is `false`, check `attestation.reasons` for what changed.
 
 ##### Lifecycle
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `lifecycle.lastRestoreMetrics` | object \| null | Per-phase timings from the most recent restore. `null` when no restore has run. |
-| `lifecycle.lastRestoreMetrics.totalMs` | number | Total restore duration in milliseconds |
-| `lifecycle.lastRestoreMetrics.vcpus` | number | vCPU count used for the restore |
+| `lifecycle.lastRestoreMetrics` | object \| null | Per-phase timings from the most recent resume. `null` when no resume has run. |
+| `lifecycle.lastRestoreMetrics.totalMs` | number | Total resume duration in milliseconds |
+| `lifecycle.lastRestoreMetrics.vcpus` | number | vCPU count used for the resume |
 | `lifecycle.lastRestoreMetrics.dynamicConfigReason` | string | `"hash-match"`, `"hash-miss"`, or `"no-snapshot-hash"` |
 | `lifecycle.lastRestoreMetrics.skippedDynamicConfigSync` | boolean | Whether dynamic config sync was skipped (hash matched) |
-| `lifecycle.lastRestoreMetrics.dynamicConfigHash` | string \| null | Config hash recorded during the restore |
-| `lifecycle.restoreHistory` | array | Up to 5 most recent restore timing records (same shape as `lastRestoreMetrics`) |
+| `lifecycle.lastRestoreMetrics.dynamicConfigHash` | string \| null | Config hash recorded during the resume |
+| `lifecycle.restoreHistory` | array | Up to 5 most recent resume timing records (same shape as `lastRestoreMetrics`) |
 | `lifecycle.lastTokenRefreshAt` | number \| null | When the AI gateway token was last refreshed (Unix ms) |
 | `lifecycle.lastTokenSource` | string \| null | Token source (e.g. `"oidc"`) |
 | `lifecycle.lastTokenExpiresAt` | number \| null | When the current token expires (Unix ms) |
@@ -379,8 +379,8 @@ When `status` is `running` or `stopped`, `setupProgress` is always `null` regard
   "storeBackend": "upstash",
   "persistentStore": true,
   "status": "running",
-  "sandboxId": "sbx_123",
-  "snapshotId": "snap_456",
+  "sandboxId": "oc-prj-abc123",
+  "snapshotId": null,
   "gatewayReady": true,
   "gatewayStatus": "ready",
   "gatewayCheckedAt": 1760000000000,
@@ -473,8 +473,8 @@ When `status` is `running` or `stopped`, `setupProgress` is always `null` regard
   "storeBackend": "upstash",
   "persistentStore": true,
   "status": "running",
-  "sandboxId": "sbx_123",
-  "snapshotId": "snap_456",
+  "sandboxId": "oc-prj-abc123",
+  "snapshotId": null,
   "gatewayReady": false,
   "gatewayStatus": "not-ready",
   "gatewayCheckedAt": 1760000300000,
@@ -539,7 +539,7 @@ These distinctions are easy to confuse and worth calling out explicitly:
 
 **Channel connectability vs destructive launch verification.** `channels.<name>.connectability.canConnect: true` means the deployment prerequisites for saving channel credentials are met (public origin, AI gateway, store). It does **not** mean the channel has been proven to deliver messages end-to-end. That stronger guarantee requires destructive launch verification (`POST /api/admin/launch-verify` in destructive mode), which exercises the full wake → chat completions → channel round-trip path.
 
-**Restore-target readiness vs simple reachability.** `restorePreparedStatus: "ready"` means the current snapshot has been verified as a reusable restore target — its config hash and asset hash match the running deployment. This is a stronger statement than "the sandbox is reachable." A `"dirty"` restore target means the next restore will work but will need to resync config or assets, adding time. Check `attestation.reasons` for specifics.
+**Resume-target readiness vs simple reachability.** `restorePreparedStatus: "ready"` means the current sandbox state has been verified as a reusable resume target — its config hash and asset hash match the running deployment. This is a stronger statement than "the sandbox is reachable." A `"dirty"` resume target means the next resume will work but will need to resync config or assets, adding time. Check `attestation.reasons` for specifics.
 
 See [Channels and Webhooks](channels-and-webhooks.md) for the connectability-vs-readiness distinction, and [Sandbox Lifecycle and Restore](lifecycle-and-restore.md) for restore-target semantics.
 
