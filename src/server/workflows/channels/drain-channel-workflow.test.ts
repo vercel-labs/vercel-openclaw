@@ -8,6 +8,7 @@ import {
   toWorkflowProcessingError,
   type DrainChannelWorkflowDependencies,
   type RetryingForwardResult,
+  type TelegramProbeResult,
 } from "@/server/workflows/channels/drain-channel-workflow";
 
 class TestRetryableError extends Error {
@@ -70,6 +71,12 @@ function createWorkflowDependencies(
       attempts: 1,
       totalMs: 50,
       retries: [],
+    }),
+    waitForTelegramNativeHandler: async (): Promise<TelegramProbeResult> => ({
+      ready: true,
+      attempts: 1,
+      waitMs: 0,
+      lastStatus: 401,
     }),
     buildExistingBootHandle: async () => undefined,
     RetryableError: TestRetryableError as never,
@@ -545,4 +552,95 @@ test("processChannelStep forward passes meta with portUrls from boot result", as
   assert.ok(forwardedPortUrls, "portUrls should be present in forwarded meta");
   assert.equal(forwardedPortUrls["3000"], "https://gw.test");
   assert.equal(forwardedPortUrls["8787"], "https://tg.test");
+});
+
+// ---------------------------------------------------------------------------
+// Telegram native handler readiness probe tests
+// ---------------------------------------------------------------------------
+
+test("processChannelStep waits for Telegram native handler before forwarding", async () => {
+  // Simulates the scenario where the base server on port 8787 returns 200
+  // (swallowing the payload) until the Telegram handler registers and
+  // starts returning 401.
+  let probeCallCount = 0;
+  let forwardCalledAfterProbe = false;
+
+  const dependencies = createWorkflowDependencies({
+    runWithBootMessages: async () => ({
+      meta: asMeta({
+        status: "running",
+        sandboxId: "sbx-probe-test",
+        portUrls: { "3000": "https://gw.test", "8787": "https://tg.test" },
+        channels: {
+          telegram: { botToken: "tok", webhookSecret: "secret" } as never,
+          slack: null,
+          discord: null,
+          whatsapp: null,
+        },
+      }),
+      bootMessageSent: true,
+    }),
+    waitForTelegramNativeHandler: async () => {
+      probeCallCount += 1;
+      return { ready: true, attempts: 5, waitMs: 2500, lastStatus: 401 };
+    },
+    forwardToNativeHandlerWithRetry: async (): Promise<RetryingForwardResult> => {
+      forwardCalledAfterProbe = probeCallCount > 0;
+      return { ok: true, status: 200, attempts: 1, totalMs: 50, retries: [] };
+    },
+  });
+
+  await processChannelStep("telegram", { update_id: 1 }, "test", "req-probe", null, { dependencies });
+
+  assert.equal(probeCallCount, 1, "probe should be called exactly once for Telegram");
+  assert.ok(forwardCalledAfterProbe, "forward should only happen after probe completes");
+});
+
+test("processChannelStep does NOT probe for non-Telegram channels", async () => {
+  let probeCallCount = 0;
+
+  const dependencies = createWorkflowDependencies({
+    waitForTelegramNativeHandler: async () => {
+      probeCallCount += 1;
+      return { ready: true, attempts: 1, waitMs: 0, lastStatus: 401 };
+    },
+  });
+
+  await processChannelStep("slack", { event: {} }, "test", "req-no-probe", null, { dependencies });
+
+  assert.equal(probeCallCount, 0, "probe should NOT be called for Slack");
+});
+
+test("processChannelStep still forwards when Telegram probe times out", async () => {
+  // If the probe times out, we should still attempt the forward (best effort).
+  let forwardCalled = false;
+
+  const dependencies = createWorkflowDependencies({
+    runWithBootMessages: async () => ({
+      meta: asMeta({
+        status: "running",
+        sandboxId: "sbx-probe-timeout",
+        portUrls: { "3000": "https://gw.test", "8787": "https://tg.test" },
+        channels: {
+          telegram: { botToken: "tok", webhookSecret: "secret" } as never,
+          slack: null,
+          discord: null,
+          whatsapp: null,
+        },
+      }),
+      bootMessageSent: true,
+    }),
+    waitForTelegramNativeHandler: async () => {
+      // Probe timed out — handler never became ready
+      return { ready: false, attempts: 20, waitMs: 15000, lastStatus: 404 };
+    },
+    forwardToNativeHandlerWithRetry: async (): Promise<RetryingForwardResult> => {
+      forwardCalled = true;
+      return { ok: true, status: 200, attempts: 1, totalMs: 50, retries: [] };
+    },
+  });
+
+  await processChannelStep("telegram", { update_id: 1 }, "test", "req-probe-timeout", null, { dependencies });
+
+  assert.ok(forwardCalled, "forward should still be attempted even after probe timeout");
 });

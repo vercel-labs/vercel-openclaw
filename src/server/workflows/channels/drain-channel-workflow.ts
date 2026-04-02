@@ -33,6 +33,7 @@ export type DrainChannelWorkflowDependencies = {
   getSandboxDomain: typeof import("@/server/sandbox/lifecycle").getSandboxDomain;
   forwardToNativeHandler: typeof forwardToNativeHandler;
   forwardToNativeHandlerWithRetry: typeof forwardToNativeHandlerWithRetry;
+  waitForTelegramNativeHandler: typeof waitForTelegramNativeHandler;
   buildExistingBootHandle: typeof buildExistingBootHandle;
   RetryableError: typeof import("workflow").RetryableError;
   FatalError: typeof import("workflow").FatalError;
@@ -93,6 +94,7 @@ export async function processChannelStep(
     getSandboxDomain,
     forwardToNativeHandler,
     forwardToNativeHandlerWithRetry,
+    waitForTelegramNativeHandler: waitForTgHandler,
     buildExistingBootHandle,
   } = resolvedDependencies;
 
@@ -169,7 +171,7 @@ export async function processChannelStep(
     // isn't swallowed by the base server's generic 200 handler.
     if (channel === "telegram") {
       const { OPENCLAW_TELEGRAM_WEBHOOK_PORT } = await import("@/server/openclaw/config");
-      const probeResult = await waitForTelegramNativeHandler(
+      const probeResult = await waitForTgHandler(
         getSandboxDomain,
         OPENCLAW_TELEGRAM_WEBHOOK_PORT,
         readyMeta.channels?.telegram?.webhookSecret ?? null,
@@ -287,7 +289,7 @@ const TELEGRAM_PROBE_MAX_ATTEMPTS = 20;
 const TELEGRAM_PROBE_INTERVAL_MS = 500;
 const TELEGRAM_PROBE_TIMEOUT_MS = 15_000;
 
-type TelegramProbeResult = {
+export type TelegramProbeResult = {
   ready: boolean;
   attempts: number;
   waitMs: number;
@@ -756,6 +758,7 @@ async function loadDrainChannelWorkflowDependencies(): Promise<DrainChannelWorkf
     getSandboxDomain,
     forwardToNativeHandler,
     forwardToNativeHandlerWithRetry,
+    waitForTelegramNativeHandler,
     buildExistingBootHandle,
     RetryableError,
     FatalError,
