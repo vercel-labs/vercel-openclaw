@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 
 import type { WhatsAppGatewayConfig } from "@/server/openclaw/config";
 import {
+  OPENCLAW_AI_GATEWAY_API_KEY_PATH,
+  OPENCLAW_GATEWAY_TOKEN_PATH,
   buildFastRestoreScript,
   buildForcePairScript,
   buildGatewayConfig,
@@ -206,4 +208,50 @@ export function buildRestoreAssetManifest(): RestoreAssetManifest {
     sha256: hash.digest("hex"),
     staticPaths: staticFiles.map((file) => file.path),
   };
+}
+
+export type BootstrapFilesOptions = {
+  gatewayToken: string;
+  apiKey?: string;
+  proxyOrigin: string;
+  telegramBotToken?: string;
+  telegramWebhookSecret?: string;
+  slackCredentials?: { botToken: string; signingSecret: string };
+  whatsappConfig?: WhatsAppGatewayConfig;
+};
+
+/**
+ * Build the complete list of files written during bootstrap.
+ *
+ * This is the single source of truth for both initial bootstrap and
+ * restore-skip hash comparison.  Bootstrap calls this instead of
+ * maintaining its own hand-written file list.
+ */
+export function buildBootstrapFiles(
+  options: BootstrapFilesOptions,
+): { path: string; content: Buffer }[] {
+  const manifest = buildRestoreAssetManifest();
+  return [
+    ...buildDynamicRestoreFiles({
+      proxyOrigin: options.proxyOrigin,
+      apiKey: options.apiKey,
+      telegramBotToken: options.telegramBotToken,
+      telegramWebhookSecret: options.telegramWebhookSecret,
+      slackCredentials: options.slackCredentials,
+      whatsappConfig: options.whatsappConfig,
+    }),
+    {
+      path: OPENCLAW_GATEWAY_TOKEN_PATH,
+      content: Buffer.from(options.gatewayToken),
+    },
+    {
+      path: OPENCLAW_AI_GATEWAY_API_KEY_PATH,
+      content: Buffer.from(options.apiKey ?? ""),
+    },
+    ...buildStaticRestoreFiles(),
+    {
+      path: OPENCLAW_RESTORE_ASSET_MANIFEST_PATH,
+      content: Buffer.from(JSON.stringify(manifest) + "\n"),
+    },
+  ];
 }

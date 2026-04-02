@@ -273,6 +273,31 @@ export type RestoreOracleState = {
   lastResult: RestoreOracleLastResult | null;
 };
 
+// ---------------------------------------------------------------------------
+// Hot-spare sandbox state (feature-flagged, disabled by default)
+// ---------------------------------------------------------------------------
+
+export type HotSpareStatus =
+  | "idle"
+  | "creating"
+  | "ready"
+  | "promoting"
+  | "failed";
+
+export type HotSpareState = {
+  status: HotSpareStatus;
+  /** Sandbox ID of the pre-created candidate, or null. */
+  candidateSandboxId: string | null;
+  /** Port URLs resolved from the candidate sandbox. */
+  candidatePortUrls: Record<string, string> | null;
+  /** Unix-epoch ms when the candidate was created. */
+  createdAt: number | null;
+  /** Error message from the last failed attempt. */
+  lastError: string | null;
+  /** Unix-epoch ms of the last status change. */
+  updatedAt: number | null;
+};
+
 export type CronRestoreOutcome =
   | "no-store-jobs"
   | "already-present"
@@ -395,6 +420,8 @@ export type SingleMeta = {
   lifecycleAttemptId?: string | null;
   /** Persistent state for the restore oracle autopilot loop. */
   restoreOracle: RestoreOracleState;
+  /** Optional hot-spare sandbox candidate state (feature-flagged, disabled by default). */
+  hotSpare?: HotSpareState;
 };
 
 export const CURRENT_SCHEMA_VERSION = 3;
@@ -662,6 +689,9 @@ export function ensureMetaShape(
     restoreOracle: ensureRestoreOracleState(
       (raw as Record<string, unknown>).restoreOracle,
     ),
+    ...((raw as Record<string, unknown>).hotSpare
+      ? { hotSpare: ensureHotSpareState((raw as Record<string, unknown>).hotSpare) }
+      : {}),
   };
 }
 
@@ -865,6 +895,55 @@ export function ensureRestoreOracleState(value: unknown): RestoreOracleState {
     lastResult: isRestoreOracleLastResult(raw.lastResult)
       ? raw.lastResult
       : null,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Hot-spare state hydration
+// ---------------------------------------------------------------------------
+
+const VALID_HOT_SPARE_STATUSES = new Set<string>([
+  "idle", "creating", "ready", "promoting", "failed",
+]);
+
+function isHotSpareStatus(value: unknown): value is HotSpareStatus {
+  return typeof value === "string" && VALID_HOT_SPARE_STATUSES.has(value);
+}
+
+export function createDefaultHotSpareState(): HotSpareState {
+  return {
+    status: "idle",
+    candidateSandboxId: null,
+    candidatePortUrls: null,
+    createdAt: null,
+    lastError: null,
+    updatedAt: null,
+  };
+}
+
+export function ensureHotSpareState(raw: unknown): HotSpareState {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return createDefaultHotSpareState();
+  }
+  const obj = raw as Record<string, unknown>;
+  return {
+    status: isHotSpareStatus(obj.status) ? obj.status : "idle",
+    candidateSandboxId:
+      typeof obj.candidateSandboxId === "string"
+        ? obj.candidateSandboxId
+        : null,
+    candidatePortUrls:
+      obj.candidatePortUrls &&
+      typeof obj.candidatePortUrls === "object" &&
+      !Array.isArray(obj.candidatePortUrls)
+        ? (obj.candidatePortUrls as Record<string, string>)
+        : null,
+    createdAt:
+      typeof obj.createdAt === "number" ? obj.createdAt : null,
+    lastError:
+      typeof obj.lastError === "string" ? obj.lastError : null,
+    updatedAt:
+      typeof obj.updatedAt === "number" ? obj.updatedAt : null,
   };
 }
 

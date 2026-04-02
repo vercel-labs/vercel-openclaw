@@ -10,6 +10,22 @@ import { deleteMessage as deleteWhatsAppMessage } from "@/server/channels/whatsa
 import { logInfo, logWarn } from "@/server/log";
 import { getInitializedMeta } from "@/server/store/store";
 
+export type NativeHandlerWaitResult = {
+  attempts: number;
+  firstReadyMs: number | null;
+  confirmedReadyCount: number;
+  totalMs: number;
+  finalStatus: number | null;
+};
+
+export type RetryingForwardResult = {
+  ok: boolean;
+  status: number;
+  attempts: number;
+  totalMs: number;
+  retries: Array<{ attempt: number; reason: string; status?: number; error?: string }>;
+};
+
 export type DrainChannelWorkflowDependencies = {
   processChannelJob: typeof import("@/server/channels/driver").processChannelJob;
   isRetryable: typeof import("@/server/channels/driver").isRetryable;
@@ -21,8 +37,8 @@ export type DrainChannelWorkflowDependencies = {
   runWithBootMessages: typeof import("@/server/channels/core/boot-messages").runWithBootMessages;
   ensureSandboxReady: typeof import("@/server/sandbox/lifecycle").ensureSandboxReady;
   getSandboxDomain: typeof import("@/server/sandbox/lifecycle").getSandboxDomain;
-  waitForNativeHandler: typeof waitForNativeHandler;
   forwardToNativeHandler: typeof forwardToNativeHandler;
+  forwardToNativeHandlerWithRetry: typeof forwardToNativeHandlerWithRetry;
   buildExistingBootHandle: typeof buildExistingBootHandle;
   RetryableError: typeof import("workflow").RetryableError;
   FatalError: typeof import("workflow").FatalError;
@@ -62,8 +78,8 @@ export async function processChannelStep(
     runWithBootMessages,
     ensureSandboxReady,
     getSandboxDomain,
-    waitForNativeHandler,
     forwardToNativeHandler,
+    forwardToNativeHandlerWithRetry,
     buildExistingBootHandle,
   } = resolvedDependencies;
 
@@ -113,18 +129,31 @@ export async function processChannelStep(
       sandboxId: readyMeta.sandboxId,
     });
 
-    // --- Phase 2: Wait for native handler + forward raw payload ---
-    // The gateway (port 3000) is ready, but the native channel handler
-    // (e.g. port 8787 for Telegram) may need a few more seconds to start.
-    // Poll until the native handler is reachable before forwarding.
-    await waitForNativeHandler(channel as ChannelName, readyMeta, getSandboxDomain);
+    // --- Phase 2: Forward raw payload to native handler ---
+    // For Telegram, the native handler on port 8787 may not be ready yet.
+    // Instead of a separate synthetic probe + forward, we collapse both into
+    // a single retrying forward that sends the real payload directly.
+    // Retries only on proxy-level errors (502/503/504) and fetch exceptions.
+    // Non-Telegram channels use the direct (non-retrying) forward path.
+    let forwardResult: { ok: boolean; status: number };
+    let retryingResult: RetryingForwardResult | null = null;
 
-    const forwardResult = await forwardToNativeHandler(
-      channel as ChannelName,
-      payload,
-      readyMeta,
-      getSandboxDomain,
-    );
+    if (channel === "telegram") {
+      retryingResult = await forwardToNativeHandlerWithRetry(
+        channel as ChannelName,
+        payload,
+        readyMeta,
+        getSandboxDomain,
+      );
+      forwardResult = { ok: retryingResult.ok, status: retryingResult.status };
+    } else {
+      forwardResult = await forwardToNativeHandler(
+        channel as ChannelName,
+        payload,
+        readyMeta,
+        getSandboxDomain,
+      );
+    }
 
     logInfo("channels.workflow_native_forward_result", {
       channel,
@@ -132,6 +161,9 @@ export async function processChannelStep(
       sandboxId: readyMeta.sandboxId,
       ok: forwardResult.ok,
       status: forwardResult.status,
+      retryingForwardAttempts: retryingResult?.attempts ?? null,
+      retryingForwardTotalMs: retryingResult?.totalMs ?? null,
+      retryingForwardRetries: retryingResult?.retries?.length ?? null,
     });
 
     // Clean up the boot message after the native handler has processed.
@@ -150,7 +182,9 @@ export async function processChannelStep(
 }
 
 const NATIVE_HANDLER_POLL_INTERVAL_MS = 1_000;
+const NATIVE_HANDLER_CONFIRM_INTERVAL_MS = 250;
 const NATIVE_HANDLER_POLL_TIMEOUT_MS = 30_000;
+const NATIVE_HANDLER_REQUIRED_READY_PROBES = 2;
 const NATIVE_HANDLER_TIMEOUT_ERROR = "native_handler_timeout";
 
 function buildNativeHandlerTimeoutError(
@@ -170,21 +204,35 @@ function buildNativeHandlerTimeoutError(
  * the handler's HTTP server may accept connections before the message
  * processing pipeline is fully initialized.
  *
- * Strategy: poll until we get a non-proxy-error response (< 500), then wait
- * an additional stabilization period for the provider to finish initializing.
+ * Strategy: poll until we get consecutive non-proxy-error responses (< 500)
+ * to confirm the handler is stable, replacing the previous fixed 5s delay.
  */
 async function waitForNativeHandler(
   channel: ChannelName,
   meta: import("@/shared/types").SingleMeta,
   getSandboxDomain: (port?: number) => Promise<string>,
-): Promise<void> {
+): Promise<NativeHandlerWaitResult> {
   // Only Telegram uses a separate port; other channels use the main gateway port
-  if (channel !== "telegram") return;
+  if (channel !== "telegram") {
+    return {
+      attempts: 0,
+      firstReadyMs: null,
+      confirmedReadyCount: 0,
+      totalMs: 0,
+      finalStatus: null,
+    };
+  }
 
   const { OPENCLAW_TELEGRAM_WEBHOOK_PORT } = await import("@/server/openclaw/config");
-  const deadline = Date.now() + NATIVE_HANDLER_POLL_TIMEOUT_MS;
+  const startedAt = Date.now();
+  const deadline = startedAt + NATIVE_HANDLER_POLL_TIMEOUT_MS;
+  let attempts = 0;
+  let firstReadyMs: number | null = null;
+  let confirmedReadyCount = 0;
+  let finalStatus: number | null = null;
 
   while (Date.now() < deadline) {
+    attempts += 1;
     try {
       const sandboxUrl = await getSandboxDomain(OPENCLAW_TELEGRAM_WEBHOOK_PORT);
       const probe = await fetch(`${sandboxUrl}/telegram-webhook`, {
@@ -198,25 +246,67 @@ async function waitForNativeHandler(
         body: JSON.stringify({ update_id: 0 }),
         signal: AbortSignal.timeout(5_000),
       });
+      finalStatus = probe.status;
       // 502/503 from the Vercel proxy means the handler isn't listening yet.
       // Only accept responses that come from the actual handler (< 500).
       if (probe.status < 500) {
-        logInfo("channels.native_handler_ready", { channel, status: probe.status });
-        // The HTTP server accepts connections before the Telegram provider
-        // finishes initializing.  Wait for the provider to fully start
-        // (setWebhook, dedup init, etc.) before forwarding the real message.
-        await new Promise((r) => setTimeout(r, 5_000));
-        return;
+        confirmedReadyCount += 1;
+        if (firstReadyMs === null) {
+          firstReadyMs = Date.now() - startedAt;
+        }
+        logInfo("channels.native_handler_probe_ready", {
+          channel,
+          attempt: attempts,
+          status: probe.status,
+          confirmedReadyCount,
+          firstReadyMs,
+        });
+        if (confirmedReadyCount >= NATIVE_HANDLER_REQUIRED_READY_PROBES) {
+          const totalMs = Date.now() - startedAt;
+          logInfo("channels.native_handler_ready", {
+            channel,
+            attempts,
+            confirmedReadyCount,
+            firstReadyMs,
+            totalMs,
+            finalStatus: probe.status,
+          });
+          return {
+            attempts,
+            firstReadyMs,
+            confirmedReadyCount,
+            totalMs,
+            finalStatus: probe.status,
+          };
+        }
+        await new Promise((r) => setTimeout(r, NATIVE_HANDLER_CONFIRM_INTERVAL_MS));
+        continue;
       }
-      logInfo("channels.native_handler_proxy_error", { channel, status: probe.status });
-    } catch {
+      // Got a 5xx — reset consecutive ready count
+      confirmedReadyCount = 0;
+      logInfo("channels.native_handler_proxy_error", {
+        channel,
+        attempt: attempts,
+        status: probe.status,
+      });
+    } catch (error) {
       // Connection refused or timeout — handler not yet listening
+      confirmedReadyCount = 0;
+      logInfo("channels.native_handler_probe_failed", {
+        channel,
+        attempt: attempts,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
     await new Promise((r) => setTimeout(r, NATIVE_HANDLER_POLL_INTERVAL_MS));
   }
   logWarn("channels.native_handler_poll_timeout", {
     channel,
+    attempts,
     timeoutMs: NATIVE_HANDLER_POLL_TIMEOUT_MS,
+    firstReadyMs,
+    confirmedReadyCount,
+    finalStatus,
   });
   throw buildNativeHandlerTimeoutError(channel, NATIVE_HANDLER_POLL_TIMEOUT_MS);
 }
@@ -283,6 +373,102 @@ async function forwardToNativeHandler(
   });
 
   return { ok: response.ok, status: response.status };
+}
+
+const RETRYING_FORWARD_MAX_ATTEMPTS = 6;
+const RETRYING_FORWARD_RETRY_INTERVAL_MS = 1_000;
+const RETRYING_FORWARD_TIMEOUT_MS = 30_000;
+
+/**
+ * Collapsed probe + forward: sends the real payload directly to the native
+ * handler, retrying only on proxy-level failures (502/503/504) and fetch
+ * exceptions. This replaces the separate waitForNativeHandler + forwardToNativeHandler
+ * two-step path for Telegram, eliminating one network round-trip per wake.
+ *
+ * Duplicate-safety: retries ONLY happen when the handler definitely did not
+ * process the request. Any response < 502 (including 500) is treated as
+ * "handler received the request" and is never retried.
+ */
+async function forwardToNativeHandlerWithRetry(
+  channel: ChannelName,
+  payload: unknown,
+  meta: import("@/shared/types").SingleMeta,
+  getSandboxDomain: (port?: number) => Promise<string>,
+): Promise<RetryingForwardResult> {
+  const startedAt = Date.now();
+  const deadline = startedAt + RETRYING_FORWARD_TIMEOUT_MS;
+  const retries: Array<{ attempt: number; reason: string; status?: number; error?: string }> = [];
+
+  for (let attempt = 1; attempt <= RETRYING_FORWARD_MAX_ATTEMPTS && Date.now() < deadline; attempt++) {
+    try {
+      const result = await forwardToNativeHandler(channel, payload, meta, getSandboxDomain);
+
+      // Proxy-level failures (502/503/504): handler not listening yet. Safe to retry.
+      if (result.status >= 502) {
+        const entry = { attempt, reason: "proxy-error" as const, status: result.status };
+        retries.push(entry);
+        logInfo("channels.native_forward_retry", {
+          channel,
+          attempt,
+          status: result.status,
+          reason: "proxy-error",
+        });
+        if (attempt < RETRYING_FORWARD_MAX_ATTEMPTS && Date.now() < deadline) {
+          await new Promise((r) => setTimeout(r, RETRYING_FORWARD_RETRY_INTERVAL_MS));
+        }
+        continue;
+      }
+
+      // Any direct handler response (< 502): do NOT retry regardless of status.
+      // This includes 200 (success), 4xx (client error), 500 (server error).
+      const totalMs = Date.now() - startedAt;
+      logInfo("channels.retrying_forward_complete", {
+        channel,
+        ok: result.ok,
+        status: result.status,
+        attempts: attempt,
+        totalMs,
+        retryCount: retries.length,
+      });
+      return {
+        ok: result.ok,
+        status: result.status,
+        attempts: attempt,
+        totalMs,
+        retries,
+      };
+    } catch (error) {
+      // Connection refused, DNS failure, timeout — handler not reachable.
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      const entry = { attempt, reason: "fetch-exception" as const, error: errorMsg };
+      retries.push(entry);
+      logInfo("channels.native_forward_retry", {
+        channel,
+        attempt,
+        reason: "fetch-exception",
+        error: errorMsg,
+      });
+      if (attempt < RETRYING_FORWARD_MAX_ATTEMPTS && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, RETRYING_FORWARD_RETRY_INTERVAL_MS));
+      }
+    }
+  }
+
+  // Exhausted retries — report as gateway timeout.
+  const totalMs = Date.now() - startedAt;
+  logWarn("channels.retrying_forward_exhausted", {
+    channel,
+    attempts: RETRYING_FORWARD_MAX_ATTEMPTS,
+    totalMs,
+    retryCount: retries.length,
+  });
+  return {
+    ok: false,
+    status: 504,
+    attempts: RETRYING_FORWARD_MAX_ATTEMPTS,
+    totalMs,
+    retries,
+  };
 }
 
 async function buildExistingBootHandle(
@@ -490,8 +676,8 @@ async function loadDrainChannelWorkflowDependencies(): Promise<DrainChannelWorkf
     runWithBootMessages,
     ensureSandboxReady,
     getSandboxDomain,
-    waitForNativeHandler,
     forwardToNativeHandler,
+    forwardToNativeHandlerWithRetry,
     buildExistingBootHandle,
     RetryableError,
     FatalError,

@@ -77,6 +77,14 @@ import {
   startLockKey,
   tokenRefreshLockKey,
 } from "@/server/store/keyspace";
+import {
+  isHotSpareEnabled,
+  preCreateHotSpare,
+  promoteHotSpare,
+  applyPreCreateToMeta,
+  applyPromoteToMeta,
+  clearHotSpareState,
+} from "@/server/sandbox/hot-spare";
 
 const OPENCLAW_PORT = 3000;
 const SANDBOX_PORTS = [OPENCLAW_PORT, OPENCLAW_TELEGRAM_WEBHOOK_PORT];
@@ -646,13 +654,35 @@ export async function stopSandbox(): Promise<SingleMeta> {
       // v2 persistent sandboxes auto-snapshot on stop — no manual snapshot() needed
       await sandbox.stop({ blocking: true });
 
-      return mutateMeta((next) => {
+      const stoppedMeta = await mutateMeta((next) => {
         // Keep sandboxId — persistent sandbox persists across stop/resume
         next.portUrls = null;
         next.status = "stopped";
         next.lastAccessedAt = Date.now();
         next.lastError = null;
       });
+
+      // Hot-spare: best-effort pre-create a candidate sandbox after stop.
+      // Gated — no-op when OPENCLAW_HOT_SPARE_ENABLED is not "true".
+      if (isHotSpareEnabled()) {
+        try {
+          const result = await preCreateHotSpare(stoppedMeta, {
+            create: (opts) => getSandboxController().create(opts),
+            getSandboxVcpus,
+            getSandboxSleepAfterMs,
+            sandboxPorts: SANDBOX_PORTS,
+          });
+          if (result.status !== "skipped") {
+            await mutateMeta((m) => applyPreCreateToMeta(m, result));
+          }
+        } catch (err) {
+          logWarn("hot_spare.post_stop_pre_create_failed", {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+
+      return stoppedMeta;
     } catch (err) {
       // The sandbox may have already been stopped by the platform (timeout
       // expiry, etc.).  The Vercel API returns 404 or 410 in this case.
@@ -2289,9 +2319,39 @@ async function createAndBootstrapSandboxWithinLifecycleLock(
       sleepAfterMs,
     }));
 
-    // Try get() first (auto-resumes stopped persistent sandbox in one call).
-    // Fall back to create() only if the sandbox doesn't exist yet.
-    let sandbox;
+    // Hot-spare fast path: try to promote a pre-created candidate sandbox.
+    // If promotion succeeds, skip the normal get/create flow entirely.
+    // Gated — no-op when OPENCLAW_HOT_SPARE_ENABLED is not "true".
+    let sandbox: SandboxHandle | undefined;
+    if (isHotSpareEnabled()) {
+      try {
+        const promoteResult = await promoteHotSpare(current, {
+          get: (opts) => getSandboxController().get(opts),
+        });
+        if (promoteResult.status === "promoted" && promoteResult.promotedSandboxId) {
+          sandbox = await getSandboxController().get({ sandboxId: promoteResult.promotedSandboxId });
+          await mutateMeta((m) => applyPromoteToMeta(m, promoteResult));
+          progress.appendLine("system", `Hot-spare promoted: ${sandbox.sandboxId}`);
+          logInfo("sandbox.create.hot_spare_promoted", ctx({
+            promotedSandboxId: sandbox.sandboxId,
+          }));
+        } else if (promoteResult.status === "failed") {
+          // Promotion failed — clear stale hot-spare state and fall through.
+          await mutateMeta((m) => clearHotSpareState(m));
+          logInfo("sandbox.create.hot_spare_fallback", ctx({
+            error: promoteResult.error,
+          }));
+        }
+      } catch (err) {
+        logWarn("sandbox.create.hot_spare_promote_error", ctx({
+          error: err instanceof Error ? err.message : String(err),
+        }));
+      }
+    }
+
+    // Normal path: get() first (auto-resumes stopped persistent sandbox in
+    // one call).  Fall back to create() only if the sandbox doesn't exist yet.
+    if (!sandbox) {
     try {
       progress.appendLine("system", `Resuming persistent sandbox: ${sandboxName}`);
       sandbox = await getSandboxController().get({ sandboxId: sandboxName });
@@ -2319,6 +2379,7 @@ async function createAndBootstrapSandboxWithinLifecycleLock(
         throw createErr;
       }
     }
+    } // end if (!sandbox)
 
     logInfo("sandbox.status_transition", ctx({ from: "creating", to: "setup", sandboxId: sandbox.sandboxId, sandboxStatus: sandbox.status, vcpus, sleepAfterMs }));
     await mutateMeta((meta) => {

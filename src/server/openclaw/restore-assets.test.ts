@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  buildBootstrapFiles,
   buildDynamicRestoreFiles,
   buildRestoreAssetManifest,
   buildRestoreRuntimeEnv,
@@ -224,4 +225,91 @@ test("manifest path is under the openclaw state directory", () => {
     `Expected ${OPENCLAW_RESTORE_ASSET_MANIFEST_PATH} to start with ${OPENCLAW_STATE_DIR}`,
   );
   assert.ok(OPENCLAW_RESTORE_ASSET_MANIFEST_PATH.endsWith(".json"));
+});
+
+// --- buildBootstrapFiles ---
+
+test("buildBootstrapFiles includes all static, dynamic, token, key, and manifest files", () => {
+  const files = buildBootstrapFiles({
+    gatewayToken: "tok-test",
+    apiKey: "ak-test",
+    proxyOrigin: "https://bootstrap.test",
+  });
+
+  const paths = files.map((f) => f.path);
+
+  // Dynamic: openclaw.json
+  assert.ok(paths.includes(OPENCLAW_CONFIG_PATH), "should include openclaw.json");
+  // Static: startup, force-pair, restart scripts
+  assert.ok(paths.includes(OPENCLAW_STARTUP_SCRIPT_PATH), "should include startup script");
+  assert.ok(paths.includes(OPENCLAW_FORCE_PAIR_SCRIPT_PATH), "should include force-pair script");
+  assert.ok(paths.includes(OPENCLAW_GATEWAY_RESTART_SCRIPT_PATH), "should include restart script");
+  // Token files
+  const tokenFile = files.find((f) => f.path.endsWith(".gateway-token"));
+  assert.ok(tokenFile, "should include gateway token file");
+  assert.equal(tokenFile!.content.toString(), "tok-test");
+  const keyFile = files.find((f) => f.path.endsWith(".ai-gateway-api-key"));
+  assert.ok(keyFile, "should include AI gateway key file");
+  assert.equal(keyFile!.content.toString(), "ak-test");
+  // Manifest
+  assert.ok(paths.includes(OPENCLAW_RESTORE_ASSET_MANIFEST_PATH), "should include manifest");
+});
+
+test("buildBootstrapFiles writes empty AI key when apiKey is omitted", () => {
+  const files = buildBootstrapFiles({
+    gatewayToken: "tok",
+    proxyOrigin: "https://no-key.test",
+  });
+  const keyFile = files.find((f) => f.path.endsWith(".ai-gateway-api-key"));
+  assert.ok(keyFile);
+  assert.equal(keyFile!.content.toString(), "");
+});
+
+test("buildBootstrapFiles includes telegram bot token when provided", () => {
+  const files = buildBootstrapFiles({
+    gatewayToken: "tok",
+    proxyOrigin: "https://tg.test",
+    telegramBotToken: "tg-bot-token",
+    telegramWebhookSecret: "tg-secret",
+  });
+  const paths = files.map((f) => f.path);
+  assert.ok(
+    paths.some((p) => p.includes("telegram-bot-token")),
+    "should include telegram bot token file",
+  );
+});
+
+test("buildBootstrapFiles is a superset of static + dynamic restore files", () => {
+  const opts = {
+    gatewayToken: "tok",
+    apiKey: "ak",
+    proxyOrigin: "https://superset.test",
+  };
+  const bootstrapPaths = new Set(buildBootstrapFiles(opts).map((f) => f.path));
+  const staticPaths = buildStaticRestoreFiles().map((f) => f.path);
+  const dynamicPaths = buildDynamicRestoreFiles({
+    proxyOrigin: opts.proxyOrigin,
+    apiKey: opts.apiKey,
+  }).map((f) => f.path);
+
+  for (const p of staticPaths) {
+    assert.ok(bootstrapPaths.has(p), `bootstrap missing static path: ${p}`);
+  }
+  for (const p of dynamicPaths) {
+    assert.ok(bootstrapPaths.has(p), `bootstrap missing dynamic path: ${p}`);
+  }
+});
+
+test("buildBootstrapFiles manifest matches buildRestoreAssetManifest", () => {
+  const files = buildBootstrapFiles({
+    gatewayToken: "tok",
+    proxyOrigin: "https://manifest.test",
+  });
+  const manifestFile = files.find(
+    (f) => f.path === OPENCLAW_RESTORE_ASSET_MANIFEST_PATH,
+  );
+  assert.ok(manifestFile, "manifest file should be present");
+  const embedded = JSON.parse(manifestFile!.content.toString());
+  const standalone = buildRestoreAssetManifest();
+  assert.deepStrictEqual(embedded, standalone);
 });

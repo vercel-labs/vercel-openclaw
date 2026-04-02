@@ -6,6 +6,7 @@ import {
   processChannelStep,
   toWorkflowProcessingError,
   type DrainChannelWorkflowDependencies,
+  type RetryingForwardResult,
 } from "@/server/workflows/channels/drain-channel-workflow";
 
 class TestRetryableError extends Error {
@@ -61,8 +62,14 @@ function createWorkflowDependencies(
         channels: { telegram: null, slack: null, discord: null, whatsapp: null },
       }),
     getSandboxDomain: async () => "https://sandbox.example.test",
-    waitForNativeHandler: async () => {},
     forwardToNativeHandler: async () => ({ ok: true, status: 200 }),
+    forwardToNativeHandlerWithRetry: async (): Promise<RetryingForwardResult> => ({
+      ok: true,
+      status: 200,
+      attempts: 1,
+      totalMs: 50,
+      retries: [],
+    }),
     buildExistingBootHandle: async () => undefined,
     RetryableError: TestRetryableError as never,
     FatalError: TestFatalError as never,
@@ -87,9 +94,9 @@ test("processChannelStep always ensures sandbox readiness before native forward"
         channels: { telegram: null, slack: null, discord: null, whatsapp: null },
       });
     },
-    forwardToNativeHandler: async (_channel: unknown, _payload: unknown, meta: SingleMeta) => {
+    forwardToNativeHandlerWithRetry: async (_channel: unknown, _payload: unknown, meta: SingleMeta): Promise<RetryingForwardResult> => {
       forwardedSandboxId = meta.sandboxId ?? null;
-      return { ok: true, status: 200 };
+      return { ok: true, status: 200, attempts: 1, totalMs: 50, retries: [] };
     },
   });
 
@@ -99,9 +106,9 @@ test("processChannelStep always ensures sandbox readiness before native forward"
   assert.equal(forwardedSandboxId, "sbx-restored");
 });
 
-test("processChannelStep converts native handler timeout into RetryableError", async () => {
+test("processChannelStep converts retrying forward fetch exception into RetryableError", async () => {
   const dependencies = createWorkflowDependencies({
-    waitForNativeHandler: async () => {
+    forwardToNativeHandlerWithRetry: async () => {
       throw new Error("native_handler_timeout channel=telegram timeoutMs=30000");
     },
   });
@@ -116,9 +123,15 @@ test("processChannelStep converts native handler timeout into RetryableError", a
   );
 });
 
-test("processChannelStep converts native forward 502 into RetryableError", async () => {
+test("processChannelStep converts native forward 502 into RetryableError (Telegram retrying path)", async () => {
   const dependencies = createWorkflowDependencies({
-    forwardToNativeHandler: async () => ({ ok: false, status: 502 }),
+    forwardToNativeHandlerWithRetry: async (): Promise<RetryingForwardResult> => ({
+      ok: false,
+      status: 502,
+      attempts: 6,
+      totalMs: 6000,
+      retries: [{ attempt: 1, reason: "proxy-error", status: 502 }],
+    }),
   });
 
   await assert.rejects(
@@ -131,15 +144,107 @@ test("processChannelStep converts native forward 502 into RetryableError", async
   );
 });
 
-test("processChannelStep keeps native forward 404 fatal", async () => {
+test("processChannelStep keeps native forward 404 fatal (Telegram retrying path)", async () => {
   const dependencies = createWorkflowDependencies({
-    forwardToNativeHandler: async () => ({ ok: false, status: 404 }),
+    forwardToNativeHandlerWithRetry: async (): Promise<RetryingForwardResult> => ({
+      ok: false,
+      status: 404,
+      attempts: 1,
+      totalMs: 50,
+      retries: [],
+    }),
   });
 
   await assert.rejects(
     processChannelStep("telegram", { update_id: 1 }, "test", "req-1", null, dependencies),
     (error: unknown) => {
       assert.ok(error instanceof TestFatalError);
+      return true;
+    },
+  );
+});
+
+test("processChannelStep uses retrying forward for Telegram, direct forward for Slack", async () => {
+  let retryingCalled = false;
+  let directCalled = false;
+
+  const telegramDeps = createWorkflowDependencies({
+    forwardToNativeHandlerWithRetry: async (): Promise<RetryingForwardResult> => {
+      retryingCalled = true;
+      return { ok: true, status: 200, attempts: 1, totalMs: 50, retries: [] };
+    },
+    forwardToNativeHandler: async () => {
+      directCalled = true;
+      return { ok: true, status: 200 };
+    },
+  });
+
+  await processChannelStep("telegram", { update_id: 1 }, "test", "req-tg", null, telegramDeps);
+  assert.ok(retryingCalled, "Telegram should use retrying forward");
+  assert.ok(!directCalled, "Telegram should not use direct forward");
+
+  retryingCalled = false;
+  directCalled = false;
+
+  const slackDeps = createWorkflowDependencies({
+    forwardToNativeHandlerWithRetry: async (): Promise<RetryingForwardResult> => {
+      retryingCalled = true;
+      return { ok: true, status: 200, attempts: 1, totalMs: 50, retries: [] };
+    },
+    forwardToNativeHandler: async () => {
+      directCalled = true;
+      return { ok: true, status: 200 };
+    },
+  });
+
+  await processChannelStep("slack", { event: {} }, "test", "req-slack", null, slackDeps);
+  assert.ok(!retryingCalled, "Slack should not use retrying forward");
+  assert.ok(directCalled, "Slack should use direct forward");
+});
+
+test("processChannelStep converts retrying forward 504 (exhausted) into RetryableError", async () => {
+  const dependencies = createWorkflowDependencies({
+    forwardToNativeHandlerWithRetry: async (): Promise<RetryingForwardResult> => ({
+      ok: false,
+      status: 504,
+      attempts: 6,
+      totalMs: 30000,
+      retries: [
+        { attempt: 1, reason: "proxy-error", status: 503 },
+        { attempt: 2, reason: "fetch-exception", error: "connect ECONNREFUSED" },
+      ],
+    }),
+  });
+
+  await assert.rejects(
+    processChannelStep("telegram", { update_id: 1 }, "test", "req-1", null, dependencies),
+    (error: unknown) => {
+      assert.ok(error instanceof TestRetryableError);
+      assert.equal((error as TestRetryableError).retryAfter, "15s");
+      return true;
+    },
+  );
+});
+
+test("processChannelStep treats retrying forward 500 as retryable at workflow level", async () => {
+  // A 500 from the handler is NOT retried within the forward loop (handler processed
+  // the request), but is still retryable at the workflow step level since the
+  // existing error mapper treats native_forward_failed >= 500 as transient.
+  const dependencies = createWorkflowDependencies({
+    forwardToNativeHandlerWithRetry: async (): Promise<RetryingForwardResult> => ({
+      ok: false,
+      status: 500,
+      attempts: 1,
+      totalMs: 100,
+      retries: [],
+    }),
+  });
+
+  await assert.rejects(
+    processChannelStep("telegram", { update_id: 1 }, "test", "req-1", null, dependencies),
+    (error: unknown) => {
+      assert.ok(error instanceof TestRetryableError);
+      assert.equal((error as TestRetryableError).retryAfter, "15s");
       return true;
     },
   );
