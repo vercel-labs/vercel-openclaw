@@ -9,7 +9,7 @@ import {
   type DeploymentContract,
   type DeploymentRequirement,
 } from "@/server/deployment-contract";
-import { logInfo } from "@/server/log";
+import { logDebug, logInfo } from "@/server/log";
 import { buildChannelDisplayWebhookUrl } from "@/server/channels/webhook-urls";
 
 const ALL_CHANNELS: ChannelName[] = ["slack", "telegram", "discord", "whatsapp"];
@@ -208,7 +208,7 @@ export async function buildChannelPrerequisite(
     .filter((r) => r.status !== "pass" && NON_CHANNEL_BLOCKING_REQUIREMENTS.has(r.id))
     .map((r) => `${r.id}:${r.status}`);
 
-  logInfo("channel_prerequisite.built", {
+  logDebug("channel_prerequisite.built", {
     channel,
     mode: def.mode,
     status: summarizeStatus(issues),
@@ -267,7 +267,7 @@ export async function buildChannelConnectabilityMap(
     ALL_CHANNELS.map((ch, i) => [ch, results[i]]),
   ) as Record<ChannelName, ChannelConnectability>;
 
-  logInfo("channel_connectability_map.built", {
+  logDebug("channel_connectability_map.built", {
     contractSource,
     channels: ALL_CHANNELS.map((ch) => `${ch}:${map[ch].status}`),
   });

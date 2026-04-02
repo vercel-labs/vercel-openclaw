@@ -77,11 +77,11 @@ describe("log() ring buffer", () => {
     logError("e");
     logDebug("d");
     const logs = getServerLogs();
-    assert.equal(logs.length, 4);
+    // Debug entries are excluded from the ring buffer (console only)
+    assert.equal(logs.length, 3);
     assert.equal(logs[0].level, "info");
     assert.equal(logs[1].level, "warn");
     assert.equal(logs[2].level, "error");
-    assert.equal(logs[3].level, "debug");
   });
 });
 
@@ -203,7 +203,8 @@ describe("getFilteredServerLogs()", () => {
 
   it("returns all entries with no filters", () => {
     const results = getFilteredServerLogs({});
-    assert.equal(results.length, 5);
+    // Debug entries are excluded from the ring buffer (they only go to console)
+    assert.equal(results.length, 4);
   });
 
   it("search is case-insensitive", () => {
@@ -220,7 +221,8 @@ describe("getFilteredServerLogs()", () => {
       source: "system",
       message: "injected",
     });
-    assert.equal(getServerLogs().length, 5);
+    // Debug entries excluded from ring buffer, so 4 not 5
+    assert.equal(getServerLogs().length, 4);
   });
 });
 

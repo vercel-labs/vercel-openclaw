@@ -477,6 +477,12 @@ The admin page is intentionally small. It is a control surface, not a dashboard 
 
 **Terminal tab:** Shows the current sandbox ID and a copy-paste `npx sandbox connect <id>` command for an interactive shell via the [Vercel Sandbox CLI](https://vercel.com/docs/vercel-sandbox). Users run `npx sandbox login` first. If connect returns 404, append `--scope TEAM_SLUG --project PROJECT_NAME`, or set optional `NEXT_PUBLIC_SANDBOX_SCOPE` / `NEXT_PUBLIC_SANDBOX_PROJECT` so the UI pre-fills those flags.
 
+## Server log ring buffer
+
+`src/server/log.ts` keeps an in-memory ring buffer of the last 1000 log entries, served via `GET /api/admin/logs`. **Debug-level entries are excluded from the ring buffer** — they only go to `console.debug` (visible in Vercel function logs). This prevents high-frequency diagnostic logs from evicting operationally important entries.
+
+When adding new `logInfo` calls to code that runs on every request (status polling, connectability checks, URL resolution), use `logDebug` instead. The admin UI polls `/api/status` multiple times per second; each info-level log from that path evicts one operational log (webhook events, workflow results, lifecycle transitions) from the buffer. Use `logInfo` only for events that operators need to see in the admin logs panel.
+
 ## Important implementation constraints
 
 - Do not add `export const runtime = "nodejs"` to route handlers. This repo uses `cacheComponents: true` in `next.config.ts`, and explicit `runtime` exports break the Next.js 16 build.

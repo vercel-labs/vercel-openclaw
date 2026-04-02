@@ -79,9 +79,14 @@ export function log(level: LogLevel, msg: string, ctx?: Record<string, unknown>)
     }
   }
 
-  _buffer.push(entry);
-  if (_buffer.length > RING_BUFFER_SIZE) {
-    _buffer = _buffer.slice(-RING_BUFFER_SIZE);
+  // Debug entries go to console (Vercel function logs) but not the ring
+  // buffer.  This prevents high-frequency diagnostic logs from evicting
+  // operationally important info/warn/error entries.
+  if (level !== "debug") {
+    _buffer.push(entry);
+    if (_buffer.length > RING_BUFFER_SIZE) {
+      _buffer = _buffer.slice(-RING_BUFFER_SIZE);
+    }
   }
 
   const payload = JSON.stringify({

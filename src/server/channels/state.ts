@@ -20,7 +20,7 @@ import {
 } from "@/server/channels/webhook-urls";
 import { getSlackInstallConfig } from "@/server/channels/slack/install-config";
 import { buildDeploymentContract } from "@/server/deployment-contract";
-import { logInfo } from "@/server/log";
+import { logDebug, logInfo } from "@/server/log";
 import { getInitializedMeta, mutateMeta } from "@/server/store/store";
 
 export type {
@@ -78,7 +78,7 @@ export async function getPublicChannelState(
     },
   });
 
-  logInfo("public_channel_state.built", {
+  logDebug("public_channel_state.built", {
     contractSource: "fresh",
     channels: (["slack", "telegram", "discord", "whatsapp"] as const).map(
       (ch) => `${ch}:${connectability[ch].status}`,

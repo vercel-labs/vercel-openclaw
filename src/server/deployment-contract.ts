@@ -6,7 +6,7 @@ import {
   getStoreEnv,
   isVercelDeployment,
 } from "@/server/env";
-import { logInfo } from "@/server/log";
+import { logDebug, logInfo } from "@/server/log";
 import { getProtectionBypassSecret, resolvePublicOrigin } from "@/server/public-url";
 
 // Re-export shared types so existing consumers keep working.
@@ -364,7 +364,7 @@ export async function buildDeploymentContract(
 
   const ok = requirements.every((r) => r.status !== "fail");
 
-  logInfo("deployment_contract.built", {
+  logDebug("deployment_contract.built", {
     ok,
     authMode,
     storeBackend,
