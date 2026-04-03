@@ -3,6 +3,7 @@ import test from "node:test";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import type { StatusPayload, RequestJson } from "@/components/admin-types";
+import type { ReadJsonDeps } from "@/components/admin-request-core";
 import {
   DEFAULT_STATUS_LIFECYCLE,
   DEFAULT_STATUS_RESTORE_TARGET,
@@ -84,6 +85,11 @@ const CHANNELS: StatusPayload["channels"] = {
   },
 };
 
+const READ_DEPS: ReadJsonDeps = {
+  setStatus: () => {},
+  toastError: () => {},
+};
+
 const REQUEST_JSON: RequestJson = async () => ({
   ok: true,
   data: null,
@@ -145,6 +151,7 @@ function renderPanel(
       busy={busy}
       requestJson={REQUEST_JSON}
       refresh={async () => {}}
+      readDeps={READ_DEPS}
     />,
   );
 }
@@ -172,7 +179,7 @@ test("FirewallPanel shows no events message when events are empty", () => {
   assert.ok(html.includes("No firewall events yet"));
 });
 
-test("FirewallPanel accepts readDeps prop without errors", () => {
+test("FirewallPanel requires readDeps prop", () => {
   const html = renderToStaticMarkup(
     <FirewallPanel
       active

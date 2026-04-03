@@ -35,7 +35,7 @@ type SnapshotsPanelProps = {
   busy: boolean;
   runAction: RunAction;
   requestJson: RequestJson;
-  readDeps?: ReadJsonDeps;
+  readDeps: ReadJsonDeps;
 };
 
 export function SnapshotsPanel({
@@ -66,23 +66,10 @@ export function SnapshotsPanel({
     if (!active) return;
     setLoading(true);
     try {
-      if (readDeps) {
-        const result = await fetchAdminJsonCore<{ snapshots: SnapshotRecord[] }>("/api/admin/snapshots", readDeps);
-        if (result.ok) {
-          setSnapshots(result.data.snapshots);
-        }
-      } else {
-        const res = await fetch("/api/admin/snapshots", {
-          cache: "no-store",
-          headers: { accept: "application/json" },
-        });
-        if (res.ok) {
-          const data = (await res.json()) as { snapshots: SnapshotRecord[] };
-          setSnapshots(data.snapshots);
-        }
+      const result = await fetchAdminJsonCore<{ snapshots: SnapshotRecord[] }>("/api/admin/snapshots", readDeps);
+      if (result.ok) {
+        setSnapshots(result.data.snapshots);
       }
-    } catch {
-      // Best-effort
     } finally {
       setLoading(false);
     }

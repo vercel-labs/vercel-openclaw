@@ -9,7 +9,13 @@ import {
 } from "@/components/status-payload-defaults";
 import type { ChannelConnectability } from "@/shared/channel-connectability";
 
+import type { ReadJsonDeps } from "@/components/admin-request-core";
 import { SnapshotsPanel } from "./snapshots-panel";
+
+const READ_DEPS: ReadJsonDeps = {
+  setStatus: () => {},
+  toastError: () => {},
+};
 
 function makeConnectability(
   channel: ChannelConnectability["channel"],
@@ -136,6 +142,7 @@ function renderPanel(status: StatusPayload, busy = false): string {
       busy={busy}
       runAction={RUN_ACTION}
       requestJson={REQUEST_JSON}
+      readDeps={READ_DEPS}
     />,
   );
 }

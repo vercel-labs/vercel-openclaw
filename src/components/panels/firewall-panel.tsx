@@ -31,7 +31,7 @@ type FirewallPanelProps = {
   busy: boolean;
   requestJson: RequestJson;
   refresh: () => Promise<void>;
-  readDeps?: ReadJsonDeps;
+  readDeps: ReadJsonDeps;
 };
 
 export function FirewallPanel({
@@ -64,23 +64,9 @@ export function FirewallPanel({
 
   const fetchReport = useCallback(async () => {
     if (!active) return;
-    if (readDeps) {
-      const result = await fetchAdminJsonCore<FirewallReportPayload>("/api/firewall/report", readDeps);
-      if (result.ok) {
-        setReport(result.data);
-      }
-    } else {
-      try {
-        const res = await fetch("/api/firewall/report", {
-          cache: "no-store",
-          headers: { accept: "application/json" },
-        });
-        if (res.ok) {
-          setReport(await res.json() as FirewallReportPayload);
-        }
-      } catch {
-        // Best-effort — report is non-critical, panel falls back to status data
-      }
+    const result = await fetchAdminJsonCore<FirewallReportPayload>("/api/firewall/report", readDeps);
+    if (result.ok) {
+      setReport(result.data);
     }
   }, [active, readDeps]);
 
@@ -99,23 +85,10 @@ export function FirewallPanel({
     if (!active) return;
     setLogsLoading(true);
     try {
-      if (readDeps) {
-        const result = await fetchAdminJsonCore<{ logs: LogEntry[] }>("/api/admin/logs?source=firewall", readDeps);
-        if (result.ok) {
-          setFirewallLogs(result.data.logs);
-        }
-      } else {
-        const res = await fetch("/api/admin/logs?source=firewall", {
-          cache: "no-store",
-          headers: { accept: "application/json" },
-        });
-        if (res.ok) {
-          const data = (await res.json()) as { logs: LogEntry[] };
-          setFirewallLogs(data.logs);
-        }
+      const result = await fetchAdminJsonCore<{ logs: LogEntry[] }>("/api/admin/logs?source=firewall", readDeps);
+      if (result.ok) {
+        setFirewallLogs(result.data.logs);
       }
-    } catch {
-      // Best-effort — logs are non-critical
     } finally {
       setLogsLoading(false);
     }
@@ -180,47 +153,39 @@ export function FirewallPanel({
     input: Parameters<RequestJson>[1],
   ): Promise<boolean> {
     setSyncIndicator(null);
-    const result = await requestJson<null>(action, input);
-    if (!result.ok) {
-      setSyncIndicator({ ok: false, reason: result.error });
+    const mutationResult = await requestJson<null>(action, input);
+    if (!mutationResult.ok) {
+      setSyncIndicator({ ok: false, reason: mutationResult.error });
       return false;
     }
-    // After a successful mutation, fetch fresh report to check sync status
-    try {
-      const res = await fetch("/api/firewall/report", {
-        cache: "no-store",
-        headers: { accept: "application/json" },
-      });
-      if (!res.ok) {
-        setSyncIndicator({
-          ok: false,
-          reason: `Report refresh failed (HTTP ${res.status})`,
-        });
-        return false;
-      }
-      const freshReport = (await res.json()) as FirewallReportPayload;
-      setReport(freshReport);
-      const sync = freshReport.diagnostics.syncStatus;
-      if (
-        sync.lastAppliedAt &&
-        (sync.lastFailedAt ?? 0) <= sync.lastAppliedAt
-      ) {
-        setSyncIndicator({ ok: true });
-      } else if (sync.lastFailedAt) {
-        setSyncIndicator({
-          ok: false,
-          reason: sync.lastReason ?? "Policy sync failed",
-        });
-      }
+    // Re-fetch report through the shared read helper so auth/error handling is consistent
+    const reportResult = await fetchAdminJsonCore<FirewallReportPayload>(
+      "/api/firewall/report",
+      readDeps,
+    );
+    if (!reportResult.ok) {
+      setSyncIndicator({ ok: false, reason: reportResult.error });
+      return false;
+    }
+    const freshReport = reportResult.data;
+    setReport(freshReport);
+    const sync = freshReport.diagnostics.syncStatus;
+    if (
+      sync.lastAppliedAt &&
+      (sync.lastFailedAt ?? 0) <= sync.lastAppliedAt
+    ) {
+      setSyncIndicator({ ok: true });
       return true;
-    } catch (error) {
+    }
+    if (sync.lastFailedAt) {
       setSyncIndicator({
         ok: false,
-        reason:
-          error instanceof Error ? error.message : "Report refresh failed",
+        reason: sync.lastReason ?? "Policy sync failed",
       });
       return false;
     }
+    setSyncIndicator({ ok: true });
+    return true;
   }
 
   async function approveMultipleDomains(domains: string[]): Promise<void> {

@@ -1,7 +1,7 @@
 /**
  * Shared admin read (GET) helper for panels.
  *
- * Centralises auth-expiry handling, error surfacing, and event emission
+ * Centralises auth-expiry handling, error surfacing, and read lifecycle logging
  * so that Logs, Firewall, Snapshots, and future read-only admin surfaces
  * all behave consistently.
  */
@@ -21,12 +21,27 @@ export type ReadJsonDeps = {
   fetchFn?: typeof fetch;
 };
 
+function logAdminReadLifecycle(
+  event: "admin.read.start" | "admin.read.success" | "admin.read.error",
+  payload: Record<string, unknown>,
+): void {
+  const line = JSON.stringify({ event, ...payload });
+  if (event === "admin.read.error") {
+    console.warn(line);
+  } else {
+    console.info(line);
+  }
+}
+
 /**
  * Fetch a JSON admin GET endpoint with shared auth/error handling.
  *
  * - 401 clears auth state via `deps.setStatus(null)` and toasts.
  * - Non-401 errors surface visible panel error state.
- * - Emits `admin.read.error` for both auth and HTTP errors.
+ * - Emits `admin.read.error` for auth / HTTP / network failures.
+ * - Writes browser-console lifecycle logs for start/success/error so
+ *   agentic verification can observe real read behavior without adding
+ *   panel-specific logging branches.
  */
 export async function fetchAdminJsonCore<T>(
   action: string,
@@ -34,6 +49,8 @@ export async function fetchAdminJsonCore<T>(
 ): Promise<ReadJsonResult<T>> {
   const requestId = createAdminActionRequestId();
   const doFetch = deps.fetchFn ?? fetch;
+
+  logAdminReadLifecycle("admin.read.start", { requestId, action });
 
   try {
     const response = await doFetch(action, {
@@ -46,6 +63,13 @@ export async function fetchAdminJsonCore<T>(
       const error = "Session expired. Sign in again.";
       emitAdminActionEvent({
         event: "admin.read.error",
+        requestId,
+        action,
+        status: 401,
+        code: "unauthorized",
+        error,
+      });
+      logAdminReadLifecycle("admin.read.error", {
         requestId,
         action,
         status: 401,
@@ -66,16 +90,35 @@ export async function fetchAdminJsonCore<T>(
         code: "http-error",
         error,
       });
+      logAdminReadLifecycle("admin.read.error", {
+        requestId,
+        action,
+        status: response.status,
+        code: "http-error",
+        error,
+      });
       deps.toastError(error);
       return { ok: false, error, status: response.status };
     }
 
     const data = (await response.json()) as T;
+    logAdminReadLifecycle("admin.read.success", {
+      requestId,
+      action,
+      status: response.status,
+    });
     return { ok: true, data };
   } catch (err) {
     const error = err instanceof Error ? err.message : "Network error";
     emitAdminActionEvent({
       event: "admin.read.error",
+      requestId,
+      action,
+      status: null,
+      code: "network-error",
+      error,
+    });
+    logAdminReadLifecycle("admin.read.error", {
       requestId,
       action,
       status: null,

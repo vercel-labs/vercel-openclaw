@@ -10,7 +10,13 @@ import {
 import type { ChannelConnectability } from "@/shared/channel-connectability";
 import type { SingleStatus } from "@/shared/types";
 
+import type { ReadJsonDeps } from "@/components/admin-request-core";
 import { LogsPanel } from "./logs-panel";
+
+const READ_DEPS: ReadJsonDeps = {
+  setStatus: () => {},
+  toastError: () => {},
+};
 
 function makeConnectability(
   channel: ChannelConnectability["channel"],
@@ -124,7 +130,7 @@ function makeStatus(overrides: Partial<StatusPayload> = {}): StatusPayload {
 }
 
 function renderPanel(status: StatusPayload): string {
-  return renderToStaticMarkup(<LogsPanel active status={status} />);
+  return renderToStaticMarkup(<LogsPanel active status={status} readDeps={READ_DEPS} />);
 }
 
 // ---------------------------------------------------------------------------

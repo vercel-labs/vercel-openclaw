@@ -10,7 +10,7 @@ import { isSandboxLogReadableStatus, isSandboxLifecyclePending } from "@/shared/
 type LogsPanelProps = {
   active: boolean;
   status: StatusPayload;
-  readDeps?: ReadJsonDeps;
+  readDeps: ReadJsonDeps;
 };
 
 const LEVEL_COLORS: Record<LogLevel, string> = {
@@ -72,23 +72,10 @@ export function LogsPanel({ active, status, readDeps }: LogsPanelProps) {
     if (!active || !canFetchLogs) return;
     setLoading(true);
     try {
-      if (readDeps) {
-        const result = await fetchAdminJsonCore<{ logs: LogEntry[] }>("/api/admin/logs", readDeps);
-        if (result.ok) {
-          setLogs(result.data.logs);
-        }
-      } else {
-        const res = await fetch("/api/admin/logs", {
-          cache: "no-store",
-          headers: { accept: "application/json" },
-        });
-        if (res.ok) {
-          const data = (await res.json()) as { logs: LogEntry[] };
-          setLogs(data.logs);
-        }
+      const result = await fetchAdminJsonCore<{ logs: LogEntry[] }>("/api/admin/logs", readDeps);
+      if (result.ok) {
+        setLogs(result.data.logs);
       }
-    } catch {
-      // Best-effort -- poll will retry
     } finally {
       setLoading(false);
     }
