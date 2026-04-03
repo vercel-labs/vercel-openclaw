@@ -606,6 +606,7 @@ else
 fi
 ai_gateway_base_url="https://ai-gateway.vercel.sh/v1"
 export OPENCLAW_CONFIG_PATH="${OPENCLAW_CONFIG_PATH}"
+export OPENCLAW_GATEWAY_PORT="${OPENCLAW_PORT}"
 export OPENCLAW_GATEWAY_TOKEN="\$gateway_token"
 if [ -n "$ai_gateway_api_key" ]; then
   export AI_GATEWAY_API_KEY="$ai_gateway_api_key"
