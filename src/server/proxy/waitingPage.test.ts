@@ -76,3 +76,57 @@ test("includes polling interval hint text", () => {
   const html = getWaitingPageHtml("/gateway", "creating");
   assert.ok(html.includes("Polling /api/status every 2s"));
 });
+
+test("tracks consecutive poll failures and updates hint element", () => {
+  const html = getWaitingPageHtml("/gateway", "creating");
+  assert.ok(
+    html.includes("consecutiveFailures"),
+    "should track consecutive failures",
+  );
+  assert.ok(
+    html.includes("FAILURE_THRESHOLD"),
+    "should define a failure threshold",
+  );
+  assert.ok(
+    html.includes("Status poll failing"),
+    "should show failure breadcrumb text",
+  );
+  assert.ok(
+    html.includes("Still retrying"),
+    "should indicate retries continue",
+  );
+});
+
+test("resets failure state on successful poll", () => {
+  const html = getWaitingPageHtml("/gateway", "creating");
+  // On successful response, consecutiveFailures is reset to 0
+  assert.ok(
+    html.includes("consecutiveFailures = 0"),
+    "should reset failure counter on success",
+  );
+  assert.ok(
+    html.includes("updateHint(0)"),
+    "should clear hint on success",
+  );
+});
+
+test("increments failure counter on non-OK response", () => {
+  const html = getWaitingPageHtml("/gateway", "creating");
+  // The non-OK branch increments and updates hint
+  assert.ok(
+    html.includes("consecutiveFailures += 1"),
+    "should increment on failure",
+  );
+});
+
+test("increments failure counter on fetch exception", () => {
+  const html = getWaitingPageHtml("/gateway", "creating");
+  // The catch branch also increments and updates
+  const catchIndex = html.indexOf("catch (error)");
+  assert.ok(catchIndex > 0, "should have catch block");
+  const afterCatch = html.slice(catchIndex);
+  assert.ok(
+    afterCatch.includes("consecutiveFailures += 1"),
+    "catch block should increment failure counter",
+  );
+});

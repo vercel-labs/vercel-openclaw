@@ -38,6 +38,8 @@ function buildInterceptorScript(context: WrapperContext): string {
   var openSocketCount = 0;
   var heartbeatIntervalId = null;
   var heartbeatInFlight = false;
+  var heartbeatConsecutiveFailures = 0;
+  var HEARTBEAT_FAILURE_THRESHOLD = 3;
 
   var shouldHeartbeat = function() {
     return openSocketCount > 0 && document.visibilityState === 'visible';
@@ -57,14 +59,29 @@ function buildInterceptorScript(context: WrapperContext): string {
 
     heartbeatInFlight = true;
     try {
-      await fetch(TOUCH_URL, {
+      var resp = await fetch(TOUCH_URL, {
         method: 'POST',
         credentials: 'same-origin',
         headers: {
           accept: 'application/json',
         },
       });
+      if (!resp.ok) {
+        heartbeatConsecutiveFailures += 1;
+        if (heartbeatConsecutiveFailures === HEARTBEAT_FAILURE_THRESHOLD) {
+          console.warn('[openclaw] heartbeat failing (' + heartbeatConsecutiveFailures + ' consecutive, status ' + resp.status + '). Sandbox may time out.');
+        }
+      } else {
+        if (heartbeatConsecutiveFailures >= HEARTBEAT_FAILURE_THRESHOLD) {
+          console.info('[openclaw] heartbeat recovered after ' + heartbeatConsecutiveFailures + ' failures');
+        }
+        heartbeatConsecutiveFailures = 0;
+      }
     } catch (error) {
+      heartbeatConsecutiveFailures += 1;
+      if (heartbeatConsecutiveFailures === HEARTBEAT_FAILURE_THRESHOLD) {
+        console.warn('[openclaw] heartbeat failing (' + heartbeatConsecutiveFailures + ' consecutive, network error). Sandbox may time out.');
+      }
     } finally {
       heartbeatInFlight = false;
     }
@@ -150,7 +167,9 @@ function buildInterceptorScript(context: WrapperContext): string {
         nextProtocols = appendGatewayAuthProtocol(protocols);
         shouldTrackLifecycle = true;
       }
-    } catch (error) {}
+    } catch (error) {
+      console.warn('[openclaw] WebSocket URL rewrite failed for', url, error);
+    }
 
     var socket =
       nextProtocols === undefined

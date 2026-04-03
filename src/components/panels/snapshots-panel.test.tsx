@@ -204,3 +204,31 @@ test("SnapshotsPanel renders version summary from status", () => {
   assert.ok(html.includes("OpenClaw"), "Should label the OpenClaw version");
   assert.ok(html.includes("SDK"), "Should label the SDK version");
 });
+
+// ---------------------------------------------------------------------------
+// Stale-data banner is absent on initial render
+// ---------------------------------------------------------------------------
+
+test("SnapshotsPanel does not show stale banner on initial render", () => {
+  const html = renderPanel(makeStatus());
+  assert.ok(
+    !html.includes("Latest refresh failed"),
+    "stale banner should not appear initially",
+  );
+  assert.ok(
+    !html.includes("Failed to load snapshots"),
+    "failure banner should not appear initially",
+  );
+});
+
+test("SnapshotsPanel does not show stale banner when stopped", () => {
+  const html = renderPanel(makeStatus({ status: "stopped" }));
+  assert.ok(
+    !html.includes("Latest refresh failed"),
+    "stale banner should not appear when stopped",
+  );
+  assert.ok(
+    !html.includes("Failed to load snapshots"),
+    "failure banner should not appear when stopped",
+  );
+});

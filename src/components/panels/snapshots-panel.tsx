@@ -48,6 +48,7 @@ export function SnapshotsPanel({
 }: SnapshotsPanelProps) {
   const [snapshots, setSnapshots] = useState<SnapshotRecord[]>([]);
   const [loading, setLoading] = useState(true);
+  const [readError, setReadError] = useState<string | null>(null);
   const { confirm, dialogProps } = useConfirm();
   const { confirm: confirmReset, dialogProps: resetDialogProps } = useConfirm();
 
@@ -66,14 +67,21 @@ export function SnapshotsPanel({
     if (!active) return;
     setLoading(true);
     try {
-      const result = await fetchAdminJsonCore<{ snapshots: SnapshotRecord[] }>("/api/admin/snapshots", readDeps);
+      const result = await fetchAdminJsonCore<{ snapshots: SnapshotRecord[] }>(
+        "/api/admin/snapshots",
+        readDeps,
+        { toastError: false },
+      );
       if (result.ok) {
         setSnapshots(result.data.snapshots);
+        setReadError(null);
+        return;
       }
+      setReadError(result.error);
     } finally {
       setLoading(false);
     }
-  }, [active, readDeps]);
+  }, [active, readDeps, snapshots.length]);
 
   useEffect(() => {
     if (!active) return;
@@ -183,6 +191,14 @@ export function SnapshotsPanel({
           <dd>{loading ? "\u2026" : snapshots.length}</dd>
         </div>
       </dl>
+
+      {readError && (
+        <p className="error-banner">
+          {snapshots.length > 0
+            ? `Showing last successful snapshot list. Latest refresh failed: ${readError}`
+            : `Failed to load snapshots: ${readError}`}
+        </p>
+      )}
 
       {/* Snapshot list — fixed min-height avoids CLS when count changes */}
       <div className="snapshot-list-container">

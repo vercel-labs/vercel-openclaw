@@ -196,3 +196,21 @@ describe("LogsPanel error banner", () => {
     });
   }
 });
+
+// ---------------------------------------------------------------------------
+// Stale-data banner is absent on initial render
+// ---------------------------------------------------------------------------
+
+describe("LogsPanel stale-data banner", () => {
+  test("does not show stale banner on initial render", () => {
+    const html = renderPanel(makeStatus({ status: "running" }));
+    assert.ok(!html.includes("Latest refresh failed"), "stale banner should not appear initially");
+    assert.ok(!html.includes("Failed to load logs"), "stale banner should not appear initially");
+  });
+
+  test("does not show stale banner when stopped", () => {
+    const html = renderPanel(makeStatus({ status: "stopped" }));
+    assert.ok(!html.includes("Latest refresh failed"), "stale banner should not appear when stopped");
+    assert.ok(!html.includes("Failed to load logs"), "stale banner should not appear when stopped");
+  });
+});

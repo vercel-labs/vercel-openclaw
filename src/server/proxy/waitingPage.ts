@@ -106,6 +106,22 @@ export function getWaitingPageHtml(
   <script>
     (() => {
       const returnPath = document.querySelector('[data-return-path]')?.getAttribute('data-return-path') || '/gateway';
+      var consecutiveFailures = 0;
+      var FAILURE_THRESHOLD = 3;
+      var hintEl = document.querySelector('.hint');
+      var originalHint = hintEl ? hintEl.textContent : '';
+
+      var updateHint = function(failures) {
+        if (!hintEl) return;
+        if (failures >= FAILURE_THRESHOLD) {
+          hintEl.textContent = 'Status poll failing (' + failures + ' consecutive). Still retrying\u2026';
+          hintEl.style.color = '#e5484d';
+        } else if (failures === 0) {
+          hintEl.textContent = originalHint;
+          hintEl.style.color = '';
+        }
+      };
+
       const poll = async () => {
         try {
           const response = await fetch('/api/status?health=1', {
@@ -113,13 +129,20 @@ export function getWaitingPageHtml(
             credentials: 'same-origin',
           });
           if (!response.ok) {
+            consecutiveFailures += 1;
+            updateHint(consecutiveFailures);
             return;
           }
+          consecutiveFailures = 0;
+          updateHint(0);
           const payload = await response.json();
           if (payload.status === 'running' && payload.gatewayReady) {
             location.replace(returnPath);
           }
-        } catch (error) {}
+        } catch (error) {
+          consecutiveFailures += 1;
+          updateHint(consecutiveFailures);
+        }
       };
 
       void poll();

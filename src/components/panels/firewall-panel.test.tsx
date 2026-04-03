@@ -195,3 +195,27 @@ test("FirewallPanel requires readDeps prop", () => {
   );
   assert.ok(html.includes("Firewall policy"));
 });
+
+// ---------------------------------------------------------------------------
+// Stale-data banners are absent on initial render
+// ---------------------------------------------------------------------------
+
+test("FirewallPanel does not show report stale banner on initial render", () => {
+  const html = renderPanel(makeStatus());
+  assert.ok(
+    !html.includes("Latest refresh failed"),
+    "report stale banner should not appear initially",
+  );
+  assert.ok(
+    !html.includes("Failed to load firewall report"),
+    "report error banner should not appear initially",
+  );
+});
+
+test("FirewallPanel does not show firewall logs stale banner on initial render", () => {
+  const html = renderPanel(makeStatus());
+  assert.ok(
+    !html.includes("Failed to load firewall logs"),
+    "firewall logs error banner should not appear initially",
+  );
+});

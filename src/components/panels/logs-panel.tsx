@@ -49,6 +49,7 @@ function formatLogCopyText(entry: LogEntry): string {
 
 export function LogsPanel({ active, status, readDeps }: LogsPanelProps) {
   const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [readError, setReadError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [levels, setLevels] = useState<Record<LogLevel, boolean>>({
     error: true,
@@ -72,14 +73,21 @@ export function LogsPanel({ active, status, readDeps }: LogsPanelProps) {
     if (!active || !canFetchLogs) return;
     setLoading(true);
     try {
-      const result = await fetchAdminJsonCore<{ logs: LogEntry[] }>("/api/admin/logs", readDeps);
+      const result = await fetchAdminJsonCore<{ logs: LogEntry[] }>(
+        "/api/admin/logs",
+        readDeps,
+        { toastError: false },
+      );
       if (result.ok) {
         setLogs(result.data.logs);
+        setReadError(null);
+        return;
       }
+      setReadError(result.error);
     } finally {
       setLoading(false);
     }
-  }, [active, canFetchLogs, readDeps]);
+  }, [active, canFetchLogs, readDeps, logs.length]);
 
   useEffect(() => {
     if (!active) return;
@@ -163,6 +171,14 @@ export function LogsPanel({ active, status, readDeps }: LogsPanelProps) {
       {!canFetchLogs && !isBooting && sandboxStatus !== "uninitialized" && (
         <p className="error-banner">
           Sandbox is not running. Start it from the Status tab first.
+        </p>
+      )}
+
+      {readError && (
+        <p className="error-banner">
+          {logs.length > 0
+            ? `Showing last successful logs. Latest refresh failed: ${readError}`
+            : `Failed to load logs: ${readError}`}
         </p>
       )}
 

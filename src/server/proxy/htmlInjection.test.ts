@@ -151,6 +151,51 @@ test("injectWrapperScript does not embed token in HTML attributes or comments", 
   }
 });
 
+// ===========================================================================
+// Recovery breadcrumbs
+// ===========================================================================
+
+test("heartbeat tracks consecutive failures and logs at threshold", () => {
+  const result = injectWrapperScript(SIMPLE_HTML, CONTEXT);
+  assert.ok(
+    result.includes("heartbeatConsecutiveFailures"),
+    "should track heartbeat failure count",
+  );
+  assert.ok(
+    result.includes("HEARTBEAT_FAILURE_THRESHOLD"),
+    "should define heartbeat failure threshold",
+  );
+  assert.ok(
+    result.includes("[openclaw] heartbeat failing"),
+    "should warn on repeated heartbeat failures",
+  );
+});
+
+test("heartbeat logs recovery after failures", () => {
+  const result = injectWrapperScript(SIMPLE_HTML, CONTEXT);
+  assert.ok(
+    result.includes("[openclaw] heartbeat recovered"),
+    "should log recovery when heartbeat succeeds after failures",
+  );
+});
+
+test("WebSocket rewrite failure emits console warning", () => {
+  const result = injectWrapperScript(SIMPLE_HTML, CONTEXT);
+  assert.ok(
+    result.includes("[openclaw] WebSocket URL rewrite failed"),
+    "should warn on WebSocket URL rewrite failure",
+  );
+});
+
+test("heartbeat failure breadcrumb fires only at threshold, not every failure", () => {
+  const result = injectWrapperScript(SIMPLE_HTML, CONTEXT);
+  // The warning is emitted when failures === threshold (not >=), preventing flood
+  assert.ok(
+    result.includes("heartbeatConsecutiveFailures === HEARTBEAT_FAILURE_THRESHOLD"),
+    "should only warn at exact threshold to avoid console flood",
+  );
+});
+
 test("unauthenticated context: empty token produces valid script with empty string value", () => {
   const emptyTokenContext = {
     sandboxOrigin: "https://sbx-123.vercel.run",

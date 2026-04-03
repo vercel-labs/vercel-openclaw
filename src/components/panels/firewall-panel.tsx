@@ -55,6 +55,8 @@ export function FirewallPanel({
   const [eventPage, setEventPage] = useState(0);
   const [eventCategoryFilter, setEventCategoryFilter] = useState<string | null>(null);
   const [report, setReport] = useState<FirewallReportPayload | null>(null);
+  const [reportError, setReportError] = useState<string | null>(null);
+  const [firewallLogsError, setFirewallLogsError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [syncIndicator, setSyncIndicator] = useState<{ ok: boolean; reason?: string } | null>(null);
   const [limitationsOpen, setLimitationsOpen] = useState(false);
@@ -64,11 +66,18 @@ export function FirewallPanel({
 
   const fetchReport = useCallback(async () => {
     if (!active) return;
-    const result = await fetchAdminJsonCore<FirewallReportPayload>("/api/firewall/report", readDeps);
+    const result = await fetchAdminJsonCore<FirewallReportPayload>(
+      "/api/firewall/report",
+      readDeps,
+      { toastError: false },
+    );
     if (result.ok) {
       setReport(result.data);
+      setReportError(null);
+      return;
     }
-  }, [active, readDeps]);
+    setReportError(result.error);
+  }, [active, readDeps, report]);
 
   // Fetch report alongside status refreshes
   useEffect(() => {
@@ -85,14 +94,21 @@ export function FirewallPanel({
     if (!active) return;
     setLogsLoading(true);
     try {
-      const result = await fetchAdminJsonCore<{ logs: LogEntry[] }>("/api/admin/logs?source=firewall", readDeps);
+      const result = await fetchAdminJsonCore<{ logs: LogEntry[] }>(
+        "/api/admin/logs?source=firewall",
+        readDeps,
+        { toastError: false },
+      );
       if (result.ok) {
         setFirewallLogs(result.data.logs);
+        setFirewallLogsError(null);
+        return;
       }
+      setFirewallLogsError(result.error);
     } finally {
       setLogsLoading(false);
     }
-  }, [active, readDeps]);
+  }, [active, readDeps, firewallLogs.length]);
 
   // Fetch firewall logs when section is opened and on each refresh cycle
   useEffect(() => {
@@ -317,6 +333,14 @@ export function FirewallPanel({
                 {syncIndicator.ok ? "Policy applied" : `Sync failed${syncIndicator.reason ? `: ${syncIndicator.reason}` : ""}`}
               </span>
             </div>
+          )}
+
+          {reportError && (
+            <p className="error-banner">
+              {report
+                ? `Showing last successful firewall report. Latest refresh failed: ${reportError}`
+                : `Failed to load firewall report: ${reportError}`}
+            </p>
           )}
 
           {/* Policy hash & last apply — always reserve space to avoid CLS */}
@@ -849,6 +873,13 @@ export function FirewallPanel({
 
         {logsOpen && (
           <div className="firewall-logs-body">
+            {firewallLogsError && (
+              <p className="error-banner">
+                {firewallLogs.length > 0
+                  ? `Showing last successful firewall logs. Latest refresh failed: ${firewallLogsError}`
+                  : `Failed to load firewall logs: ${firewallLogsError}`}
+              </p>
+            )}
             {logsLoading && firewallLogs.length === 0 ? (
               <p className="empty-token">Loading firewall logs...</p>
             ) : firewallLogs.length === 0 ? (
