@@ -536,6 +536,15 @@ paired[deviceId] = {
   deviceId,
   publicKey: publicKeyRawBase64Url,
   approvedAtMs: Date.now(),
+  role: "operator",
+  roles: ["operator"],
+  scopes: [
+    "operator.admin",
+    "operator.read",
+    "operator.write",
+    "operator.approvals",
+    "operator.pairing",
+  ],
 };
 
 await fs.writeFile(pairedPath, JSON.stringify(paired, null, 2) + "\\n", { mode: 0o600 });
@@ -730,7 +739,7 @@ const pairedPath = path.join(devicesDir, "paired.json");
 let paired = {};
 try { paired = JSON.parse(fs.readFileSync(pairedPath, "utf8")); } catch {}
 if (!paired || typeof paired !== "object" || Array.isArray(paired)) paired = {};
-paired[deviceId] = { deviceId, publicKey: publicKeyRawBase64Url, approvedAtMs: Date.now() };
+paired[deviceId] = { deviceId, publicKey: publicKeyRawBase64Url, approvedAtMs: Date.now(), role: "operator", roles: ["operator"], scopes: ["operator.admin","operator.read","operator.write","operator.approvals","operator.pairing"] };
 fs.writeFileSync(pairedPath, JSON.stringify(paired, null, 2) + "\\n", { mode: 0o600 });
 console.error(JSON.stringify({ event: "fast_restore.force_pair", deviceId }));
 ' 2>&1 || echo '{"event":"fast_restore.force_pair_failed"}' >&2
