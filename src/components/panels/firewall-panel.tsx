@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ConfirmDialog, useConfirm } from "@/components/ui/confirm-dialog";
 import type {
   StatusPayload,
@@ -24,6 +24,28 @@ type BlockTestResult = {
   domain: string;
   mode: string;
 };
+
+/** Shared banner for passive-read surfaces (report, firewall logs). */
+function PassiveReadBanner({
+  error,
+  hasSuccessfulData,
+  stalePrefix,
+  initialFailurePrefix,
+}: {
+  error: string | null;
+  hasSuccessfulData: boolean;
+  stalePrefix: string;
+  initialFailurePrefix: string;
+}) {
+  if (!error) return null;
+  return (
+    <p className="error-banner">
+      {hasSuccessfulData
+        ? `${stalePrefix}. Latest refresh failed: ${error}`
+        : `${initialFailurePrefix}: ${error}`}
+    </p>
+  );
+}
 
 type FirewallPanelProps = {
   active: boolean;
@@ -63,6 +85,8 @@ export function FirewallPanel({
   const { confirm: confirmPromote, dialogProps: promoteDialogProps } = useConfirm();
   const { confirm: confirmRemove, dialogProps: removeDialogProps } = useConfirm();
   const { confirm: confirmDismiss, dialogProps: dismissDialogProps } = useConfirm();
+  const hadReportSuccessRef = useRef(false);
+  const hadFirewallLogsSuccessRef = useRef(false);
 
   const fetchReport = useCallback(async () => {
     if (!active) return;
@@ -72,12 +96,13 @@ export function FirewallPanel({
       { toastError: false },
     );
     if (result.ok) {
+      hadReportSuccessRef.current = true;
       setReport(result.data);
       setReportError(null);
       return;
     }
     setReportError(result.error);
-  }, [active, readDeps, report]);
+  }, [active, readDeps]);
 
   // Fetch report alongside status refreshes
   useEffect(() => {
@@ -100,6 +125,7 @@ export function FirewallPanel({
         { toastError: false },
       );
       if (result.ok) {
+        hadFirewallLogsSuccessRef.current = true;
         setFirewallLogs(result.data.logs);
         setFirewallLogsError(null);
         return;
@@ -108,7 +134,7 @@ export function FirewallPanel({
     } finally {
       setLogsLoading(false);
     }
-  }, [active, readDeps, firewallLogs.length]);
+  }, [active, readDeps]);
 
   // Fetch firewall logs when section is opened and on each refresh cycle
   useEffect(() => {
@@ -335,13 +361,12 @@ export function FirewallPanel({
             </div>
           )}
 
-          {reportError && (
-            <p className="error-banner">
-              {report
-                ? `Showing last successful firewall report. Latest refresh failed: ${reportError}`
-                : `Failed to load firewall report: ${reportError}`}
-            </p>
-          )}
+          <PassiveReadBanner
+            error={reportError}
+            hasSuccessfulData={hadReportSuccessRef.current}
+            stalePrefix="Showing last successful firewall report"
+            initialFailurePrefix="Failed to load firewall report"
+          />
 
           {/* Policy hash & last apply — always reserve space to avoid CLS */}
           <div className="policy-meta">
@@ -873,13 +898,12 @@ export function FirewallPanel({
 
         {logsOpen && (
           <div className="firewall-logs-body">
-            {firewallLogsError && (
-              <p className="error-banner">
-                {firewallLogs.length > 0
-                  ? `Showing last successful firewall logs. Latest refresh failed: ${firewallLogsError}`
-                  : `Failed to load firewall logs: ${firewallLogsError}`}
-              </p>
-            )}
+            <PassiveReadBanner
+              error={firewallLogsError}
+              hasSuccessfulData={hadFirewallLogsSuccessRef.current}
+              stalePrefix="Showing last successful firewall logs"
+              initialFailurePrefix="Failed to load firewall logs"
+            />
             {logsLoading && firewallLogs.length === 0 ? (
               <p className="empty-token">Loading firewall logs...</p>
             ) : firewallLogs.length === 0 ? (

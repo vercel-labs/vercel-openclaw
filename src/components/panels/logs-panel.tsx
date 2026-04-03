@@ -87,7 +87,7 @@ export function LogsPanel({ active, status, readDeps }: LogsPanelProps) {
     } finally {
       setLoading(false);
     }
-  }, [active, canFetchLogs, readDeps, logs.length]);
+  }, [active, canFetchLogs, readDeps]);
 
   useEffect(() => {
     if (!active) return;
