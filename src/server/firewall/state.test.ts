@@ -203,7 +203,7 @@ test(
         await assertFirewallSyncFailed(approveDomains(["api.openai.com"]));
 
         const firewall = await getFirewallState();
-        assert.deepEqual(firewall.allowlist, ["api.openai.com"]);
+        assert.deepEqual(firewall.allowlist, ["ai-gateway.vercel.sh", "api.openai.com"]);
         assert.equal(sandbox.updateCalls, 1);
       } finally {
         sandbox.restore();
@@ -258,7 +258,7 @@ test(
 
         const firewall = await getFirewallState();
         assert.equal(firewall.mode, "enforcing");
-        assert.deepEqual(firewall.allowlist, ["api.openai.com"]);
+        assert.deepEqual(firewall.allowlist, ["ai-gateway.vercel.sh", "api.openai.com"]);
         assert.deepEqual(firewall.learned, []);
         assert.equal(sandbox.updateCalls, 1);
       } finally {
@@ -374,14 +374,14 @@ test("learning → enforcing: learned domains become the allowlist, sandbox poli
       const fw = await promoteLearnedDomainsToEnforcing();
 
       assert.equal(fw.mode, "enforcing");
-      assert.deepEqual(fw.allowlist, ["api.openai.com", "registry.npmjs.org"]);
+      assert.deepEqual(fw.allowlist, ["ai-gateway.vercel.sh", "api.openai.com", "registry.npmjs.org"]);
       assert.deepEqual(fw.learned, []);
 
       // Sandbox should have received { allow: [...] } policy
       assert.equal(ctrl.appliedPolicies.length, 1);
       const applied = ctrl.appliedPolicies[0] as { allow: string[] };
       assert.ok(typeof applied === "object" && "allow" in applied);
-      assert.deepEqual(applied.allow, ["api.openai.com", "registry.npmjs.org"]);
+      assert.deepEqual(applied.allow, ["ai-gateway.vercel.sh", "api.openai.com", "registry.npmjs.org"]);
     } finally {
       ctrl.restore();
     }
@@ -462,13 +462,13 @@ test("full transition: disabled → learning → ingest domains → enforcing wi
       // Step 3: learning → enforcing (promote learned)
       fw = await promoteLearnedDomainsToEnforcing();
       assert.equal(fw.mode, "enforcing");
-      assert.deepEqual(fw.allowlist, ["api.openai.com", "registry.npmjs.org"]);
+      assert.deepEqual(fw.allowlist, ["ai-gateway.vercel.sh", "api.openai.com", "registry.npmjs.org"]);
       assert.deepEqual(fw.learned, []);
 
       // Should have synced twice total (setFirewallMode + promote)
       assert.equal(ctrl.appliedPolicies.length, 2);
       const enforcingPolicy = ctrl.appliedPolicies[1] as { allow: string[] };
-      assert.deepEqual(enforcingPolicy.allow, ["api.openai.com", "registry.npmjs.org"]);
+      assert.deepEqual(enforcingPolicy.allow, ["ai-gateway.vercel.sh", "api.openai.com", "registry.npmjs.org"]);
     } finally {
       ctrl.restore();
     }
@@ -559,7 +559,7 @@ test("setFirewallMode succeeds when sandbox is stopped (no sync needed)", async 
 test("approveDomains succeeds when sandbox is stopped (no sync)", async () => {
   await withFirewallTestStore(async () => {
     const fw = await approveDomains(["api.openai.com"]);
-    assert.deepEqual(fw.allowlist, ["api.openai.com"]);
+    assert.deepEqual(fw.allowlist, ["ai-gateway.vercel.sh", "api.openai.com"]);
   });
 });
 
@@ -579,6 +579,10 @@ test("removeDomains succeeds when sandbox is stopped (no sync)", async () => {
 
 test("setFirewallMode to enforcing with empty allowlist throws 409", async () => {
   await withFirewallTestStore(async () => {
+    // Clear the default-seeded allowlist so the empty-allowlist guard is tested
+    await mutateMeta((meta) => {
+      meta.firewall.allowlist = [];
+    });
     await assert.rejects(
       setFirewallMode("enforcing"),
       (error: unknown) => {
@@ -1199,6 +1203,10 @@ test("ensureMetaShape: preserves existing learningStartedAt and commandsObserved
 
 test("setFirewallMode to enforcing with empty allowlist emits logWarn before throwing", async () => {
   await withFirewallTestStore(async () => {
+    // Clear the default-seeded allowlist so the empty-allowlist guard is tested
+    await mutateMeta((meta) => {
+      meta.firewall.allowlist = [];
+    });
     _resetLogBuffer();
     await assert.rejects(
       setFirewallMode("enforcing"),

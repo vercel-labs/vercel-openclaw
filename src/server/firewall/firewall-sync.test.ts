@@ -137,14 +137,14 @@ test("promoting learned domains to enforcing syncs { allow: [...] } to sandbox",
     const fw = await promoteLearnedDomainsToEnforcing();
 
     assert.equal(fw.mode, "enforcing");
-    assert.deepEqual(fw.allowlist, ["api.openai.com", "registry.npmjs.org"]);
+    assert.deepEqual(fw.allowlist, ["ai-gateway.vercel.sh", "api.openai.com", "registry.npmjs.org"]);
     assert.deepEqual(fw.learned, []);
 
     // Verify the sandbox received the enforcing policy
     const policyEvents = h.controller.eventsOfKind("update_network_policy");
     assert.equal(policyEvents.length, 1);
     const appliedPolicy = policyEvents[0].detail?.policy as { allow: string[] };
-    assert.deepEqual(appliedPolicy.allow, ["api.openai.com", "registry.npmjs.org"]);
+    assert.deepEqual(appliedPolicy.allow, ["ai-gateway.vercel.sh", "api.openai.com", "registry.npmjs.org"]);
   });
 });
 

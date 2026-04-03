@@ -814,7 +814,7 @@ test("[types] createDefaultMeta produces valid defaults for all required fields"
 
   // Firewall defaults
   assert.equal(meta.firewall.mode, "disabled");
-  assert.deepStrictEqual(meta.firewall.allowlist, []);
+  assert.deepStrictEqual(meta.firewall.allowlist, ["ai-gateway.vercel.sh"]);
   assert.deepStrictEqual(meta.firewall.learned, []);
   assert.deepStrictEqual(meta.firewall.events, []);
   assert.equal(meta.firewall.updatedAt, now);

@@ -477,7 +477,7 @@ export function createDefaultMeta(
     lastError: null,
     firewall: {
       mode: "disabled",
-      allowlist: [],
+      allowlist: ["ai-gateway.vercel.sh"],
       learned: [],
       events: [],
       updatedAt: now,
