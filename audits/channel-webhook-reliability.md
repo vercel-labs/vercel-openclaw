@@ -17,21 +17,17 @@
 
 ## Findings
 
-### WARN — Slack fast-path comment/code mismatch on non-2xx handling
+### FIXED — Slack fast-path comment/code mismatch on non-2xx handling
 
-- **Evidence**: `src/app/api/channels/slack/webhook/route.ts:247-295`
-- **Detail**: The leading block comment (lines 247-249) says "Return early only on a successful 2xx native forward. Non-2xx means the sandbox is reachable but unhealthy — reconcile stale running state and fall through to the workflow wake path." However, the actual code at lines 293-295 returns 200 on ANY HTTP response with the comment "Any HTTP response means the native handler received the payload. Return 200 to avoid duplicate delivery via the workflow path." The test at `route.test.ts:166-199` confirms the all-HTTP-ack behavior is intentional.
-- **Why it matters**: The misleading leading comment could cause a well-meaning contributor to "fix" the code to match it, accidentally introducing message drops via duplicate delivery.
-- **Severity**: P2 (documentation fix)
-- **Recommended fix**: Update the leading block comment at lines 247-249 to match the actual invariant: any HTTP response (including non-2xx) means the native handler received the payload; only network-level failures fall through.
+- **Evidence**: `src/app/api/channels/slack/webhook/route.ts:241-254`
+- **Detail**: The leading block comment previously said "Return early only on a successful 2xx native forward. Non-2xx means the sandbox is reachable but unhealthy — reconcile stale running state and fall through to the workflow wake path." The actual code returns 200 on ANY HTTP response. Comment now aligned to match Telegram's wording: "On ANY HTTP response (2xx or not), return 200 — the native handler received the payload."
+- **Status**: **Fixed** — comment updated to match runtime behavior.
 
-### WARN — WhatsApp fast-path comment/code mismatch on non-2xx handling
+### FIXED — WhatsApp fast-path comment/code mismatch on non-2xx handling
 
-- **Evidence**: `src/app/api/channels/whatsapp/webhook/route.ts:161-196`
-- **Detail**: Same pattern as Slack. Leading comment (lines 161-166) claims non-2xx should reconcile and fall through, but code at lines 194-196 returns 200 on any HTTP response. Test at `route.test.ts:164-198` confirms intentional.
-- **Why it matters**: Same misleading-comment risk as Slack.
-- **Severity**: P2 (documentation fix)
-- **Recommended fix**: Align leading comment with actual invariant.
+- **Evidence**: `src/app/api/channels/whatsapp/webhook/route.ts:156-169`
+- **Detail**: Same pattern as Slack. Comment now aligned to match Telegram's wording.
+- **Status**: **Fixed** — comment updated to match runtime behavior.
 
 ### PASS — Telegram fast-path acknowledges any HTTP response (documented)
 
@@ -166,8 +162,8 @@
 
 | ID | Severity | Channel | Issue | Status |
 |---|---|---|---|---|
-| CW-1 | P2 | Slack | Fast-path leading comment contradicts actual behavior | Open |
-| CW-2 | P2 | WhatsApp | Fast-path leading comment contradicts actual behavior | Open |
+| CW-1 | P2 | Slack | Fast-path leading comment contradicts actual behavior | **Fixed** |
+| CW-2 | P2 | WhatsApp | Fast-path leading comment contradicts actual behavior | **Fixed** |
 | CW-3 | P2 | Telegram | Outer try/catch swallows errors, returns 200 on unhandled failure | Open |
 | CW-4 | P2 | WhatsApp | Outer try/catch swallows errors, returns 200 on unhandled failure | Open |
 | CW-5 | P2 | Discord | No test coverage at all | Open |
@@ -178,7 +174,7 @@
 
 ### P2 — Fix before launch (low effort, high clarity)
 
-1. **CW-1, CW-2**: Update leading block comments in Slack (`route.ts:247-249`) and WhatsApp (`route.ts:161-166`) to match the Telegram wording: "On ANY HTTP response (2xx or not), return 200 — the native handler received the payload." This prevents a contributor from accidentally introducing the bug the misleading comment describes.
+1. **CW-1, CW-2**: ~~Update leading block comments in Slack and WhatsApp to match the Telegram wording.~~ **Done** — comments aligned in both files.
 
 2. **CW-3, CW-4**: Narrow the outer try/catch in Telegram (`route.ts:92-211`) and WhatsApp (`route.ts:128-261`). If the error occurs before the workflow start (e.g., during dedup lock acquisition or reconciliation), the message was never handled and should return 500 so the provider can redeliver. The workflow-start catch already handles its own errors correctly.
 

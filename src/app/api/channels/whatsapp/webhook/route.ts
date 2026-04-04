@@ -159,11 +159,14 @@ export async function POST(request: Request): Promise<Response> {
     // processing cycle (including long AI tasks like image generation).
     // Fluid Compute bills only for CPU cycles, not idle wait time.
     //
-    // Return early only on a successful 2xx native forward.  Non-2xx means the
-    // sandbox is reachable but unhealthy — reconcile stale running state and
-    // fall through to the workflow wake path so the message is not lost.
-    // If fetch() throws (connection refused, DNS failure), the sandbox is
-    // likely dead with stale "running" metadata — same reconcile-and-wake path.
+    // On ANY HTTP response (2xx or not), return 200 — the native handler
+    // received the payload and may have started processing.  Falling through
+    // to the workflow would forward the same payload again, causing duplicate
+    // delivery (e.g. the same image sent multiple times).
+    //
+    // Only on network-level failure (fetch throws — connection refused, DNS
+    // failure) is it safe to fall through: the native handler never received
+    // the payload, so the workflow can retry without duplication.
     let effectiveMeta = meta;
     if (effectiveMeta.status === "running" && effectiveMeta.sandboxId) {
       const forwardHeaders: Record<string, string> = {};
