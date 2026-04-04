@@ -1,7 +1,7 @@
 import {
   getAiGatewayAuthMode,
   getAuthMode,
-  getCronSecret,
+  getCronSecretConfig,
   getOpenclawPackageSpec,
   getStoreEnv,
   isVercelDeployment,
@@ -162,9 +162,14 @@ function checkStore(onVercel: boolean): DeploymentRequirement {
 }
 
 function checkCronSecret(onVercel: boolean): DeploymentRequirement {
-  const configured = Boolean(getCronSecret());
+  const cron = getCronSecretConfig();
 
-  if (configured) {
+  logDebug("deployment_contract.cron_secret_evaluated", {
+    onVercel,
+    source: cron.source,
+  });
+
+  if (cron.source === "cron-secret") {
     return {
       id: CRON_SECRET_REQUIREMENT_ID,
       status: "pass",
@@ -174,14 +179,28 @@ function checkCronSecret(onVercel: boolean): DeploymentRequirement {
     };
   }
 
+  if (cron.source === "admin-secret") {
+    return {
+      id: CRON_SECRET_REQUIREMENT_ID,
+      status: onVercel ? "warn" : "pass",
+      message: onVercel
+        ? "CRON_SECRET is not set. /api/cron/watchdog will fall back to ADMIN_SECRET."
+        : "CRON_SECRET is not set. /api/cron/watchdog will fall back to ADMIN_SECRET in this environment.",
+      remediation: onVercel
+        ? "Set CRON_SECRET if you want cron authentication to rotate independently from admin login."
+        : "Set CRON_SECRET if you want a dedicated secret for cron endpoints.",
+      env: ["CRON_SECRET"],
+    };
+  }
+
   if (onVercel) {
     return {
       id: CRON_SECRET_REQUIREMENT_ID,
       status: "fail",
-      message: "CRON_SECRET is required on Vercel deployments.",
+      message: "Neither CRON_SECRET nor ADMIN_SECRET is configured.",
       remediation:
-        "Set CRON_SECRET so deployed cron requests can authenticate before waking the sandbox.",
-      env: CRON_SECRET_ENV,
+        "Set ADMIN_SECRET at minimum. Set CRON_SECRET separately if you want independent cron authentication.",
+      env: ["CRON_SECRET", "ADMIN_SECRET"],
     };
   }
 
@@ -190,7 +209,7 @@ function checkCronSecret(onVercel: boolean): DeploymentRequirement {
     status: "pass",
     message: "CRON_SECRET is optional outside Vercel deployments.",
     remediation: "",
-    env: CRON_SECRET_ENV,
+    env: ["CRON_SECRET"],
   };
 }
 

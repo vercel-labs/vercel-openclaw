@@ -129,11 +129,27 @@ export function _setInstanceIdOverrideForTesting(id: string | null): void {
   )[INSTANCE_ID_OVERRIDE_GLOBAL_KEY] = id;
 }
 
+export type CronSecretSource = "cron-secret" | "admin-secret" | "missing";
+
+export type CronSecretConfig = {
+  value: string | null;
+  source: CronSecretSource;
+};
+
+export function getCronSecretConfig(): CronSecretConfig {
+  const cronSecret = process.env.CRON_SECRET?.trim();
+  if (cronSecret) {
+    return { value: cronSecret, source: "cron-secret" };
+  }
+  const adminSecret = process.env.ADMIN_SECRET?.trim();
+  if (adminSecret) {
+    return { value: adminSecret, source: "admin-secret" };
+  }
+  return { value: null, source: "missing" };
+}
+
 export function getCronSecret(): string | null {
-  const secret = process.env.CRON_SECRET?.trim();
-  if (secret) return secret;
-  const admin = process.env.ADMIN_SECRET?.trim();
-  return admin || null;
+  return getCronSecretConfig().value;
 }
 
 let _aiGatewayTokenOverride: string | undefined | null = null;

@@ -18,11 +18,14 @@ import {
 } from "@/server/deploy-requirements";
 import { logDebug, logInfo } from "@/server/log";
 import {
-  getPublicUrlDiagnostics,
   resolvePublicOrigin,
   type BuiltPublicUrlDiagnostics,
   type PublicOriginResolution,
 } from "@/server/public-url";
+import {
+  buildChannelDisplayWebhookUrl,
+  CHANNEL_WEBHOOK_PATHS,
+} from "@/server/channels/webhook-urls";
 
 export type PreflightStatus = "pass" | "warn" | "fail";
 
@@ -88,6 +91,26 @@ export type PreflightPayload = {
   nextSteps: PreflightNextStep[];
 };
 
+type DisplayWebhookChannel = "slack" | "telegram" | "discord";
+
+function buildDisplayWebhookDiagnostics(
+  channel: DisplayWebhookChannel,
+  request: Request,
+  publicOriginResolution: PublicOriginResolution,
+): BuiltPublicUrlDiagnostics | null {
+  const url = buildChannelDisplayWebhookUrl(channel, request);
+  if (!url) return null;
+
+  return {
+    path: CHANNEL_WEBHOOK_PATHS[channel],
+    url,
+    source: publicOriginResolution.source,
+    authMode: publicOriginResolution.authMode,
+    bypassEnabled: publicOriginResolution.bypassEnabled,
+    bypassApplied: false,
+  };
+}
+
 function buildWebhookDiagnostics(
   request: Request,
   publicOriginResolution: PublicOriginResolution | null,
@@ -96,26 +119,41 @@ function buildWebhookDiagnostics(
     return { slack: null, telegram: null, discord: null };
   }
 
-  const slack = getPublicUrlDiagnostics(
-    "/api/channels/slack/webhook",
+  const slack = buildDisplayWebhookDiagnostics(
+    "slack",
     request,
+    publicOriginResolution,
   );
-  const telegram = getPublicUrlDiagnostics(
-    "/api/channels/telegram/webhook",
+  const telegram = buildDisplayWebhookDiagnostics(
+    "telegram",
     request,
+    publicOriginResolution,
   );
-  const discordBase = getPublicUrlDiagnostics(
-    "/api/channels/discord/webhook",
+  const discordBase = buildDisplayWebhookDiagnostics(
+    "discord",
     request,
+    publicOriginResolution,
   );
+
+  logDebug("preflight.webhook_diagnostics_built", {
+    slackUrl: slack?.url ?? null,
+    telegramUrl: telegram?.url ?? null,
+    discordUrl: discordBase?.url ?? null,
+    webhookBypassEnabled: publicOriginResolution.bypassEnabled,
+    slackBypassApplied: slack?.bypassApplied ?? false,
+    telegramBypassApplied: telegram?.bypassApplied ?? false,
+    discordBypassApplied: discordBase?.bypassApplied ?? false,
+  });
 
   return {
     slack,
     telegram,
-    discord: {
-      ...discordBase,
-      isPublic: isPublicUrl(discordBase.url),
-    },
+    discord: discordBase
+      ? {
+          ...discordBase,
+          isPublic: isPublicUrl(discordBase.url),
+        }
+      : null,
   };
 }
 

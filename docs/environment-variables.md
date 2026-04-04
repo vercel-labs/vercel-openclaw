@@ -23,7 +23,7 @@ Auto-provisioned by the deploy button via the Vercel Marketplace integration.
 
 | Variable | Purpose |
 | -------- | ------- |
-| `CRON_SECRET` | Separate secret for `/api/cron/watchdog`. Falls back to `ADMIN_SECRET` when not set. Required on Vercel — missing is a hard failure in the deployment contract. |
+| `CRON_SECRET` | Separate secret for `/api/cron/watchdog`. When unset, the runtime falls back to `ADMIN_SECRET`. On deployed environments, set it explicitly if you want cron auth to rotate independently from admin login. |
 | `AI_GATEWAY_API_KEY` | Static fallback when Vercel OIDC is unavailable. Deployed Vercel still prefers OIDC first. |
 
 ### Experimental: sign-in-with-vercel

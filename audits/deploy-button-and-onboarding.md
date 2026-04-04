@@ -36,10 +36,11 @@ Files audited:
 | ID   | Severity | Status | Summary |
 |------|----------|--------|---------|
 | DO-1 | P2       | WARN   | Docs say `OPENCLAW_PACKAGE_SPEC` defaults to `openclaw@latest`; runtime uses pinned `openclaw@2026.3.28` |
-| DO-2 | P3       | WARN   | `cronSecretConfigured` preflight field reads `process.env.CRON_SECRET` directly, ignoring `ADMIN_SECRET` fallback |
+| DO-2 | P3       | RESOLVED | `cronSecretConfigured` preflight field reads `process.env.CRON_SECRET` directly (intentional — shows explicit config); deployment contract now distinguishes `cron-secret` vs `admin-secret` fallback source |
 | DO-3 | P3       | WARN   | No minimum length enforcement on `ADMIN_SECRET` |
 | DO-4 | P3       | WARN   | `NEXT_PUBLIC_SANDBOX_SCOPE` and `NEXT_PUBLIC_SANDBOX_PROJECT` missing from `docs/environment-variables.md` |
 | DO-5 | P3       | PASS   | Deploy button `envDescription` references CRON_SECRET fallback (matches runtime) |
+| DO-6 | P3       | RESOLVED | Deploy-time cron guidance now matches runtime fallback semantics |
 
 ---
 
@@ -173,6 +174,17 @@ Files audited:
 - **Detail**: These optional vars pre-fill the `npx sandbox connect` command in the Terminal tab. They are in `.env.example` but not in the formal env var docs.
 - **Impact**: Minor. Operators needing team/project scoping for the Terminal tab won't find them in the reference docs.
 - **Fix**: Add a "Terminal" section to `docs/environment-variables.md` with these two vars.
+
+### DO-6 (P3/RESOLVED) -- Deploy-time cron guidance now matches runtime fallback semantics
+
+- **Evidence**:
+  - `README.md:55-60`: "falls back to `ADMIN_SECRET` when `CRON_SECRET` is unset; set `CRON_SECRET` separately on deployed environments if you want cron auth to rotate independently from admin login"
+  - `docs/environment-variables.md:26`: "When unset, the runtime falls back to `ADMIN_SECRET`. On deployed environments, set it explicitly if you want cron auth to rotate independently from admin login."
+  - `src/server/env.ts:132-149`: `getCronSecretConfig()` returns `{ source: "admin-secret" }` when only `ADMIN_SECRET` is set
+  - `src/server/deployment-contract.ts:164-214`: `checkCronSecret()` returns `warn` (not `pass`) on Vercel when falling back to `ADMIN_SECRET`
+  - `.env.example:55-58`: Comment explains fallback and independent rotation
+- **Detail**: Previously, the deploy-time guidance implied `ADMIN_SECRET` alone was sufficient without nuance, while the env reference said `CRON_SECRET` was required on Vercel and the deployment contract reported fallback as explicit configuration. Now all surfaces consistently describe the fallback behavior and recommend (but do not require) a separate `CRON_SECRET` for independent rotation.
+- **Status**: RESOLVED. Docs, contract, and runtime are aligned.
 
 ---
 

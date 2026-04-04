@@ -56,7 +56,7 @@ The only required variable is `ADMIN_SECRET`. Everything else is auto-configured
 
 - **Upstash Redis** — provisioned by the deploy button
 - **AI Gateway auth** — handled via Vercel OIDC on deployed environments
-- **Cron secret** — falls back to `ADMIN_SECRET` if `CRON_SECRET` is not set separately
+- **Cron secret** — falls back to `ADMIN_SECRET` when `CRON_SECRET` is unset; set `CRON_SECRET` separately on deployed environments if you want cron auth to rotate independently from admin login
 - **Watchdog cron** — runs once daily by default so Hobby-plan deploys succeed. On a Pro plan you can increase the schedule in `vercel.json` up to every minute for more responsive auto-wake
 
 See [docs/environment-variables.md](docs/environment-variables.md) for the full reference, including optional tuning (vCPU count, sleep timeout, version pinning) and alternative auth modes.
