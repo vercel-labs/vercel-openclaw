@@ -178,14 +178,30 @@ Files audited:
 
 **Commit verdict**: RESOLVED on this commit because runtime payload and logs match the documented fallback semantics.
 
+#### Three-case cron-state matrix
+
+All three cases traced through `getCronSecretConfig()` (`src/server/env.ts:139-149`) → `buildCronPreflightState()` (`src/server/deploy-preflight.ts:107-116`) → payload spread (`deploy-preflight.ts:640`) and log spread (`deploy-preflight.ts:654-665`).
+
+| Case | `ADMIN_SECRET` | `CRON_SECRET` | `cronSecretConfigured` | `cronSecretExplicitlyConfigured` | `cronSecretSource` | `checkCronSecret` status (Vercel) |
+|------|---------------|--------------|------------------------|----------------------------------|--------------------|-----------------------------------|
+| A    | set           | set          | `true`                 | `true`                           | `"cron-secret"`    | `pass`                            |
+| B    | set           | unset        | `true`                 | `false`                          | `"admin-secret"`   | `warn`                            |
+| C    | unset         | unset        | `false`                | `false`                          | `"missing"`        | `fail`                            |
+
+**Cross-surface agreement**: The cron tuple cannot disagree across the three surfaces (`preflight.cron_state_resolved`, `deploy_preflight.built`, admin preflight JSON payload) because `buildCronPreflightState()` computes the tuple once at `deploy-preflight.ts:509` and the same `cronState` object is spread into both the returned `PreflightPayload` (line 640) and the `deploy_preflight.built` log (line 654-665). The `preflight.cron_state_resolved` log is emitted from the same function at line 114. Disagreement would require a code defect in the spread operator, not a logic branch mismatch.
+
+**Contract-side agreement**: `checkCronSecret()` at `deployment-contract.ts:166-216` also calls `getCronSecretConfig()` at line 167, so the contract requirement status (`pass`/`warn`/`fail`) is derived from the same env resolution. The `deployment_contract.cron_secret_evaluated` log at `deployment-contract.ts:169` records `{ onVercel, source }` from the same call.
+
+**Verdict**: DO-2 remains RESOLVED. All three cases produce consistent tuples across all three surfaces by construction. No branch-specific divergence is possible without a code change to the shared derivation path.
+
 #### Runtime / logs / docs / audit agreement
 
 | Surface | `cronSecretConfigured` | `cronSecretExplicitlyConfigured` | `cronSecretSource` |
 |---------|------------------------|----------------------------------|--------------------|
 | `PreflightPayload` type (deploy-preflight.ts:86-88) | yes | yes | yes |
 | `buildCronPreflightState()` (deploy-preflight.ts:107-116) | yes | yes | yes |
-| Payload construction (deploy-preflight.ts:620) | yes | yes | yes |
-| `deploy_preflight.built` log (deploy-preflight.ts:642) | yes | yes | yes |
+| Payload construction (deploy-preflight.ts:640) | yes | yes | yes |
+| `deploy_preflight.built` log (deploy-preflight.ts:654-665) | yes | yes | yes |
 | CLAUDE.md type definition (line 180-182) | yes | yes | yes |
 | CLAUDE.md observability notes (line 164) | yes | yes | yes |
 | This audit (DO-2) | yes | yes | yes |

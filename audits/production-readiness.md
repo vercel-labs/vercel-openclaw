@@ -13,7 +13,7 @@
 | Deploy button & onboarding | [deploy-button-and-onboarding.md](deploy-button-and-onboarding.md) | PASS |
 | Documentation accuracy | [documentation-accuracy.md](documentation-accuracy.md) | PASS |
 | Env var completeness | [env-var-completeness.md](env-var-completeness.md) | PASS |
-| Error handling & observability | [error-handling-observability.md](error-handling-observability.md) | WARN |
+| Error handling & observability | [error-handling-observability.md](error-handling-observability.md) | PASS (6/9 resolved) |
 | Firewall & proxy safety | [firewall-and-proxy-safety.md](firewall-and-proxy-safety.md) | PASS |
 | Firewall correctness | [firewall-correctness.md](firewall-correctness.md) | WARN |
 | Proxy & HTML injection safety | [proxy-html-injection-safety.md](proxy-html-injection-safety.md) | PASS |
@@ -23,16 +23,37 @@
 
 ## Delta Notes — 2026-04-04
 
+### RESOLVED — Deployment-contract → preflight seam made failure-tolerant
+
+- **Evidence**: `src/server/deployment-contract.ts:370-378`, `src/server/deploy-preflight.ts:491-498`, `src/server/deploy-preflight.ts:439,463`, `src/server/deploy-preflight.ts:206-211`
+- **Detail**: The `buildDeploymentContract()` → `buildDeployPreflight()` → `/api/admin/preflight` chain had a single unhandled failure seam: if `getAiGatewayAuthMode()` threw at `deployment-contract.ts:370`, the entire preflight response failed with an unstructured 500.
+- **Fix applied**: (1) `getAiGatewayAuthMode()` wrapped in try/catch with `logWarn` at `deployment-contract.ts:374` and fallback to `"unavailable"`. (2) `resolvePublicOrigin()` catch in preflight now logs `public_origin.resolution_failed` at `deploy-preflight.ts:494` instead of silently swallowing. (3) Blocking preflight logged at `logWarn` (`deploy-preflight.ts:463`) instead of `logInfo`. (4) Contract evaluation elevated from `logDebug` to `logInfo` at `deployment-contract.ts:396`. (5) Unmapped requirement IDs in `contractRequirementToAction` now emit `deploy_preflight.action_mapping_missing` warning at `deploy-preflight.ts:207`.
+- **Residual**: `/api/admin/preflight` can now return structured JSON diagnostics even when AI Gateway auth resolution fails. The `deployment_contract.ai_gateway_auth_failed` log appears before `deployment_contract.built`, giving operators a clear breadcrumb trail.
+
+### RESOLVED — Blocking and non-blocking launch-verify outcomes distinguishable in logs
+
+- **Evidence**: `src/server/deploy-preflight.ts:424-478` (`getLaunchVerifyBlocking`)
+- **Detail**: `getLaunchVerifyBlocking()` is the canonical source of truth for deciding which preflight failures abort runtime phases. Blocking and non-blocking outcomes are now logged at different severity levels:
+  - **Non-blocking** (no failing checks): `logInfo("launch_verify.blocking_check", { blocking: false, ... })` at `deploy-preflight.ts:439`
+  - **Blocking** (failing checks present): `logWarn("launch_verify.blocking_check", { blocking: true, failingCheckIds, ..., skipPhaseIds })` at `deploy-preflight.ts:463`
+- **Operator consequence**: Operators can filter ring buffer entries by severity to surface only blocking outcomes. Log aggregation tools (Vercel function logs, Datadog, etc.) can alert on `warn`-level `launch_verify.blocking_check` events without noise from passing preflight runs. The `skipPhaseIds` field in the blocking log explicitly names which runtime phases (`queuePing`, `ensureRunning`, `chatCompletions`, `wakeFromSleep`, `restorePrepared`) were skipped, enabling automated monitoring of partial launch verification runs.
+
 ### RESOLVED — Cron auth requirement represented inconsistently
 
 - **Evidence**: `src/server/env.ts:132-149`, `src/server/deployment-contract.ts:164-214`, `README.md:55-60`, `docs/environment-variables.md:26`, `.env.example:55-58`
 - **Detail**: The runtime fell back to `ADMIN_SECRET`, but docs and contract messaging did not consistently distinguish fallback from explicit `CRON_SECRET`.
 - **Fix applied**: Added `getCronSecretConfig()` helper that reports `cron-secret`, `admin-secret`, or `missing` source. Deployment contract now returns `warn` (not `pass`) on Vercel when falling back to `ADMIN_SECRET`, and `fail` only when both are missing. Docs aligned across README, env reference, and `.env.example`.
-- **Residual**: None. `buildDeployPreflight()` now uses `getCronSecretConfig()` and exposes `cronSecretConfigured` (effective), `cronSecretExplicitlyConfigured` (explicit-only), and `cronSecretSource` at `src/server/deploy-preflight.ts:490-493`.
+- **Residual**: None. `buildDeployPreflight()` now uses `getCronSecretConfig()` via `buildCronPreflightState()` at `src/server/deploy-preflight.ts:107-116` and exposes `cronSecretConfigured` (effective), `cronSecretExplicitlyConfigured` (explicit-only), and `cronSecretSource` in the payload at `src/server/deploy-preflight.ts:640`.
+- **Three-case matrix verified**: All three env combinations `(set,set)`, `(set,unset)`, `(unset,unset)` produce consistent tuples across `preflight.cron_state_resolved`, `deploy_preflight.built`, and the admin preflight JSON payload — by construction, since the tuple is computed once and spread. Full evidence table in `audits/deploy-button-and-onboarding.md` under DO-2.
+
+### RESOLVED — Contract requirement remediation mapping fully covered
+
+- **Evidence**: `src/server/deploy-preflight.ts:185-211`, `src/shared/deployment-requirements.ts:6-15`
+- **Detail**: All 9 `DeploymentRequirementId` values are accounted for in `contractRequirementToAction()`: 5 via `EXPLICITLY_HANDLED_REQUIREMENT_IDS` (handled by `pushRequirementAction`) and 4 via `idMap`. No current requirement can silently disappear from the operator's remediation list. The `logWarn("deploy_preflight.action_mapping_missing")` guard at `deploy-preflight.ts:206-211` is a safety net for future additions. Full coverage table in `audits/error-handling-observability.md`.
 
 ### RESOLVED — Preflight webhook diagnostics now follow Telegram display-url policy
 
-- **Evidence**: `src/server/deploy-preflight.ts:94-112`, `src/server/channels/webhook-urls.ts` (via `buildChannelDisplayWebhookUrl`)
+- **Evidence**: `src/server/deploy-preflight.ts:120-136` (`buildDisplayWebhookDiagnostics`), `src/server/channels/webhook-urls.ts` (via `buildChannelDisplayWebhookUrl`)
 - **Detail**: Operator-visible preflight webhook diagnostics previously used the generic URL builder which could include the `x-vercel-protection-bypass` query parameter. Telegram and display surfaces are documented to stay bypass-free.
 - **Fix applied**: `buildWebhookDiagnostics()` now delegates to `buildDisplayWebhookDiagnostics()` which calls `buildChannelDisplayWebhookUrl()` and sets `bypassApplied: false` for all channels. Preflight JSON no longer leaks bypass secrets in webhook diagnostic URLs.
 
@@ -91,11 +112,13 @@
 - Upstream redirects blocked/rewritten
 - Response headers sanitized; `set-cookie` unconditionally stripped
 
-### Error Handling & Observability — WARN (5 logging gaps)
+### Error Handling & Observability — PASS (6/9 resolved)
 
 - 579+ structured log calls across codebase
 - Ring buffer excludes debug entries to preserve operational logs
-- **P2 gaps**: Contract evaluation at debug level, public origin exceptions silently swallowed, watchdog route missing logging, blocking preflight failure at info not warn, AI Gateway auth mode lacks error handling
+- **Resolved**: Contract evaluation elevated to `logInfo` (`deployment-contract.ts:396`), public origin exception logged at `logWarn` (`deploy-preflight.ts:494`), blocking preflight at `logWarn` (`deploy-preflight.ts:463`) — now distinguishable from non-blocking `logInfo` at `deploy-preflight.ts:439`, AI Gateway auth mode failure-tolerant with fallback (`deployment-contract.ts:370-378`), `logWarn` adopted in both files, unmapped requirement IDs warned (`deploy-preflight.ts:207`)
+- **Remaining P2**: Watchdog route missing logging (`watchdog/route.ts`)
+- **Remaining P3**: Require explicit `ok` in phase returns, handle unknown `details.kind` in log summary
 
 ### Test Coverage — WARN (see test-coverage-gaps.md)
 
@@ -120,8 +143,8 @@
 | 4 | Upstash store Lua scripts untested | test-coverage-gaps | Lock race conditions in production |
 | 5 | Firewall store-before-sandbox-sync ordering gap | firewall-correctness | Diverged firewall state |
 | 6 | Gateway readiness accepts 5xx as "ready" | sandbox-lifecycle-resume | Premature ready signal |
-| 7 | Deployment contract evaluation invisible in admin log ring buffer | error-handling-observability | Operator confusion |
-| 8 | ~~`cronSecretConfigured` preflight reads `process.env.CRON_SECRET` directly~~ RESOLVED — now uses `getCronSecretConfig()` with `cronSecretSource` field | readiness-restore-and-ops | Resolved |
+| 7 | ~~Deployment contract evaluation invisible in admin log ring buffer~~ RESOLVED — elevated to `logInfo` at `deployment-contract.ts:396` | error-handling-observability | Resolved |
+| 8 | ~~`cronSecretConfigured` preflight reads `process.env.CRON_SECRET` directly~~ RESOLVED — now uses `getCronSecretConfig()` via `buildCronPreflightState()` at `deploy-preflight.ts:107-116` | readiness-restore-and-ops | Resolved |
 | 9 | Lock renewal failure does not abort in-progress lifecycle work | sandbox-lifecycle-resume | Concurrent resume overlap |
 | 10 | No timeout on `sandbox.stop({ blocking: true })` | sandbox-lifecycle-resume | Lock contention on API failure |
 

@@ -17,7 +17,7 @@ import {
   getWebhookBypassRequirement,
   getWebhookBypassStatusMessage,
 } from "@/server/deploy-requirements";
-import { logDebug, logInfo } from "@/server/log";
+import { logDebug, logInfo, logWarn } from "@/server/log";
 import {
   resolvePublicOrigin,
   type BuiltPublicUrlDiagnostics,
@@ -181,6 +181,15 @@ function buildWebhookDiagnostics(
   };
 }
 
+/** Requirement IDs handled by explicit pushRequirementAction calls in buildActions. */
+const EXPLICITLY_HANDLED_REQUIREMENT_IDS = new Set([
+  "public-origin",
+  "webhook-bypass",
+  "store",
+  "ai-gateway",
+  "cron-secret",
+]);
+
 function contractRequirementToAction(
   req: DeploymentRequirement,
 ): PreflightAction | null {
@@ -193,7 +202,15 @@ function contractRequirementToAction(
     "session-secret": "configure-oauth",
   };
   const actionId = idMap[req.id];
-  if (!actionId) return null;
+  if (!actionId) {
+    if (!EXPLICITLY_HANDLED_REQUIREMENT_IDS.has(req.id)) {
+      logWarn("deploy_preflight.action_mapping_missing", {
+        requirementId: req.id,
+        requirementStatus: req.status,
+      });
+    }
+    return null;
+  }
 
   return {
     id: actionId,
@@ -443,7 +460,7 @@ export function getLaunchVerifyBlocking(
 
   const errorMessage = `Preflight config checks failed: ${failingCheckIds.join(", ")}. ${remediations.join(" ")}`;
 
-  logInfo("launch_verify.blocking_check", {
+  logWarn("launch_verify.blocking_check", {
     blocking: true,
     failingCheckIds,
     requiredActionIds,
@@ -473,7 +490,10 @@ export async function buildDeployPreflight(
   let publicOriginResolution: PublicOriginResolution | null = null;
   try {
     publicOriginResolution = resolvePublicOrigin(request);
-  } catch {
+  } catch (error) {
+    logWarn("public_origin.resolution_failed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
     publicOriginResolution = null;
   }
 

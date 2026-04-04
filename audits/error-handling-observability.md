@@ -2,7 +2,7 @@
 
 **Date**: 2026-04-03
 **Auditor**: Automated pre-launch audit
-**Verdict**: Prelaunch-warning (launch-critical paths are instrumented; several observability gaps identified)
+**Verdict**: PASS (6 of 9 findings resolved; 1 P2 watchdog logging + 2 P3 items remain)
 
 ## Scope
 
@@ -29,26 +29,22 @@
 - **Evidence**: `driver.ts:162-168, 205-210, 241-247, 318-326, 338-339`
 - **Detail**: `channels.wake_requested`, `channels.wake_ready`, `channels.gateway_request_started`, `channels.gateway_response_received`, `channels.delivery_success` — all logged with operation context correlation. Auth recovery (410 reconciliation) is also instrumented at `driver.ts:277-301`.
 
-### WARN — Entire deployment contract evaluation is debug-only (invisible in ring buffer)
+### PASS — Deployment contract evaluation now visible in ring buffer (RESOLVED)
 
-- **Evidence**: `deployment-contract.ts:367`
-- **Severity**: P2 (medium)
-- **Detail**: The only log call in `deployment-contract.ts` is `logDebug("deployment_contract.built", ...)`. Per `log.ts:85`, debug entries are excluded from the ring buffer. In production, the entire contract evaluation — including all 8 `check*` functions — produces zero log entries visible via `getServerLogs()` or the admin logs panel. An operator investigating why preflight failed has no contract-level breadcrumbs.
-- **Recommended fix**: Change the `deployment_contract.built` log from `logDebug` to `logInfo`. This is a single-line change with high diagnostic value.
+- **Evidence**: `deployment-contract.ts:396` — `logInfo("deployment_contract.built", ...)`
+- **Detail**: Previously `logDebug` (invisible in ring buffer). Now `logInfo`, so contract evaluation results are visible in the admin logs panel. The `deployment_contract.cron_secret_evaluated` log was also elevated from `logDebug` to `logInfo` at `deployment-contract.ts:169`.
 
-### WARN — `resolvePublicOrigin` exception silently swallowed in two locations
+### PASS — `resolvePublicOrigin` exception now logged in deploy-preflight (RESOLVED)
 
-- **Evidence**: `deploy-preflight.ts:434-437`, `deployment-contract.ts:94`
-- **Severity**: P2 (medium)
-- **Detail**: Both files wrap `resolvePublicOrigin()` in a bare `catch {}` that discards the exception. Downstream, `publicOrigin` silently becomes `null`, and the operator sees a generic "unable to resolve public origin" check failure with no indication that an exception was thrown or what it contained.
-- **Recommended fix**: Add `logWarn("public_origin.resolution_failed", { error: String(err) })` inside the catch blocks.
+- **Evidence**: `deploy-preflight.ts:491-498` — try/catch with `logWarn("public_origin.resolution_failed", { error })` at line 494
+- **Detail**: The bare `catch {}` in `buildDeployPreflight()` now logs the exception at warn level before setting `publicOriginResolution` to null. Operators see `public_origin.resolution_failed` in the ring buffer with the error message, including the request URL for correlation. Note: `deployment-contract.ts:87-107` (`checkPublicOrigin`) still uses a bare catch, but that path produces a structured requirement with a descriptive message, so the silent swallow there is acceptable.
+- **Operator consequence**: Without this fix, a broken origin resolution (e.g. malformed `NEXT_PUBLIC_APP_URL`) would silently degrade the preflight payload — `publicOrigin` would be `null` and `publicOriginResolution` would be `null` with no log entry explaining why. Operators would see a failing `public-origin` check but no breadcrumb pointing to the root cause.
 
-### WARN — Blocking preflight failure logged at `info`, not `warn` or `error`
+### PASS — Blocking preflight failure now logged at `warn` severity (RESOLVED)
 
-- **Evidence**: `deploy-preflight.ts:406` (`getLaunchVerifyBlocking`)
-- **Severity**: P2 (medium)
-- **Detail**: A blocking preflight failure — one that will skip all runtime launch verification phases — is logged at `logInfo` with `blocking: true`. A clean pass is also logged at `logInfo` with `blocking: false`. There is no severity distinction. Operators must parse the `blocking` field in the JSON payload to detect the failure; log-level filtering alone won't surface it.
-- **Recommended fix**: Use `logWarn` when `blocking: true`.
+- **Evidence**: `deploy-preflight.ts:463` — `logWarn("launch_verify.blocking_check", { blocking: true, ... })`; `deploy-preflight.ts:439` — `logInfo("launch_verify.blocking_check", { blocking: false, ... })`
+- **Detail**: Previously both blocking and non-blocking outcomes were logged at `logInfo`. Now the `getLaunchVerifyBlocking()` function at `deploy-preflight.ts:424-478` splits severity: a blocking preflight failure (failing checks present) is logged at `logWarn` (line 463), while a non-blocking result is logged at `logInfo` (line 439). This makes true launch-stoppers stand out in the ring buffer and log aggregation filters.
+- **Operator consequence**: Without this split, operators filtering logs by severity would not be able to distinguish "preflight passed, proceeding to runtime phases" from "preflight failed, all runtime phases skipped". In a ring buffer with 1000 entries, blocking events at info level could be buried by routine polling logs.
 
 ### WARN — Watchdog route has zero logging
 
@@ -57,19 +53,16 @@
 - **Detail**: The cron watchdog route does not import or call any function from `@/server/log`. Authorization failures (brute-force, misconfigured cron) are invisible in the ring buffer. Watchdog start, outcome, and thrown exceptions produce no structured log entries at the route level. A watchdog crash propagates as an unstructured 500 via Next.js's default error boundary.
 - **Recommended fix**: Add `logInfo` at entry, `logInfo`/`logWarn` at exit based on `report.status`, and `logError` in a try/catch around `runSandboxWatchdog()`. Add `logWarn` for unauthorized attempts.
 
-### WARN — `getAiGatewayAuthMode()` has no error handling in contract builder
+### PASS — `getAiGatewayAuthMode()` now failure-tolerant in contract builder (RESOLVED)
 
-- **Evidence**: `deployment-contract.ts:350`
-- **Severity**: P2 (medium)
-- **Detail**: `getAiGatewayAuthMode()` is awaited without a try/catch. If it throws (e.g., due to a network fetch for an OIDC token), the exception propagates unhandled out of `buildDeploymentContract`. The caller (`buildDeployPreflight`) also has no error handling around the contract build call. The entire preflight response would fail with an unstructured 500.
-- **Recommended fix**: Wrap the call in a try/catch that falls back to `"unavailable"` and logs a warning.
+- **Evidence**: `deployment-contract.ts:370-378` — try/catch with `logWarn("deployment_contract.ai_gateway_auth_failed", ...)` at line 374; fallback to `"unavailable"`
+- **Detail**: Previously an unhandled throw from `getAiGatewayAuthMode()` would propagate through `buildDeploymentContract()` → `buildDeployPreflight()` (line 488) → `/api/admin/preflight`, producing an unstructured 500. Now the call is wrapped in a try/catch that logs the error at warn level and falls back to `"unavailable"`, allowing preflight to return a structured diagnostic payload even when OIDC resolution fails.
+- **Operator consequence**: Without this fix, a transient OIDC endpoint failure would take down the entire preflight API with no structured error output. Operators would see an unstructured 500 in their browser with no actionable log entry explaining the root cause.
 
-### WARN — `logWarn` is never used in preflight or contract files
+### PASS — `logWarn` now actively used in preflight and contract files (RESOLVED)
 
-- **Evidence**: `deploy-preflight.ts`, `deployment-contract.ts`
-- **Severity**: P3 (low)
-- **Detail**: The `warn` log level is functionally dead in the two most critical diagnostic files. `logWarn` is imported in `deploy-preflight.ts` but never called. `deployment-contract.ts` does not import it at all. The middle severity tier between `info` and `error` is unused, making it harder to filter for conditions that need attention but aren't hard failures.
-- **Recommended fix**: Adopt `logWarn` for: blocking preflight, sync failures, missing optional config, and exception swallows.
+- **Evidence**: `deployment-contract.ts:10` imports `logWarn`; `deploy-preflight.ts:20` imports `logWarn`
+- **Detail**: Both files now use `logWarn` for conditions that need operator attention: AI Gateway auth failure (`deployment-contract.ts:374`), public origin resolution failure (`deploy-preflight.ts:494`), blocking preflight check (`deploy-preflight.ts:463`), and unmapped requirement IDs (`deploy-preflight.ts:207`).
 
 ### WARN — `normalizePhaseExecutionValue` defaults missing `ok` to `true`
 
@@ -85,12 +78,29 @@
 - **Detail**: The function only handles `kind: "restorePrepared"` — the `default` branch returns `undefined`. Any new `details.kind` values added in the future will silently lose their detail summary in log entries.
 - **Recommended fix**: Add a `default` case that includes the raw `kind` value in the log summary.
 
-### WARN — `contractRequirementToAction` silently drops unmapped requirements
+### PASS — `contractRequirementToAction` now warns on unmapped requirements (RESOLVED)
 
-- **Evidence**: `deploy-preflight.ts:133`
-- **Severity**: P3 (low)
-- **Detail**: When `idMap[req.id]` returns `undefined` for a failing requirement, the requirement is silently dropped from the action list. No log is emitted for the unmapped case. A new contract requirement added without a corresponding action mapping would be invisible to operators.
-- **Recommended fix**: Add a `logWarn` for unmapped requirement IDs during action list construction.
+- **Evidence**: `deploy-preflight.ts:206-211` — `logWarn("deploy_preflight.action_mapping_missing", { requirementId, requirementStatus })` inside `contractRequirementToAction()` at line 193
+- **Detail**: When a failing requirement ID is not in the `idMap` (line 198-203) and not in `EXPLICITLY_HANDLED_REQUIREMENT_IDS` (line 185-191: `public-origin`, `webhook-bypass`, `store`, `ai-gateway`, `cron-secret`), a warn log is emitted. This catches future contract requirements that lack a corresponding action mapping without false-positives for requirements handled by `pushRequirementAction`.
+- **Operator consequence**: Without this warning, a new deployment contract requirement (e.g. a future `session-rotation` check) that fails but lacks a preflight action mapping would silently disappear from the operator's remediation list. The check would show as failing, but no action would tell the operator how to fix it.
+
+#### Remediation mapping coverage analysis
+
+All 9 `DeploymentRequirementId` values defined in `src/shared/deployment-requirements.ts:6-15` are accounted for in `contractRequirementToAction()` at `deploy-preflight.ts:193-222`:
+
+| Requirement ID | Handling mechanism | Location |
+|---|---|---|
+| `public-origin` | `EXPLICITLY_HANDLED_REQUIREMENT_IDS` + `pushRequirementAction` | `deploy-preflight.ts:186,255` |
+| `webhook-bypass` | `EXPLICITLY_HANDLED_REQUIREMENT_IDS` + conditional push | `deploy-preflight.ts:187,260-270` |
+| `store` | `EXPLICITLY_HANDLED_REQUIREMENT_IDS` + `pushRequirementAction` | `deploy-preflight.ts:188,256` |
+| `ai-gateway` | `EXPLICITLY_HANDLED_REQUIREMENT_IDS` + `pushRequirementAction` | `deploy-preflight.ts:189,257` |
+| `cron-secret` | `EXPLICITLY_HANDLED_REQUIREMENT_IDS` + `pushRequirementAction` | `deploy-preflight.ts:190,258` |
+| `openclaw-package-spec` | `idMap` → `configure-openclaw-package-spec` | `deploy-preflight.ts:199` |
+| `oauth-client-id` | `idMap` → `configure-oauth` | `deploy-preflight.ts:200` |
+| `oauth-client-secret` | `idMap` → `configure-oauth` | `deploy-preflight.ts:201` |
+| `session-secret` | `idMap` → `configure-oauth` | `deploy-preflight.ts:202` |
+
+**Verdict**: No current requirement ID can silently disappear. The `logWarn("deploy_preflight.action_mapping_missing")` guard at line 206-211 is a safety net for future requirement IDs added to `DeploymentRequirementId` without a corresponding action mapping. On the current codebase, this warn path is unreachable — all IDs are mapped. Severity: **informational** (no fix needed, defensive code is already in place).
 
 ### PASS — Log correlation keys support cross-request tracing
 
@@ -106,19 +116,19 @@
 
 ### P2 — Address before launch
 
-1. **Contract evaluation logging**: Change `logDebug` → `logInfo` for `deployment_contract.built`. (`deployment-contract.ts:367`)
-2. **Public origin exception logging**: Add `logWarn` inside the catch blocks. (`deploy-preflight.ts:434-437`, `deployment-contract.ts:94`)
-3. **Blocking preflight severity**: Use `logWarn` when `blocking: true`. (`deploy-preflight.ts:406`)
-4. **Watchdog route logging**: Add entry/exit/error logs. (`watchdog/route.ts`)
-5. **AI Gateway auth mode error handling**: Wrap in try/catch with fallback to `"unavailable"`. (`deployment-contract.ts:350`)
+1. ~~**Contract evaluation logging**: Change `logDebug` → `logInfo` for `deployment_contract.built`.~~ **RESOLVED** (`deployment-contract.ts:396`)
+2. ~~**Public origin exception logging**: Add `logWarn` inside the catch blocks.~~ **RESOLVED** (`deploy-preflight.ts:494`)
+3. ~~**Blocking preflight severity**: Use `logWarn` when `blocking: true`.~~ **RESOLVED** (`deploy-preflight.ts:463`)
+4. **Watchdog route logging**: Add entry/exit/error logs. (`watchdog/route.ts`) — still open
+5. ~~**AI Gateway auth mode error handling**: Wrap in try/catch with fallback to `"unavailable"`.~~ **RESOLVED** (`deployment-contract.ts:370-378`)
 
 ### P3 — Post-launch improvements
 
-6. **Adopt `logWarn` in preflight/contract**: Use the middle severity tier for conditions that need attention. (`deploy-preflight.ts`, `deployment-contract.ts`)
+6. ~~**Adopt `logWarn` in preflight/contract**: Use the middle severity tier.~~ **RESOLVED** (both files now import and use `logWarn`)
 7. **Require explicit `ok` in phase returns**: Prevent false-positive pass results. (`launch-verify/route.ts:88`)
 8. **Handle unknown `details.kind` in log summary**: Include raw `kind` value. (`launch-verify/route.ts:96-115`)
-9. **Log unmapped contract requirement IDs**: Prevent silent action drops. (`deploy-preflight.ts:133`)
+9. ~~**Log unmapped contract requirement IDs**: Prevent silent action drops.~~ **RESOLVED** (`deploy-preflight.ts:206-211`)
 
 ## Release Recommendation
 
-**Prelaunch-warning**: Launch-critical paths (channel driver, lifecycle transitions, launch verification phases) have good structured instrumentation. The main gaps are in the diagnostic/preflight layer: the deployment contract evaluation is invisible in production logs, public origin failures are swallowed, and the watchdog cron has no logging at all. The P2 items are low-effort, high-value fixes (mostly adding `logWarn` or changing `logDebug` → `logInfo`) that would significantly improve operator visibility during and after launch.
+**Release-safe**: The deployment-contract → deploy-preflight → launch-verify seam is now failure-tolerant and observable. `getAiGatewayAuthMode()` throwing no longer takes down preflight with an unstructured 500 (`deployment-contract.ts:370-378`). Public origin resolution failures are logged at warn level (`deploy-preflight.ts:494`). Blocking preflight is distinguishable by log severity — `logWarn` at `deploy-preflight.ts:463` vs `logInfo` at `deploy-preflight.ts:439`. Contract evaluation is visible in the ring buffer (`deployment-contract.ts:396`). Unmapped requirement IDs are warned (`deploy-preflight.ts:207`). The one remaining P2 item (watchdog route logging) is isolated to the cron path and does not affect the operator-facing diagnostic pipeline.

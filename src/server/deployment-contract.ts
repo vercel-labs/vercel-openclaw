@@ -7,7 +7,7 @@ import {
   isVercelDeployment,
 } from "@/server/env";
 import type { OpenclawPackageSpecConfig } from "@/server/env";
-import { logDebug, logInfo } from "@/server/log";
+import { logInfo, logWarn } from "@/server/log";
 import { getProtectionBypassSecret, resolvePublicOrigin } from "@/server/public-url";
 
 // Re-export shared types so existing consumers keep working.
@@ -166,7 +166,7 @@ function checkStore(onVercel: boolean): DeploymentRequirement {
 function checkCronSecret(onVercel: boolean): DeploymentRequirement {
   const cron = getCronSecretConfig();
 
-  logDebug("deployment_contract.cron_secret_evaluated", {
+  logInfo("deployment_contract.cron_secret_evaluated", {
     onVercel,
     source: cron.source,
   });
@@ -366,7 +366,17 @@ export async function buildDeploymentContract(
   const authMode = getAuthMode();
   const storeEnv = getStoreEnv();
   const storeBackend = storeEnv ? "upstash" : "memory";
-  const aiGatewayAuth = await getAiGatewayAuthMode();
+
+  let aiGatewayAuth: Awaited<ReturnType<typeof getAiGatewayAuthMode>>;
+  try {
+    aiGatewayAuth = await getAiGatewayAuthMode();
+  } catch (error) {
+    logWarn("deployment_contract.ai_gateway_auth_failed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    aiGatewayAuth = "unavailable";
+  }
+
   const openclawPackageSpecConfig = getOpenclawPackageSpecConfig();
 
   const requirements = [
@@ -383,7 +393,7 @@ export async function buildDeploymentContract(
 
   const ok = requirements.every((r) => r.status !== "fail");
 
-  logDebug("deployment_contract.built", {
+  logInfo("deployment_contract.built", {
     ok,
     authMode,
     storeBackend,
