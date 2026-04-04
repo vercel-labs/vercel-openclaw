@@ -343,19 +343,16 @@ test("Admin: POST /api/admin/stop returns stopped state after stopping a running
   }
 });
 
-test("Admin: POST /api/admin/ensure without CSRF headers returns 403", async () => {
+test("Admin: POST /api/admin/ensure without auth returns 401", async () => {
   const h = createScenarioHarness();
   try {
-    // Build a request without origin or x-requested-with headers
+    // Build a request without auth cookie or bearer token
     const request = buildPostRequest("/api/admin/ensure", "{}", {});
     const result = await callRoute(adminEnsureRoute.POST, request);
 
-    assert.equal(result.status, 403);
+    assert.equal(result.status, 401);
     const body = result.json as { error: string };
-    assert.ok(
-      body.error === "CSRF_ORIGIN_MISMATCH" || body.error === "CSRF_HEADER_MISSING",
-      `Expected CSRF error, got: ${body.error}`,
-    );
+    assert.equal(body.error, "UNAUTHORIZED");
   } finally {
     h.teardown();
   }

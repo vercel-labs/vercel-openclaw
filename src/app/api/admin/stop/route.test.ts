@@ -22,12 +22,12 @@ import {
 // Auth enforcement
 // ===========================================================================
 
-test("admin/stop POST: without CSRF headers returns 403", async () => {
+test("admin/stop POST: without auth returns 401", async () => {
   await withHarness(async () => {
     const route = getAdminStopRoute();
     const req = buildPostRequest("/api/admin/stop", "{}");
     const result = await callRoute(route.POST, req);
-    assert.equal(result.status, 403);
+    assert.equal(result.status, 401);
   });
 });
 

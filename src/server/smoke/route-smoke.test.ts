@@ -127,13 +127,13 @@ test("route-smoke: GET /api/status returns metadata", async (t) => {
   }
 });
 
-test("route-smoke: POST /api/status heartbeat requires CSRF", async (t) => {
+test("route-smoke: POST /api/status heartbeat without auth returns 401", async (t) => {
   const h = createScenarioHarness();
   try {
     const route = getStatusRoute();
-    // No CSRF headers → 403
+    // No auth cookie or bearer → 401
     const result = await callRoute(route.POST!, buildPostRequest("/api/status", "{}"));
-    assert.equal(result.status, 403);
+    assert.equal(result.status, 401);
   } catch (err) {
     await dumpDiagnostics(t, h);
     throw err;
@@ -382,7 +382,7 @@ test("route-smoke: PUT /api/firewall changes mode", async (t) => {
   }
 });
 
-test("route-smoke: PUT /api/firewall without CSRF returns 403", async (t) => {
+test("route-smoke: PUT /api/firewall without auth returns 401", async (t) => {
   const h = createScenarioHarness();
   try {
     const route = getFirewallRoute();
@@ -390,7 +390,7 @@ test("route-smoke: PUT /api/firewall without CSRF returns 403", async (t) => {
       route.PUT!,
       buildPutRequest("/api/firewall", JSON.stringify({ mode: "learning" })),
     );
-    assert.equal(result.status, 403);
+    assert.equal(result.status, 401);
   } catch (err) {
     await dumpDiagnostics(t, h);
     throw err;
@@ -441,7 +441,7 @@ test("route-smoke: POST /api/firewall/allowlist adds domains", async (t) => {
   }
 });
 
-test("route-smoke: POST /api/firewall/allowlist without CSRF returns 403", async (t) => {
+test("route-smoke: POST /api/firewall/allowlist without auth returns 401", async (t) => {
   const h = createScenarioHarness();
   try {
     const route = getFirewallAllowlistRoute();
@@ -452,7 +452,7 @@ test("route-smoke: POST /api/firewall/allowlist without CSRF returns 403", async
         JSON.stringify({ domains: ["example.com"] }),
       ),
     );
-    assert.equal(result.status, 403);
+    assert.equal(result.status, 401);
   } catch (err) {
     await dumpDiagnostics(t, h);
     throw err;
@@ -518,7 +518,7 @@ test("route-smoke: POST /api/firewall/promote promotes learned domains", async (
   }
 });
 
-test("route-smoke: POST /api/firewall/promote without CSRF returns 403", async (t) => {
+test("route-smoke: POST /api/firewall/promote without auth returns 401", async (t) => {
   const h = createScenarioHarness();
   try {
     const route = getFirewallPromoteRoute();
@@ -526,7 +526,7 @@ test("route-smoke: POST /api/firewall/promote without CSRF returns 403", async (
       route.POST!,
       buildPostRequest("/api/firewall/promote", "{}"),
     );
-    assert.equal(result.status, 403);
+    assert.equal(result.status, 401);
   } catch (err) {
     await dumpDiagnostics(t, h);
     throw err;
@@ -965,12 +965,12 @@ test("route-smoke: authenticated request with bearer token succeeds", async (t) 
 // 9. CSRF enforcement on mutating admin routes
 // ===========================================================================
 
-test("route-smoke: POST /api/admin/ensure without CSRF returns 403", async (t) => {
+test("route-smoke: POST /api/admin/ensure without auth returns 401", async (t) => {
   const h = createScenarioHarness();
   try {
     const route = getAdminEnsureRoute();
     const result = await callRoute(route.POST, buildPostRequest("/api/admin/ensure", "{}"));
-    assert.equal(result.status, 403);
+    assert.equal(result.status, 401);
   } catch (err) {
     await dumpDiagnostics(t, h);
     throw err;
@@ -979,12 +979,12 @@ test("route-smoke: POST /api/admin/ensure without CSRF returns 403", async (t) =
   }
 });
 
-test("route-smoke: POST /api/admin/stop without CSRF returns 403", async (t) => {
+test("route-smoke: POST /api/admin/stop without auth returns 401", async (t) => {
   const h = createScenarioHarness();
   try {
     const route = getAdminStopRoute();
     const result = await callRoute(route.POST, buildPostRequest("/api/admin/stop", "{}"));
-    assert.equal(result.status, 403);
+    assert.equal(result.status, 401);
   } catch (err) {
     await dumpDiagnostics(t, h);
     throw err;

@@ -24,12 +24,12 @@ import {
 // Auth enforcement
 // ===========================================================================
 
-test("admin/ensure POST: without CSRF headers returns 403", async () => {
+test("admin/ensure POST: without auth returns 401", async () => {
   await withHarness(async () => {
     const route = getAdminEnsureRoute();
     const req = buildPostRequest("/api/admin/ensure", "{}");
     const result = await callRoute(route.POST, req);
-    assert.equal(result.status, 403);
+    assert.equal(result.status, 401);
   });
 });
 

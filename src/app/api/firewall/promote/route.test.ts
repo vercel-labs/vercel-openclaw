@@ -22,12 +22,12 @@ import {
 // Auth enforcement
 // ===========================================================================
 
-test("firewall/promote POST: without CSRF headers returns 403", async () => {
+test("firewall/promote POST: without auth returns 401", async () => {
   await withHarness(async () => {
     const route = getFirewallPromoteRoute();
     const req = buildPostRequest("/api/firewall/promote", "{}");
     const result = await callRoute(route.POST!, req);
-    assert.equal(result.status, 403);
+    assert.equal(result.status, 401);
   });
 });
 

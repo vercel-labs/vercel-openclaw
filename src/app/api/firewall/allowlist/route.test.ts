@@ -23,7 +23,7 @@ import {
 // POST — Auth enforcement
 // ===========================================================================
 
-test("firewall/allowlist POST: without CSRF headers returns 403", async () => {
+test("firewall/allowlist POST: without auth returns 401", async () => {
   await withHarness(async () => {
     const route = getFirewallAllowlistRoute();
     const req = buildPostRequest(
@@ -31,7 +31,7 @@ test("firewall/allowlist POST: without CSRF headers returns 403", async () => {
       JSON.stringify({ domains: ["example.com"] }),
     );
     const result = await callRoute(route.POST!, req);
-    assert.equal(result.status, 403);
+    assert.equal(result.status, 401);
   });
 });
 
@@ -75,7 +75,7 @@ test("firewall/allowlist POST: empty domains array succeeds", async () => {
 // DELETE — Auth enforcement
 // ===========================================================================
 
-test("firewall/allowlist DELETE: without CSRF headers returns 403", async () => {
+test("firewall/allowlist DELETE: without auth returns 401", async () => {
   await withHarness(async () => {
     const route = getFirewallAllowlistRoute();
     const req = new Request("http://localhost:3000/api/firewall/allowlist", {
@@ -84,7 +84,7 @@ test("firewall/allowlist DELETE: without CSRF headers returns 403", async () => 
       body: JSON.stringify({ domains: ["example.com"] }),
     });
     const result = await callRoute(route.DELETE!, req);
-    assert.equal(result.status, 403);
+    assert.equal(result.status, 401);
   });
 });
 

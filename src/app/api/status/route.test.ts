@@ -255,18 +255,15 @@ test("GET /api/status: omits setup progress for running status", async () => {
 // POST /api/status (heartbeat)
 // ===========================================================================
 
-test("POST /api/status: heartbeat without CSRF returns 403", async () => {
+test("POST /api/status: heartbeat without auth returns 401", async () => {
   await withTestEnv(async () => {
     const route = getStatusRoute();
     const request = buildPostRequest("/api/status", "{}");
     const result = await callRoute(route.POST!, request);
 
-    assert.equal(result.status, 403);
+    assert.equal(result.status, 401);
     const body = result.json as { error: string };
-    assert.ok(
-      body.error === "CSRF_ORIGIN_MISMATCH" || body.error === "CSRF_HEADER_MISSING",
-      `Expected CSRF error, got: ${body.error}`,
-    );
+    assert.equal(body.error, "UNAUTHORIZED", `Expected UNAUTHORIZED, got: ${body.error}`);
   });
 });
 

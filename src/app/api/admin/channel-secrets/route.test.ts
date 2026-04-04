@@ -92,31 +92,25 @@ test("channel-secrets: unauthenticated PUT returns 401", async () => {
     const route = getAdminChannelSecretsRoute();
     const request = buildPutRequest("/api/admin/channel-secrets", "{}");
     const result = await callRoute(route.PUT!, request);
-    assert.equal(result.status, 403, `Expected 403 (CSRF block before auth), got ${result.status}`);
+    assert.equal(result.status, 401, `Expected 401, got ${result.status}`);
   });
 });
 
-test("channel-secrets: unauthenticated POST returns 401 or 403", async () => {
+test("channel-secrets: unauthenticated POST returns 401", async () => {
   await withAdminAuthEnv(async () => {
     const route = getAdminChannelSecretsRoute();
     const request = buildPostRequest("/api/admin/channel-secrets", "{}");
     const result = await callRoute(route.POST!, request);
-    assert.ok(
-      result.status === 401 || result.status === 403,
-      `Expected 401 or 403, got ${result.status}`,
-    );
+    assert.equal(result.status, 401, `Expected 401, got ${result.status}`);
   });
 });
 
-test("channel-secrets: unauthenticated DELETE returns 401 or 403", async () => {
+test("channel-secrets: unauthenticated DELETE returns 401", async () => {
   await withAdminAuthEnv(async () => {
     const route = getAdminChannelSecretsRoute();
     const request = buildDeleteRequest("/api/admin/channel-secrets", "{}");
     const result = await callRoute(route.DELETE!, request);
-    assert.ok(
-      result.status === 401 || result.status === 403,
-      `Expected 401 or 403, got ${result.status}`,
-    );
+    assert.equal(result.status, 401, `Expected 401, got ${result.status}`);
   });
 });
 

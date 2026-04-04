@@ -154,7 +154,7 @@ test("GET /api/firewall: includes wouldBlock for learning mode", async () => {
 // PUT /api/firewall
 // ===========================================================================
 
-test("PUT /api/firewall: without CSRF headers returns 403", async () => {
+test("PUT /api/firewall: without auth returns 401", async () => {
   await withTestEnv(async () => {
     const route = getFirewallRoute();
     const request = buildPutRequest(
@@ -163,7 +163,7 @@ test("PUT /api/firewall: without CSRF headers returns 403", async () => {
     );
     const result = await callRoute(route.PUT!, request);
 
-    assert.equal(result.status, 403);
+    assert.equal(result.status, 401);
   });
 });
 
@@ -259,7 +259,7 @@ test("PUT /api/firewall: same-mode transition is idempotent (no mutation)", asyn
 // DELETE /api/firewall/learned
 // ===========================================================================
 
-test("DELETE /api/firewall/learned: without CSRF headers returns 403", async () => {
+test("DELETE /api/firewall/learned: without auth returns 401", async () => {
   await withTestEnv(async () => {
     const route = getFirewallLearnedRoute();
     const request = buildDeleteRequest(
@@ -268,7 +268,7 @@ test("DELETE /api/firewall/learned: without CSRF headers returns 403", async () 
     );
     const result = await callRoute(route.DELETE!, request);
 
-    assert.equal(result.status, 403);
+    assert.equal(result.status, 401);
   });
 });
 

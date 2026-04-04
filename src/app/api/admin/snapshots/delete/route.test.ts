@@ -77,7 +77,7 @@ async function withTestEnv(fn: () => Promise<void>): Promise<void> {
   }
 }
 
-test("POST /api/admin/snapshots/delete: without CSRF returns 403", async () => {
+test("POST /api/admin/snapshots/delete: without auth returns 401", async () => {
   await withTestEnv(async () => {
     const route = getAdminSnapshotsDeleteRoute();
     const request = buildPostRequest(
@@ -85,7 +85,7 @@ test("POST /api/admin/snapshots/delete: without CSRF returns 403", async () => {
       JSON.stringify({ snapshotId: "snap-x" }),
     );
     const result = await callRoute(route.POST, request);
-    assert.equal(result.status, 403);
+    assert.equal(result.status, 401);
   });
 });
 

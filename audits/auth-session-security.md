@@ -39,10 +39,14 @@ Files audited:
 - **Evidence**: `src/server/auth/session.ts:39-43`
 - **Detail**: Session cookies are encrypted using `jose` EncryptJWT with `alg: "dir"` and `enc: "A256GCM"`. The encryption key is derived via SHA-256 from the session secret (line 32). Payloads include `iat` and `exp` claims set by `setIssuedAt()` and `setExpirationTime()`. This prevents session forgery and provides confidentiality for stored access/refresh tokens. The 7-day expiry (lines 68, 161) is appropriate for an admin tool.
 
-### PASS — CSRF enforcement on cookie-based mutations
+### PASS — Mutation auth only applies CSRF to session-cookie requests
 
-- **Evidence**: `src/server/auth/admin-auth.ts:112-145`, `src/server/auth/csrf.ts:16-49`
-- **Detail**: `requireAdminMutationAuth()` enforces CSRF for cookie-authenticated mutation requests (POST/PUT/DELETE) while correctly skipping CSRF for bearer-token requests (browsers cannot auto-attach Authorization headers cross-origin). The CSRF check validates Origin header against the public origin or requires `X-Requested-With: XMLHttpRequest` as a fallback. This is a sound dual-check approach.
+- **Evidence**:
+  - `src/server/auth/admin-auth.ts:69-120` centralizes bearer/session resolution in `resolveAdminCredential()`.
+  - `src/server/auth/admin-auth.ts:88-98` returns `401 UNAUTHORIZED` when no admin session cookie is present, logging `auth.csrf_skipped_no_session_cookie`.
+  - `src/server/auth/admin-auth.ts:101-111` calls `verifyCsrf(request)` only after confirming a session cookie is present.
+  - `src/server/auth/admin-auth.ts:165-175` reuses the same resolver for mutation auth.
+- **Detail**: Previously, `requireAdminMutationAuth()` called `verifyCsrf()` before checking for a session cookie, causing unauthenticated requests to receive 403 CSRF errors instead of 401 Unauthorized. The refactored `resolveAdminCredential()` now checks cookie presence first, returning 401 for cookieless requests and only enforcing CSRF when a session cookie is actually present. Bearer requests still correctly skip CSRF.
 
 ### PASS — Bearer token path skips CSRF correctly
 

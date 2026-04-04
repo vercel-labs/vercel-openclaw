@@ -49,12 +49,12 @@ function makePreflightFail(): void {
 // Auth enforcement
 // ===========================================================================
 
-test("launch-verify POST: without CSRF headers returns 403", async () => {
+test("launch-verify POST: without auth returns 401", async () => {
   await withHarness(async () => {
     const route = getAdminLaunchVerifyRoute();
     const req = buildPostRequest("/api/admin/launch-verify", "{}");
     const result = await callRoute(route.POST, req);
-    assert.equal(result.status, 403);
+    assert.equal(result.status, 401);
   });
 });
 

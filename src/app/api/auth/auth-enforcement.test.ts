@@ -178,10 +178,10 @@ test("admin/ensure: wrong bearer token returns 401", async () => {
 });
 
 // ===========================================================================
-// 3. Mutations without bearer → CSRF check → 403 if no origin
+// 3. Mutations without auth → 401
 // ===========================================================================
 
-test("admin/ensure: POST without bearer or CSRF returns 403", async () => {
+test("admin/ensure: POST without auth returns 401", async () => {
   await withAdminAuthEnv(async () => {
     const controller = new FakeSandboxController();
     _setSandboxControllerForTesting(controller);
@@ -191,22 +191,19 @@ test("admin/ensure: POST without bearer or CSRF returns 403", async () => {
     const request = buildPostRequest("/api/admin/ensure", "{}");
     const result = await callRoute(route.POST!, request);
 
-    assert.equal(result.status, 403, `Expected 403, got ${result.status}`);
+    assert.equal(result.status, 401, `Expected 401, got ${result.status}`);
     const body = result.json as { error: string };
-    assert.ok(
-      body.error === "CSRF_ORIGIN_MISMATCH" || body.error === "CSRF_HEADER_MISSING",
-      `Expected CSRF error, got: ${body.error}`,
-    );
+    assert.equal(body.error, "UNAUTHORIZED", `Expected UNAUTHORIZED, got: ${body.error}`);
   });
 });
 
-test("POST /api/status: heartbeat without bearer or CSRF returns 403", async () => {
+test("POST /api/status: heartbeat without auth returns 401", async () => {
   await withAdminAuthEnv(async () => {
     const route = getStatusRoute();
     const request = buildPostRequest("/api/status", "{}");
     const result = await callRoute(route.POST!, request);
 
-    assert.equal(result.status, 403, `Expected 403, got ${result.status}`);
+    assert.equal(result.status, 401, `Expected 401, got ${result.status}`);
   });
 });
 
@@ -277,7 +274,7 @@ test("Gateway: unauthenticated GET returns 401 (no HTML with token)", async () =
   });
 });
 
-test("Gateway: unauthenticated POST returns 403 CSRF (no token leak)", async () => {
+test("Gateway: unauthenticated POST returns 401 (no token leak)", async () => {
   await withAdminAuthEnv(async () => {
     const controller = new FakeSandboxController();
     _setSandboxControllerForTesting(controller);
@@ -299,11 +296,8 @@ test("Gateway: unauthenticated POST returns 403 CSRF (no token leak)", async () 
     });
     const text = await response.text();
 
-    // Unauthenticated POST hits CSRF check first → 403
-    assert.ok(
-      response.status === 401 || response.status === 403,
-      `Expected 401 or 403, got ${response.status}`,
-    );
+    // Unauthenticated POST (no cookie, no bearer) → 401
+    assert.equal(response.status, 401, `Expected 401, got ${response.status}`);
     assert.ok(
       !text.includes("secret-gateway-token-2"),
       "Gateway token must not leak in POST response",
@@ -759,7 +753,7 @@ test("route auth sweep: all admin mutation routes reject unauthenticated request
       const route = spec.getRoute();
       if (!route[spec.method]) continue;
 
-      // Mutation without bearer — CSRF check fires first → 403
+      // Mutation without auth (no cookie, no bearer) → 401
       let request: Request;
       if (spec.method === "PUT") {
         request = new Request(`http://localhost:3000${spec.path}`, {
@@ -778,9 +772,9 @@ test("route auth sweep: all admin mutation routes reject unauthenticated request
       }
 
       const result = await callRoute(route[spec.method]!, request);
-      assert.ok(
-        result.status === 401 || result.status === 403,
-        `${spec.name}: expected 401 or 403, got ${result.status}`,
+      assert.equal(
+        result.status, 401,
+        `${spec.name}: expected 401, got ${result.status}`,
       );
     }
   });

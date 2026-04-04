@@ -79,7 +79,7 @@ Files audited:
 - **Evidence**: `src/app/api/auth/login/route.ts`, `src/server/auth/admin-auth.ts:150-171`
 - Timing-safe comparison via `timingSafeEqual` (`admin-auth.ts:34-38`)
 - Rate limiting at `src/app/api/auth/login/route.ts:9-20`
-- CSRF enforcement on cookie-based mutation requests (`admin-auth.ts:112-145`)
+- CSRF enforcement on cookie-based mutation requests (`admin-auth.ts:101-111`)
 - Encrypted JWT session cookie using AES-256-GCM via `jose` (`session.ts:35-44`)
 - Session cookie: `httpOnly`, `sameSite: Lax`, `secure` when on HTTPS, 7-day expiry
 - Password managers suppressed on login form (data-1p-ignore, data-lpignore)

@@ -22,7 +22,7 @@ import {
 // Auth enforcement
 // ===========================================================================
 
-test("Slack test: POST without CSRF headers returns 403", async () => {
+test("Slack test: POST without auth returns 401", async () => {
   await withHarness(async () => {
     const route = getSlackTestRoute();
     const req = buildPostRequest(
@@ -30,7 +30,7 @@ test("Slack test: POST without CSRF headers returns 403", async () => {
       JSON.stringify({ botToken: "xoxb-test" }),
     );
     const result = await callRoute(route.POST!, req);
-    assert.equal(result.status, 403);
+    assert.equal(result.status, 401);
   });
 });
 

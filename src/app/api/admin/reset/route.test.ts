@@ -22,15 +22,13 @@ test.afterEach(() => {
   resetAfterCallbacks();
 });
 
-test("admin/reset POST: without auth or CSRF headers returns 403", async () => {
+test("admin/reset POST: without auth returns 401", async () => {
   await withHarness(async () => {
     const route = getAdminResetRoute();
     const result = await callRoute(route.POST, buildPostRequest("/api/admin/reset", "{}"));
-    assert.equal(result.status, 403);
-    assert.deepEqual(result.json, {
-      error: "CSRF_HEADER_MISSING",
-      message: "Missing Origin or X-Requested-With header.",
-    });
+    assert.equal(result.status, 401);
+    const body = result.json as { error: string };
+    assert.equal(body.error, "UNAUTHORIZED");
   });
 });
 

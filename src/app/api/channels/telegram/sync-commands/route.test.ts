@@ -9,12 +9,12 @@ import {
   getTelegramSyncCommandsRoute,
 } from "@/test-utils/route-caller";
 
-test("Telegram sync-commands: POST without CSRF headers returns 403", async () => {
+test("Telegram sync-commands: POST without auth returns 401", async () => {
   await withHarness(async () => {
     const route = getTelegramSyncCommandsRoute();
     const req = buildPostRequest("/api/channels/telegram/sync-commands", "{}");
     const result = await callRoute(route.POST!, req);
-    assert.equal(result.status, 403);
+    assert.equal(result.status, 401);
   });
 });
 

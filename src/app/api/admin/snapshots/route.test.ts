@@ -122,18 +122,15 @@ test("GET /api/admin/snapshots: returns empty array when no snapshots", async ()
 // POST /api/admin/snapshots (CSRF check)
 // ===========================================================================
 
-test("POST /api/admin/snapshots: without CSRF headers returns 403", async () => {
+test("POST /api/admin/snapshots: without auth returns 401", async () => {
   await withTestEnv(async () => {
     const route = getAdminSnapshotsRoute();
     const request = buildPostRequest("/api/admin/snapshots", "{}");
     const result = await callRoute(route.POST!, request);
 
-    assert.equal(result.status, 403);
+    assert.equal(result.status, 401);
     const body = result.json as { error: string };
-    assert.ok(
-      body.error === "CSRF_ORIGIN_MISMATCH" || body.error === "CSRF_HEADER_MISSING",
-      `Expected CSRF error, got: ${body.error}`,
-    );
+    assert.equal(body.error, "UNAUTHORIZED", `Expected UNAUTHORIZED, got: ${body.error}`);
   });
 });
 

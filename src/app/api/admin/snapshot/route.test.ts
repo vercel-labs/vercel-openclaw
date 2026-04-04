@@ -80,18 +80,15 @@ async function withTestEnv(fn: () => Promise<void>): Promise<void> {
 // POST /api/admin/snapshot
 // ===========================================================================
 
-test("POST /api/admin/snapshot: without CSRF headers returns 403", async () => {
+test("POST /api/admin/snapshot: without auth returns 401", async () => {
   await withTestEnv(async () => {
     const route = getAdminSnapshotRoute();
     const request = buildPostRequest("/api/admin/snapshot", "{}");
     const result = await callRoute(route.POST!, request);
 
-    assert.equal(result.status, 403);
+    assert.equal(result.status, 401);
     const body = result.json as { error: string };
-    assert.ok(
-      body.error === "CSRF_ORIGIN_MISMATCH" || body.error === "CSRF_HEADER_MISSING",
-      `Expected CSRF error, got: ${body.error}`,
-    );
+    assert.equal(body.error, "UNAUTHORIZED", `Expected UNAUTHORIZED, got: ${body.error}`);
   });
 });
 

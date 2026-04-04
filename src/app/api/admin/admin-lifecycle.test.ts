@@ -269,11 +269,11 @@ test("POST /api/admin/ensure: schedules create when stopped with snapshot (v2 pe
   });
 });
 
-test("POST /api/admin/ensure: without CSRF headers returns 403", async () => {
+test("POST /api/admin/ensure: without auth returns 401", async () => {
   await withTestEnv(async () => {
     const request = buildPostRequest("/api/admin/ensure", "{}", {});
     const result = await callRoute(ensureRoute.POST!, request);
-    assert.equal(result.status, 403);
+    assert.equal(result.status, 401);
   });
 });
 
@@ -359,11 +359,11 @@ test("POST /api/admin/stop: idempotent when already stopped with no snapshot", a
   });
 });
 
-test("POST /api/admin/stop: without CSRF headers returns 403", async () => {
+test("POST /api/admin/stop: without auth returns 401", async () => {
   await withTestEnv(async () => {
     const request = buildPostRequest("/api/admin/stop", "{}", {});
     const result = await callRoute(stopRoute.POST!, request);
-    assert.equal(result.status, 403);
+    assert.equal(result.status, 401);
   });
 });
 
@@ -627,11 +627,11 @@ test("POST /api/status: heartbeat is a no-op when sandbox not running", async ()
   });
 });
 
-test("POST /api/status: without CSRF headers returns 403", async () => {
+test("POST /api/status: without auth returns 401", async () => {
   await withTestEnv(async () => {
     const request = buildPostRequest("/api/status", "{}", {});
     const result = await callRoute(statusRoute.POST!, request);
-    assert.equal(result.status, 403);
+    assert.equal(result.status, 401);
   });
 });
 

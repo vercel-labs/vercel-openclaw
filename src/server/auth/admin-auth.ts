@@ -5,7 +5,6 @@ import { verifyCsrf } from "@/server/auth/csrf";
 import {
   getCookieValue,
   decryptPayload,
-  isSecureRequest,
   encryptPayload,
   serializeCookie,
   clearCookie,
@@ -23,6 +22,8 @@ type AdminSessionPayload = {
   admin: true;
   iat?: number;
 };
+
+type AdminCredentialKind = "bearer" | "session";
 
 function unauthorizedResponse(): Response {
   return Response.json(
@@ -57,6 +58,75 @@ async function readAdminSession(
 }
 
 /**
+ * Resolve admin credentials from the request.
+ *
+ * Checks (in order):
+ * 1. Bearer token — returns "bearer" on match, 401 on mismatch
+ * 2. Session cookie — optionally enforces CSRF before decryption
+ *
+ * Returns the credential kind on success, or a Response on failure.
+ */
+async function resolveAdminCredential(
+  request: Request,
+  options: { requireCsrfForSession: boolean },
+): Promise<AdminCredentialKind | Response> {
+  const configured = await getConfiguredAdminSecret();
+  if (!configured) {
+    logWarn("auth.admin_secret_unavailable");
+    return unauthorizedResponse();
+  }
+
+  // Bearer token path — no CSRF needed
+  const bearerToken = extractBearerToken(request);
+  if (bearerToken) {
+    if (timingSafeStringEqual(bearerToken, configured.secret)) {
+      return "bearer";
+    }
+    return unauthorizedResponse();
+  }
+
+  // Cookie path — check cookie presence before CSRF
+  const hasSessionCookie =
+    getCookieValue(request, ADMIN_SESSION_COOKIE_NAME) !== null;
+  if (!hasSessionCookie) {
+    if (options.requireCsrfForSession) {
+      logDebug("auth.csrf_skipped_no_session_cookie", {
+        method: request.method,
+        url: request.url,
+      });
+    }
+    return unauthorizedResponse();
+  }
+
+  // CSRF enforcement for cookie-based mutations
+  if (options.requireCsrfForSession) {
+    const csrfBlock = verifyCsrf(request);
+    if (csrfBlock) {
+      logWarn("auth.csrf_blocked", {
+        method: request.method,
+        url: request.url,
+      });
+      return csrfBlock;
+    }
+  }
+
+  // Decrypt and validate the session
+  const session = await readAdminSession(request);
+  if (!session) {
+    return unauthorizedResponse();
+  }
+
+  return "session";
+}
+
+function authSuccess(kind: AdminCredentialKind): AdminAuthResult {
+  logDebug(
+    kind === "bearer" ? "auth.admin_bearer_ok" : "auth.admin_session_ok",
+  );
+  return { authenticated: true, setCookieHeader: null };
+}
+
+/**
  * Check whether a request carries a valid admin session cookie.
  * Does not check bearer tokens — intended for SSR page rendering
  * where only cookies are available.
@@ -78,30 +148,13 @@ export async function hasAdminSession(request: Request): Promise<boolean> {
 export async function requireAdminAuth(
   request: Request,
 ): Promise<AdminAuthResult | Response> {
-  const configured = await getConfiguredAdminSecret();
-  if (!configured) {
-    logWarn("auth.admin_secret_unavailable");
-    return unauthorizedResponse();
+  const credential = await resolveAdminCredential(request, {
+    requireCsrfForSession: false,
+  });
+  if (credential instanceof Response) {
+    return credential;
   }
-
-  // Check bearer token (API/automation path — no CSRF needed)
-  const bearerToken = extractBearerToken(request);
-  if (bearerToken) {
-    if (timingSafeStringEqual(bearerToken, configured.secret)) {
-      logDebug("auth.admin_bearer_ok");
-      return { authenticated: true, setCookieHeader: null };
-    }
-    return unauthorizedResponse();
-  }
-
-  // Check admin session cookie
-  const session = await readAdminSession(request);
-  if (session) {
-    logDebug("auth.admin_session_ok");
-    return { authenticated: true, setCookieHeader: null };
-  }
-
-  return unauthorizedResponse();
+  return authSuccess(credential);
 }
 
 /**
@@ -112,36 +165,13 @@ export async function requireAdminAuth(
 export async function requireAdminMutationAuth(
   request: Request,
 ): Promise<AdminAuthResult | Response> {
-  const configured = await getConfiguredAdminSecret();
-  if (!configured) {
-    logWarn("auth.admin_secret_unavailable");
-    return unauthorizedResponse();
+  const credential = await resolveAdminCredential(request, {
+    requireCsrfForSession: true,
+  });
+  if (credential instanceof Response) {
+    return credential;
   }
-
-  // Bearer token path — no CSRF needed
-  const bearerToken = extractBearerToken(request);
-  if (bearerToken) {
-    if (timingSafeStringEqual(bearerToken, configured.secret)) {
-      logDebug("auth.admin_bearer_ok");
-      return { authenticated: true, setCookieHeader: null };
-    }
-    return unauthorizedResponse();
-  }
-
-  // Cookie path — enforce CSRF for mutations
-  const csrfBlock = verifyCsrf(request);
-  if (csrfBlock) {
-    logWarn("auth.csrf_blocked", { method: request.method, url: request.url });
-    return csrfBlock;
-  }
-
-  const session = await readAdminSession(request);
-  if (session) {
-    logDebug("auth.admin_session_ok");
-    return { authenticated: true, setCookieHeader: null };
-  }
-
-  return unauthorizedResponse();
+  return authSuccess(credential);
 }
 
 /**
@@ -158,7 +188,10 @@ export async function loginWithAdminSecret(
     return null;
   }
 
-  const token = await encryptPayload({ admin: true } as AdminSessionPayload, "7d");
+  const token = await encryptPayload(
+    { admin: true } as AdminSessionPayload,
+    "7d",
+  );
   const setCookieHeader = serializeCookie(ADMIN_SESSION_COOKIE_NAME, token, {
     httpOnly: true,
     maxAge: 7 * 24 * 60 * 60,

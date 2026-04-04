@@ -23,7 +23,7 @@ import {
 // Auth enforcement
 // ===========================================================================
 
-test("admin/snapshots/restore POST: without CSRF headers returns 403", async () => {
+test("admin/snapshots/restore POST: without auth returns 401", async () => {
   await withHarness(async () => {
     const route = getAdminRestoreRoute();
     const req = buildPostRequest(
@@ -31,7 +31,7 @@ test("admin/snapshots/restore POST: without CSRF headers returns 403", async () 
       JSON.stringify({ snapshotId: "snap-123" }),
     );
     const result = await callRoute(route.POST, req);
-    assert.equal(result.status, 403);
+    assert.equal(result.status, 401);
   });
 });
 

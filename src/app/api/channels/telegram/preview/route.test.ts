@@ -22,7 +22,7 @@ import {
 // Auth enforcement
 // ===========================================================================
 
-test("Telegram preview: POST without CSRF headers returns 403", async () => {
+test("Telegram preview: POST without auth returns 401", async () => {
   await withHarness(async () => {
     const route = getTelegramPreviewRoute();
     const req = buildPostRequest(
@@ -30,7 +30,7 @@ test("Telegram preview: POST without CSRF headers returns 403", async () => {
       JSON.stringify({ botToken: "123:ABC" }),
     );
     const result = await callRoute(route.POST!, req);
-    assert.equal(result.status, 403);
+    assert.equal(result.status, 401);
   });
 });
 
