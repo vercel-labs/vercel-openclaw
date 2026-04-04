@@ -546,7 +546,7 @@ These variables are checked by `buildDeploymentContract()` in `src/server/deploy
 
 | Variable | Context | Policy |
 | -------- | ------- | ------ |
-| `CRON_SECRET` | Required on Vercel | Authenticates `/api/cron/watchdog`. Missing on Vercel is a hard failure in the deployment contract. |
+| `CRON_SECRET` | Recommended on Vercel | Authenticates `/api/cron/watchdog`. When unset, the runtime falls back to `ADMIN_SECRET`. The deployment contract **warns** (not fails) on Vercel when only `ADMIN_SECRET` is available. Set `CRON_SECRET` separately if you want independent rotation for cron authentication. Missing both `CRON_SECRET` and `ADMIN_SECRET` on Vercel is a hard failure. |
 | `UPSTASH_REDIS_REST_URL` | All deployments | Required for persistent state. Provision via Vercel Marketplace. |
 | `UPSTASH_REDIS_REST_TOKEN` | All deployments | Required for persistent state. Paired with the URL above. |
 | `OPENCLAW_INSTANCE_ID` | All environments | Optional. Namespace token for Redis key isolation. On Vercel deployments, automatically uses `VERCEL_PROJECT_ID` when unset, giving each project its own namespace. Falls back to `openclaw-single` in local/non-Vercel environments. Can be set explicitly to override auto-detection. Changing it later points the app at a new namespace; it does not migrate existing state. |
