@@ -147,15 +147,15 @@ Files audited:
   - `scripts/check-verifier-contract.mjs`: updated comment to reference pinned fallback
 - **Status**: RESOLVED. All operator-facing surfaces now agree the runtime falls back to a pinned known-good version, not `openclaw@latest`.
 
-### DO-2 (P3/RESOLVED) -- `cronSecretConfigured` preflight field intentionally reports explicit config only
+### DO-2 (P3/RESOLVED) -- `cronSecretConfigured` preflight field now uses `getCronSecretConfig()`
 
 - **Evidence**:
-  - `src/server/deploy-preflight.ts:487-489`: `const cronSecretConfigured = Boolean(process.env.CRON_SECRET?.trim());`
-  - `src/server/env.ts:139-149`: `getCronSecretConfig()` falls back to `ADMIN_SECRET`
+  - `src/server/deploy-preflight.ts:490-493`: `const cronSecret = getCronSecretConfig(); const cronSecretConfigured = cronSecret.value !== null;`
+  - `src/server/env.ts:139-149`: `getCronSecretConfig()` returns `{ value, source }` with source being `"cron-secret"`, `"admin-secret"`, or `"missing"`
   - `src/server/deployment-contract.ts:164-214`: `checkCronSecret()` returns `warn` (not `fail`) on Vercel when falling back to `ADMIN_SECRET`
-- **Detail**: The `cronSecretConfigured` field in the preflight payload reads `process.env.CRON_SECRET` directly instead of using `getCronSecret()`. This is intentional: `cronSecretConfigured` is an explicit-configuration signal for operators and preflight UI. It should not be used as the canonical source-of-truth for effective cron authentication, which may come from `CRON_SECRET` or `ADMIN_SECRET` depending on runtime/contract behavior. The deployment contract's `checkCronSecret()` separately handles the full resolution, returning `warn` on Vercel when only `ADMIN_SECRET` is available.
-- **Impact**: None. The deployment contract check for `cron-secret` correctly distinguishes the fallback source and reports `warn` (not `fail`) when `ADMIN_SECRET` is the effective auth source. The `cronSecretConfigured` field is a narrow explicit-config indicator, not a verdict on whether cron auth works.
-- **Status**: RESOLVED. The field's scope is intentional and the contract handles the full resolution separately. `cronSecretConfigured` is an explicit-configuration signal for operators and preflight UI. It should not be used as the canonical source-of-truth for effective cron authentication, which may come from `CRON_SECRET` or `ADMIN_SECRET` depending on runtime/contract behavior.
+- **Detail**: The preflight payload now exposes three cron-related fields via `getCronSecretConfig()`: `cronSecretConfigured` (effective — true when any secret is available), `cronSecretExplicitlyConfigured` (true only when `CRON_SECRET` is explicitly set), and `cronSecretSource` (`"cron-secret"`, `"admin-secret"`, or `"missing"`). This aligns preflight with the deployment contract's fallback semantics.
+- **Impact**: None. Contract and preflight now agree on cron auth status.
+- **Status**: RESOLVED. Preflight and contract are fully aligned on cron secret resolution.
 
 ### DO-3 (P3/WARN) -- No minimum length enforcement on ADMIN_SECRET
 
@@ -183,7 +183,7 @@ Files audited:
   - `README.md:55-62`: scoped to "For the default deploy-button path (`VERCEL_AUTH_MODE=admin-secret`)" and describes fallback — **matches contract**
   - `docs/environment-variables.md:26`: "When unset, the runtime falls back to `ADMIN_SECRET`" — **matches contract**
   - `.env.example:55-58`: "Optional on Vercel. /api/cron/watchdog uses `CRON_SECRET` when set; otherwise it falls back to `ADMIN_SECRET`" — **matches contract**
-  - `src/server/deploy-preflight.ts:487-489`: `cronSecretConfigured` reads `process.env.CRON_SECRET` directly — intentional explicit-config indicator (see DO-2), not a verdict on effective auth
+  - `src/server/deploy-preflight.ts:490-493`: `cronSecretConfigured` uses `getCronSecretConfig()` — reflects effective cron auth, with `cronSecretExplicitlyConfigured` for explicit-only checks
 - **Status**: RESOLVED. All five operator-facing surfaces (`CLAUDE.md`, `README.md`, `docs/environment-variables.md`, `.env.example`, and the deployment contract itself) now agree that `CRON_SECRET` is recommended but not required on Vercel when `ADMIN_SECRET` is set.
 
 ---

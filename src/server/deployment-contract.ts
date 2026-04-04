@@ -2,10 +2,11 @@ import {
   getAiGatewayAuthMode,
   getAuthMode,
   getCronSecretConfig,
-  getOpenclawPackageSpec,
+  getOpenclawPackageSpecConfig,
   getStoreEnv,
   isVercelDeployment,
 } from "@/server/env";
+import type { OpenclawPackageSpecConfig } from "@/server/env";
 import { logDebug, logInfo } from "@/server/log";
 import { getProtectionBypassSecret, resolvePublicOrigin } from "@/server/public-url";
 
@@ -38,6 +39,7 @@ export type DeploymentContract = {
   storeBackend: "upstash" | "memory";
   aiGatewayAuth: "oidc" | "api-key" | "unavailable";
   openclawPackageSpec: string | null;
+  openclawPackageSpecSource: "explicit" | "fallback";
   requirements: DeploymentRequirement[];
 };
 
@@ -244,28 +246,26 @@ function checkAiGateway(
 
 function checkOpenclawPackageSpec(
   onVercel: boolean,
+  config: OpenclawPackageSpecConfig,
 ): DeploymentRequirement | null {
   if (!onVercel) return null;
 
-  const spec = getOpenclawPackageSpec();
-
-  if (isPinnedPackageSpec(spec)) {
+  if (config.source === "explicit" && isPinnedPackageSpec(config.value)) {
     return {
       id: "openclaw-package-spec",
       status: "pass",
-      message: `OPENCLAW_PACKAGE_SPEC is pinned to ${spec}.`,
+      message: `OPENCLAW_PACKAGE_SPEC is pinned to ${config.value}.`,
       remediation: "",
       env: ["OPENCLAW_PACKAGE_SPEC"],
     };
   }
 
-  const missing = !process.env.OPENCLAW_PACKAGE_SPEC?.trim();
   return {
     id: "openclaw-package-spec",
     status: "warn",
-    message: missing
+    message: config.source === "fallback"
       ? "OPENCLAW_PACKAGE_SPEC is not set. Pin to a specific version for deterministic sandbox restores."
-      : `OPENCLAW_PACKAGE_SPEC is set to "${spec}" which is not a pinned version. Restores are non-deterministic.`,
+      : `OPENCLAW_PACKAGE_SPEC is set to "${config.value}" which is not a pinned version. Restores are non-deterministic.`,
     remediation:
       'Set OPENCLAW_PACKAGE_SPEC to a pinned version like "openclaw@1.2.3" for deterministic sandbox restores.',
     env: ["OPENCLAW_PACKAGE_SPEC"],
@@ -367,7 +367,7 @@ export async function buildDeploymentContract(
   const storeEnv = getStoreEnv();
   const storeBackend = storeEnv ? "upstash" : "memory";
   const aiGatewayAuth = await getAiGatewayAuthMode();
-  const openclawPackageSpec = getOpenclawPackageSpec();
+  const openclawPackageSpecConfig = getOpenclawPackageSpecConfig();
 
   const requirements = [
     checkPublicOrigin(onVercel, options.request),
@@ -375,7 +375,7 @@ export async function buildDeploymentContract(
     checkStore(onVercel),
     checkCronSecret(onVercel),
     checkAiGateway(onVercel, aiGatewayAuth),
-    checkOpenclawPackageSpec(onVercel),
+    checkOpenclawPackageSpec(onVercel, openclawPackageSpecConfig),
     checkOauthClientId(authMode),
     checkOauthClientSecret(authMode),
     checkSessionSecret(authMode, onVercel),
@@ -389,6 +389,7 @@ export async function buildDeploymentContract(
     storeBackend,
     aiGatewayAuth,
     onVercel,
+    openclawPackageSpecSource: openclawPackageSpecConfig.source,
     requirementIds: requirements.map((r) => `${r.id}:${r.status}`),
   });
 
@@ -397,7 +398,8 @@ export async function buildDeploymentContract(
     authMode,
     storeBackend,
     aiGatewayAuth,
-    openclawPackageSpec,
+    openclawPackageSpec: openclawPackageSpecConfig.value,
+    openclawPackageSpecSource: openclawPackageSpecConfig.source,
     requirements,
   };
 }

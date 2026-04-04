@@ -65,6 +65,7 @@ function makeDeps(overrides: Partial<Parameters<typeof runSandboxWatchdog>[1]> =
       storeBackend: "upstash" as const,
       aiGatewayAuth: "oidc" as const,
       openclawPackageSpec: "openclaw@1.2.3",
+      openclawPackageSpecSource: "explicit" as const,
       requirements: [],
     }),
     getMeta: async () =>

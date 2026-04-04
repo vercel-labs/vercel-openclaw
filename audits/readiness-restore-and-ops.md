@@ -23,19 +23,12 @@
 
 ## Findings
 
-### WARN — `cronSecretConfigured` bypasses `getCronSecret()` fallback
+### FIXED — `cronSecretConfigured` now uses `getCronSecretConfig()` fallback
 
-- **Evidence**: `src/server/deploy-preflight.ts:449-451` reads `process.env.CRON_SECRET` directly; `src/server/env.ts:132-137` defines `getCronSecret()` which falls back to `ADMIN_SECRET`.
-- **Impact**: Preflight reports `cronSecretConfigured: false` when only `ADMIN_SECRET` is set, even though the cron route _will_ authenticate successfully via the `getCronSecret()` fallback. Operators see a misleading warning in the admin UI.
-- **Severity**: P2 (misleading diagnostic, not a security gap — cron auth itself works correctly).
-- **Recommendation**: Replace `Boolean(process.env.CRON_SECRET?.trim())` with `Boolean(getCronSecret())` at `deploy-preflight.ts:449`, or introduce a separate `cronSecretExplicit` field if the intent is to nudge operators toward setting `CRON_SECRET` explicitly. Document the distinction.
-
-### WARN — `checkCronSecret()` uses `getCronSecret()` but preflight does not — inconsistent readiness signal
-
-- **Evidence**: `src/server/deployment-contract.ts:165` calls `getCronSecret()` (includes `ADMIN_SECRET` fallback); `src/server/deploy-preflight.ts:449-451` reads `CRON_SECRET` directly.
-- **Impact**: The deployment contract and preflight disagree on whether cron auth is configured when only `ADMIN_SECRET` is set. Contract says "pass"; preflight says "not configured". Admin UI and readiness script consume both.
-- **Severity**: P2 — not launch-blocking since cron auth works, but confusing for operators running `check-deploy-readiness.mjs`.
-- **Recommendation**: Align to one source of truth. If preflight intends to recommend explicit `CRON_SECRET`, make it a separate advisory field, not the authoritative `cronSecretConfigured`.
+- **Evidence**: `src/server/deploy-preflight.ts:490-493` calls `getCronSecretConfig()` and exposes `cronSecretConfigured` (effective), `cronSecretExplicitlyConfigured` (explicit-only), and `cronSecretSource`.
+- **Previous state**: Preflight read `process.env.CRON_SECRET` directly, reporting `cronSecretConfigured: false` when only `ADMIN_SECRET` was set. The deployment contract and preflight disagreed on cron auth status.
+- **Fix applied**: `buildDeployPreflight()` now delegates to `getCronSecretConfig()`. The three new fields let consumers distinguish effective auth (`cronSecretConfigured`), explicit configuration (`cronSecretExplicitlyConfigured`), and source (`cronSecretSource: "cron-secret" | "admin-secret" | "missing"`).
+- **Status**: Fixed. Contract and preflight are now aligned.
 
 ### PASS — `getOpenclawPackageSpec()` fallback is safe and well-documented
 

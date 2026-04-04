@@ -1,5 +1,6 @@
 import {
   getAuthMode,
+  getCronSecretConfig,
   isVercelDeployment,
 } from "@/server/env";
 import { getConfiguredAdminSecret } from "@/server/auth/admin-secret";
@@ -83,6 +84,8 @@ export type PreflightPayload = {
   storeBackend: "upstash" | "memory";
   aiGatewayAuth: "oidc" | "api-key" | "unavailable";
   cronSecretConfigured: boolean;
+  cronSecretExplicitlyConfigured: boolean;
+  cronSecretSource: ReturnType<typeof getCronSecretConfig>["source"];
   publicOriginResolution: PublicOriginResolution | null;
   webhookDiagnostics: PreflightWebhookDiagnostics;
   channels: Record<ChannelName, ChannelConnectability>;
@@ -484,9 +487,10 @@ export async function buildDeployPreflight(
 
   const aiGatewayAuth = contract.aiGatewayAuth;
 
-  const cronSecretConfigured = Boolean(
-    process.env.CRON_SECRET?.trim(),
-  );
+  const cronSecret = getCronSecretConfig();
+  const cronSecretConfigured = cronSecret.value !== null;
+  const cronSecretExplicitlyConfigured = cronSecret.source === "cron-secret";
+  const cronSecretSource = cronSecret.source;
   const webhookDiagnostics = buildWebhookDiagnostics(
     request,
     publicOriginResolution,
@@ -629,6 +633,8 @@ export async function buildDeployPreflight(
     storeBackend,
     aiGatewayAuth,
     cronSecretConfigured,
+    cronSecretExplicitlyConfigured,
+    cronSecretSource,
     publicOriginResolution,
     webhookDiagnostics,
     channels,
@@ -651,6 +657,8 @@ export async function buildDeployPreflight(
     storeBackend: payload.storeBackend,
     aiGatewayAuth: payload.aiGatewayAuth,
     cronSecretConfigured: payload.cronSecretConfigured,
+    cronSecretExplicitlyConfigured: payload.cronSecretExplicitlyConfigured,
+    cronSecretSource: payload.cronSecretSource,
     actionCount: payload.actions.length,
     consumedContractIds,
   });

@@ -6,6 +6,7 @@ import {
   getAiGatewayBearerTokenOptional,
   getAiGatewayAuthMode,
   getOpenclawPackageSpec,
+  getOpenclawPackageSpecConfig,
   getSessionSecret,
   isVercelDeployment,
   requiresDurableStore,
@@ -252,7 +253,7 @@ test("local dev returns placeholder session secret", () => {
   );
 });
 
-// --- getOpenclawPackageSpec ---
+// --- getOpenclawPackageSpec / getOpenclawPackageSpecConfig ---
 
 test("getOpenclawPackageSpec defaults to pinned version when env var is unset", () => {
   withEnv({ OPENCLAW_PACKAGE_SPEC: undefined }, () => {
@@ -265,6 +266,22 @@ test("getOpenclawPackageSpec defaults to pinned version when env var is unset", 
 test("getOpenclawPackageSpec returns explicit value when set", () => {
   withEnv({ OPENCLAW_PACKAGE_SPEC: "openclaw@1.2.3" }, () => {
     assert.equal(getOpenclawPackageSpec(), "openclaw@1.2.3");
+  });
+});
+
+test("getOpenclawPackageSpecConfig returns fallback source when env var is unset", () => {
+  withEnv({ OPENCLAW_PACKAGE_SPEC: undefined }, () => {
+    const config = getOpenclawPackageSpecConfig();
+    assert.equal(config.source, "fallback");
+    assert.ok(config.value.startsWith("openclaw@"));
+  });
+});
+
+test("getOpenclawPackageSpecConfig returns explicit source when env var is set", () => {
+  withEnv({ OPENCLAW_PACKAGE_SPEC: "openclaw@1.2.3" }, () => {
+    const config = getOpenclawPackageSpecConfig();
+    assert.equal(config.source, "explicit");
+    assert.equal(config.value, "openclaw@1.2.3");
   });
 });
 

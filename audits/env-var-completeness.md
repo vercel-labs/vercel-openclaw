@@ -78,7 +78,7 @@ Files audited:
 
 | ID | Severity | Status | Title |
 |---|---|---|---|
-| EV-1 | P2 | FAIL | OPENCLAW_PACKAGE_SPEC fallback docs say `openclaw@latest` but code pins `openclaw@2026.3.28` |
+| EV-1 | P2 | FIXED | OPENCLAW_PACKAGE_SPEC fallback docs previously said `openclaw@latest` — now corrected to `openclaw@2026.3.28` |
 | EV-2 | P2 | WARN | `ADMIN_SECRET` missing from `.env.example` and CLAUDE.md env var table |
 | EV-3 | P3 | WARN | `AI_GATEWAY_API_KEY` and `VERCEL_AUTH_MODE` missing from CLAUDE.md env var table |
 | EV-4 | P3 | WARN | `OPENCLAW_OWNER_ALLOW_FROM` undocumented everywhere |
@@ -89,31 +89,21 @@ Files audited:
 | EV-9 | P1 | PASS | Deployment contract checker passes for all tracked vars |
 | EV-10 | P1 | PASS | Default values are safe (session secret throws in production, admin secret auto-generates) |
 | EV-11 | P2 | WARN | Verifier contract does not track `ADMIN_SECRET` or `AI_GATEWAY_API_KEY` |
+| EV-12 | Medium | FIXED | Missing `OPENCLAW_PACKAGE_SPEC` on Vercel is documented as warn-only, but the contract previously passed |
 
 ## Detailed Findings
 
-### EV-1 [P2/FAIL] — OPENCLAW_PACKAGE_SPEC fallback documentation drift
+### EV-1 [P2/FIXED] — OPENCLAW_PACKAGE_SPEC fallback documentation drift
 
-The runtime default changed from `openclaw@latest` to a pinned version `openclaw@2026.3.28` in `src/server/env.ts:282`, but documentation still claims the fallback is `openclaw@latest`.
+The runtime default changed from `openclaw@latest` to a pinned version `openclaw@2026.3.28` in `src/server/env.ts:298`, but documentation previously claimed the fallback was `openclaw@latest`.
 
-**Affected files:**
-- `CLAUDE.md:155` — "runtime falls back to `openclaw@latest`"
-- `CLAUDE.md:553` — "Defaults to `openclaw@latest` when unset"
-- `CONTRIBUTING.md:150` — "defaults to `openclaw@latest`"
-- `docs/environment-variables.md:44` — "falls back to `openclaw@latest`"
-- `.env.example:33-34` — "falls back to openclaw@latest"
-- `scripts/check-verifier-contract.mjs:84,105` — references `openclaw@latest` as the fallback
+**Status**: Fixed. All operator-facing documentation surfaces now correctly describe the pinned fallback:
+- `CLAUDE.md:555` — "falls back to a pinned known-good version (currently `openclaw@2026.3.28`)"
+- `CONTRIBUTING.md:150` — "falls back to a pinned known-good version (currently `openclaw@2026.3.28`)"
+- `docs/environment-variables.md:44` — "falls back to a pinned known-good version (currently `openclaw@2026.3.28`)"
+- `.env.example:34` — "(currently openclaw@2026.3.28)"
 
-**Code evidence:**
-```
-src/server/env.ts:282: const OPENCLAW_DEFAULT_PACKAGE_SPEC = "openclaw@2026.3.28";
-```
-
-The code comment at line 277 explicitly explains: "The fallback is pinned rather than openclaw@latest because upstream releases can ship broken dependencies."
-
-**Impact:** Operators reading the docs believe they get `@latest` when unset, but actually get a pinned older version. This is safer than documented but still misleading. The verifier contract checker also validates against the stale "openclaw@latest" wording.
-
-**Fix:** Update all documentation references to describe the actual behavior: a known-good pinned version (currently `openclaw@2026.3.28`), not `openclaw@latest`. Update the verifier contract checker guards accordingly.
+**Remaining `openclaw@latest` references** are legitimate — test cases for unpinned spec detection, benchmark scripts, and code comments explaining why the fallback is *not* `@latest`.
 
 ---
 
@@ -210,7 +200,7 @@ Vercel system env vars (`VERCEL_PROJECT_PRODUCTION_URL`, `VERCEL_BRANCH_URL`, `V
 | `OPENCLAW_INSTANCE_ID` | `VERCEL_PROJECT_ID` on Vercel, `openclaw-single` locally | Safe — auto-isolates projects |
 | `OPENCLAW_SANDBOX_VCPUS` | 1 | Safe — minimum cost |
 | `OPENCLAW_SANDBOX_SLEEP_AFTER_MS` | 1800000 (30 min) | Safe — reasonable timeout |
-| `CRON_SECRET` | Falls back to `ADMIN_SECRET` | Safe — but preflight misreports as unconfigured (separate known issue) |
+| `CRON_SECRET` | Falls back to `ADMIN_SECRET` | Safe — preflight now correctly reflects effective cron auth via `cronSecretSource` field |
 
 ---
 
@@ -225,6 +215,15 @@ The verifier contract checker (`scripts/check-verifier-contract.mjs`) only track
 
 ---
 
+### EV-12 [P2/FIXED] — OPENCLAW_PACKAGE_SPEC fallback masks the "unset on Vercel" state
+
+- **Evidence**: `.env.example:32-36`, `CLAUDE.md:152`, `CLAUDE.md:550`, `src/server/env.ts:300-311`, `src/server/deployment-contract.ts:250-259`
+- **Detail**: The docs say Vercel should warn when `OPENCLAW_PACKAGE_SPEC` is unset or unpinned. Runtime does fall back to a pinned known-good version (`openclaw@2026.3.28`) when unset, but the deployment contract previously checked the resolved fallback string and returned `pass` because that fallback is pinned. That hid the documented "unset" warning state from preflight and launch-verify.
+- **Severity**: Medium
+- **Status**: Fixed — `getOpenclawPackageSpecConfig()` now preserves source (`explicit` vs `fallback`), and the deployment contract warns on `source === "fallback"` for Vercel deployments.
+
+---
+
 ## Unused Env Vars Check
 
 No env vars in `.env.example` are unused in code. Every documented variable has at least one `process.env` reference in source.
@@ -233,11 +232,13 @@ No env vars in `.env.example` are unused in code. Every documented variable has 
 
 ### P2 — Should fix before launch
 
-1. **EV-1**: Update `OPENCLAW_PACKAGE_SPEC` fallback documentation in CLAUDE.md, CONTRIBUTING.md, docs/environment-variables.md, .env.example, and scripts/check-verifier-contract.mjs to reflect the actual pinned default (`openclaw@2026.3.28`) instead of `openclaw@latest`.
+1. **EV-1** *(Implemented)*: Documentation updated across CLAUDE.md, CONTRIBUTING.md, docs/environment-variables.md, and .env.example to reflect the pinned default (`openclaw@2026.3.28`).
 
 2. **EV-2**: Add `ADMIN_SECRET=` to `.env.example` as the first entry. Add `ADMIN_SECRET` to the CLAUDE.md env var table with context: "Required (admin-secret mode). Password for the admin UI. Auto-generated locally if unset."
 
 3. **EV-11**: Add `ADMIN_SECRET` and `AI_GATEWAY_API_KEY` to the deployment contract's env arrays (or add a separate surface check for non-contract operator vars in the verifier script).
+
+4. **EV-12 — Make package-spec resolution source-aware**: Add `getOpenclawPackageSpecConfig()` and update the deployment contract to warn on `source === "fallback"` for Vercel deployments. *(Implemented — `src/server/env.ts:307-311`, `src/server/deployment-contract.ts:247-273`)*
 
 ### P3 — Nice to have, not blocking
 

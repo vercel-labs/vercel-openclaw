@@ -62,11 +62,25 @@
 - Some docs may still reference the deprecated field
 - **Severity**: P3 (the field still works as a compatibility alias)
 
+### FIXED (DA-1) — Machine-readable preflight output still drops cron fallback semantics
+
+- **Evidence**: `.env.example:55-59`, `CLAUDE.md:152`, `src/server/env.ts:139-152`, `src/server/deployment-contract.ts:182-203`, `src/server/deploy-preflight.ts:487-489` (original), `src/server/deploy-preflight.ts:490-493` (fixed)
+- **Detail**: The docs and deployment contract agree that `/api/cron/watchdog` can authenticate with `ADMIN_SECRET` when `CRON_SECRET` is unset. `buildDeployPreflight()` previously published `cronSecretConfigured` using only `process.env.CRON_SECRET`, so the JSON payload reported "not configured" in a state the contract intentionally supports. The contract in `src/server/deployment-contract.ts:182-203` correctly modeled `ADMIN_SECRET` fallback via `getCronSecretConfig()`, but preflight did not consume that helper.
+- **Severity**: Low
+- **Status**: Fixed — `buildDeployPreflight()` now uses `getCronSecretConfig()` and exposes `cronSecretConfigured` (effective), `cronSecretExplicitlyConfigured` (explicit-only), and `cronSecretSource` fields. Verified at `src/server/deploy-preflight.ts:490-493`.
+
+## Issues Summary
+
+| ID | Severity | Title | Status |
+|---|---|---|---|
+| DA-1 | Low | Preflight payload reports cron auth based only on `CRON_SECRET`, not effective fallback behavior | Fixed |
+
 ## Recommended Fixes (ranked)
 
-1. **P3** — Add a note to CLAUDE.md and CONTRIBUTING.md route tables: "See [docs/api-reference.md](docs/api-reference.md) for the complete endpoint reference." This sets expectations without requiring exhaustive table maintenance.
-2. **P3** — Grep for `warningChannelIds` in docs/ and update any remaining references to note deprecation.
+1. **DA-1 — Align preflight cron fields with contract semantics**: Reuse `getCronSecretConfig()` in `buildDeployPreflight()` and expose both effective and explicit cron-secret state. *(Implemented — `src/server/deploy-preflight.ts:490-493`)*
+2. **P3** — Add a note to CLAUDE.md and CONTRIBUTING.md route tables: "See [docs/api-reference.md](docs/api-reference.md) for the complete endpoint reference." This sets expectations without requiring exhaustive table maintenance.
+3. **P3** — Grep for `warningChannelIds` in docs/ and update any remaining references to note deprecation.
 
 ## Release Readiness
 
-**No launch blockers.** Documentation is substantially accurate. Route tables are intentionally abridged (detailed reference exists in docs/api-reference.md). No commands or instructions are broken or misleading.
+**No launch blockers.** Documentation is substantially accurate. Route tables are intentionally abridged (detailed reference exists in docs/api-reference.md). No commands or instructions are broken or misleading. DA-1 (cron preflight semantics) has been fixed.

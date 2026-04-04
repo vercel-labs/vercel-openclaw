@@ -297,10 +297,17 @@ export function requiresDurableStore(): boolean {
  */
 const OPENCLAW_DEFAULT_PACKAGE_SPEC = "openclaw@2026.3.28";
 
-export function getOpenclawPackageSpec(): string {
+export type OpenclawPackageSpecSource = "explicit" | "fallback";
+
+export type OpenclawPackageSpecConfig = {
+  value: string;
+  source: OpenclawPackageSpecSource;
+};
+
+export function getOpenclawPackageSpecConfig(): OpenclawPackageSpecConfig {
   const explicit = process.env.OPENCLAW_PACKAGE_SPEC?.trim();
   if (explicit) {
-    return explicit;
+    return { value: explicit, source: "explicit" };
   }
   if (isVercelDeployment()) {
     logWarn("env.openclaw_package_spec_fallback", {
@@ -308,7 +315,11 @@ export function getOpenclawPackageSpec(): string {
       reason: "OPENCLAW_PACKAGE_SPEC is not set on a Vercel deployment",
     });
   }
-  return OPENCLAW_DEFAULT_PACKAGE_SPEC;
+  return { value: OPENCLAW_DEFAULT_PACKAGE_SPEC, source: "fallback" };
+}
+
+export function getOpenclawPackageSpec(): string {
+  return getOpenclawPackageSpecConfig().value;
 }
 
 export async function getAiGatewayAuthMode(): Promise<"oidc" | "api-key" | "unavailable"> {

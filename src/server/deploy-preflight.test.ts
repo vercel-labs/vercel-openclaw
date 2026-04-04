@@ -143,6 +143,7 @@ test("preflight fails when AI Gateway auth and store are missing", async () => {
       KV_REST_API_TOKEN: undefined,
       AI_GATEWAY_API_KEY: undefined,
       CRON_SECRET: undefined,
+      ADMIN_SECRET: undefined,
       NEXT_PUBLIC_APP_URL: "https://app.example.com",
     },
     async () => {
@@ -159,6 +160,8 @@ test("preflight fails when AI Gateway auth and store are missing", async () => {
       assert.equal(payload.storeBackend, "memory");
       assert.equal(payload.aiGatewayAuth, "unavailable");
       assert.equal(payload.cronSecretConfigured, false);
+      assert.equal(payload.cronSecretExplicitlyConfigured, false);
+      assert.equal(payload.cronSecretSource, "missing");
 
       assert.equal(
         payload.checks.find((check) => check.id === "webhook-bypass")?.status,
@@ -279,6 +282,8 @@ test("preflight passes all checks with Upstash, bypass, OIDC, and cron secret", 
       assert.equal(payload.storeBackend, "upstash");
       assert.equal(payload.aiGatewayAuth, "oidc");
       assert.equal(payload.cronSecretConfigured, true);
+      assert.equal(payload.cronSecretExplicitlyConfigured, true);
+      assert.equal(payload.cronSecretSource, "cron-secret");
 
       for (const check of payload.checks) {
         assert.notEqual(check.status, "fail");
@@ -550,7 +555,7 @@ test("preflight checks do not include launch-verification (config-only guarantee
   );
 });
 
-test("preflight passes when OPENCLAW_PACKAGE_SPEC is missing on Vercel (default is pinned)", async () => {
+test("preflight warns when OPENCLAW_PACKAGE_SPEC is missing on Vercel (fallback source)", async () => {
   await withEnv(
     {
       VERCEL: "1",
@@ -568,21 +573,15 @@ test("preflight passes when OPENCLAW_PACKAGE_SPEC is missing on Vercel (default 
         new Request("https://app.example.com/api/admin/preflight"),
       );
 
-      // Default package-spec is now pinned, so check should pass on Vercel
+      // Fallback source should warn even though the fallback value is pinned
       const specCheck = payload.checks.find(
         (c) => c.id === "openclaw-package-spec",
       );
       assert.ok(specCheck, "expected openclaw-package-spec check on Vercel");
-      assert.equal(specCheck.status, "pass");
+      assert.equal(specCheck.status, "warn");
 
-      // Preflight should pass
-      assert.equal(payload.ok, true, "pinned default package-spec should not block preflight");
-
-      // No action needed since the default is pinned
-      const specAction = payload.actions.find(
-        (a) => a.id === "configure-openclaw-package-spec",
-      );
-      assert.equal(specAction, undefined, "no action needed when default is pinned");
+      // Preflight should still pass (warn does not block)
+      assert.equal(payload.ok, true, "fallback package-spec warning should not block preflight");
     },
   );
 });
@@ -1268,6 +1267,8 @@ test("getLaunchVerifyBlocking: synthetic webhook-bypass warn does not block", ()
     storeBackend: "upstash" as const,
     aiGatewayAuth: "oidc" as const,
     cronSecretConfigured: true,
+    cronSecretExplicitlyConfigured: true,
+    cronSecretSource: "cron-secret" as const,
     publicOriginResolution: null,
     webhookDiagnostics: { slack: null, telegram: null, discord: null },
     channels: {} as never,
@@ -1616,6 +1617,36 @@ test("preflight passes cron-secret check when CRON_SECRET is configured on Verce
 
       const cronAction = payload.actions.find((a) => a.id === "configure-cron-secret");
       assert.equal(cronAction, undefined, "no action needed when CRON_SECRET is configured");
+    },
+  );
+});
+
+test("preflight cron fields reflect ADMIN_SECRET fallback on Vercel", async () => {
+  await withEnv(
+    {
+      VERCEL: "1",
+      VERCEL_AUTH_MODE: "admin-secret",
+      NEXT_PUBLIC_APP_URL: "https://app.example.com",
+      UPSTASH_REDIS_REST_URL: "https://example.upstash.io",
+      UPSTASH_REDIS_REST_TOKEN: "token",
+      OPENCLAW_PACKAGE_SPEC: "openclaw@1.0.0",
+      CRON_SECRET: undefined,
+      ADMIN_SECRET: "admin-secret-for-fallback",
+    },
+    async () => {
+      _setAiGatewayTokenOverrideForTesting("oidc-token");
+
+      const payload = await buildDeployPreflight(
+        new Request("https://app.example.com/api/admin/preflight"),
+      );
+
+      assert.equal(payload.cronSecretConfigured, true, "cronSecretConfigured should be true with ADMIN_SECRET fallback");
+      assert.equal(payload.cronSecretExplicitlyConfigured, false, "cronSecretExplicitlyConfigured should be false");
+      assert.equal(payload.cronSecretSource, "admin-secret", "cronSecretSource should be admin-secret");
+
+      const cronCheck = payload.checks.find((c) => c.id === "cron-secret");
+      assert.ok(cronCheck, "expected cron-secret check");
+      assert.equal(cronCheck.status, "warn", "cron-secret check should warn when falling back to ADMIN_SECRET on Vercel");
     },
   );
 });

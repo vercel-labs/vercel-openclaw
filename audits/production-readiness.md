@@ -28,7 +28,7 @@
 - **Evidence**: `src/server/env.ts:132-149`, `src/server/deployment-contract.ts:164-214`, `README.md:55-60`, `docs/environment-variables.md:26`, `.env.example:55-58`
 - **Detail**: The runtime fell back to `ADMIN_SECRET`, but docs and contract messaging did not consistently distinguish fallback from explicit `CRON_SECRET`.
 - **Fix applied**: Added `getCronSecretConfig()` helper that reports `cron-secret`, `admin-secret`, or `missing` source. Deployment contract now returns `warn` (not `pass`) on Vercel when falling back to `ADMIN_SECRET`, and `fail` only when both are missing. Docs aligned across README, env reference, and `.env.example`.
-- **Residual (P3)**: `cronSecretConfigured` in `src/server/deploy-preflight.ts:487-489` still reads `process.env.CRON_SECRET` directly. This is intentional — the field reflects explicit `CRON_SECRET` configuration only, not the runtime fallback. Documented in deploy-button-and-onboarding.md as DO-2.
+- **Residual**: None. `buildDeployPreflight()` now uses `getCronSecretConfig()` and exposes `cronSecretConfigured` (effective), `cronSecretExplicitlyConfigured` (explicit-only), and `cronSecretSource` at `src/server/deploy-preflight.ts:490-493`.
 
 ### RESOLVED — Preflight webhook diagnostics now follow Telegram display-url policy
 
@@ -64,7 +64,7 @@
 - Getting Started instructions match runtime behavior
 - Bootstrap endpoint sealed on Vercel (returns 410)
 - Preflight validates all deployment contract requirements
-- **P2 doc drift**: `OPENCLAW_PACKAGE_SPEC` docs say `openclaw@latest` but code pins `openclaw@2026.3.28` (DO-1)
+- **P2 doc drift (RESOLVED)**: `OPENCLAW_PACKAGE_SPEC` docs now correctly describe pinned fallback `openclaw@2026.3.28` (DO-1)
 
 ### Sandbox Lifecycle — PASS (edge cases noted)
 
@@ -114,14 +114,14 @@
 
 | # | Issue | Audit | Risk |
 |---|---|---|---|
-| 1 | `OPENCLAW_PACKAGE_SPEC` docs say `openclaw@latest`; code pins `openclaw@2026.3.28` | deploy-button-and-onboarding | Documentation drift; operator confusion |
+| 1 | ~~`OPENCLAW_PACKAGE_SPEC` docs say `openclaw@latest`~~ RESOLVED — docs now reflect pinned `openclaw@2026.3.28` | deploy-button-and-onboarding | Resolved |
 | 2 | Discord channel has zero test coverage (signature verification untested) | test-coverage-gaps | Signature spoofing in experimental channel |
 | 3 | Auth core (`admin-auth.ts`, `rate-limit.ts`) lacks direct unit tests | test-coverage-gaps | Edge cases in timing-safe comparison, CSRF |
 | 4 | Upstash store Lua scripts untested | test-coverage-gaps | Lock race conditions in production |
 | 5 | Firewall store-before-sandbox-sync ordering gap | firewall-correctness | Diverged firewall state |
 | 6 | Gateway readiness accepts 5xx as "ready" | sandbox-lifecycle-resume | Premature ready signal |
 | 7 | Deployment contract evaluation invisible in admin log ring buffer | error-handling-observability | Operator confusion |
-| 8 | `cronSecretConfigured` preflight reads `process.env.CRON_SECRET` directly (intentional — shows explicit config, not fallback) | readiness-restore-and-ops | Cosmetic: operators see `false` when only `ADMIN_SECRET` is set |
+| 8 | ~~`cronSecretConfigured` preflight reads `process.env.CRON_SECRET` directly~~ RESOLVED — now uses `getCronSecretConfig()` with `cronSecretSource` field | readiness-restore-and-ops | Resolved |
 | 9 | Lock renewal failure does not abort in-progress lifecycle work | sandbox-lifecycle-resume | Concurrent resume overlap |
 | 10 | No timeout on `sandbox.stop({ blocking: true })` | sandbox-lifecycle-resume | Lock contention on API failure |
 

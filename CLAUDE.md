@@ -161,7 +161,7 @@ Store requirement policy: missing Upstash is a hard fail (`status: "fail"`) on V
 Observability notes:
 
 - `deployment_contract.built` logs `{ ok, authMode, storeBackend, aiGatewayAuth, onVercel, requirementIds }`
-- `deploy_preflight.built` logs `{ ok, authMode, publicOrigin, webhookBypassEnabled, webhookBypassRecommended, storeBackend, aiGatewayAuth, cronSecretConfigured, actionCount, consumedContractIds }`
+- `deploy_preflight.built` logs `{ ok, authMode, publicOrigin, webhookBypassEnabled, webhookBypassRecommended, storeBackend, aiGatewayAuth, cronSecretConfigured, cronSecretExplicitlyConfigured, cronSecretSource, actionCount, consumedContractIds }`
 - `launch_verify.blocking_check` logs `{ blocking, failingCheckIds, requiredActionIds, recommendedActionIds, skipPhaseIds }`
 - `launch_verify.preflight_evaluated` logs `LaunchVerificationDiagnostics`
 - `LaunchVerificationDiagnostics.warningChannelIds` is deprecated; prefer `failingChannelIds`
@@ -178,6 +178,8 @@ Observability notes:
   storeBackend: "upstash" | "memory";
   aiGatewayAuth: "oidc" | "api-key" | "unavailable";
   cronSecretConfigured: boolean;
+  cronSecretExplicitlyConfigured: boolean;
+  cronSecretSource: "cron-secret" | "admin-secret" | "missing";
   publicOriginResolution: PublicOriginResolution | null;
   webhookDiagnostics: { slack, telegram, discord };
   channels: Record<ChannelName, ChannelConnectability>;

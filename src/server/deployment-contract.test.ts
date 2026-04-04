@@ -79,7 +79,7 @@ test("local dev without OPENCLAW_PACKAGE_SPEC does not fail contract", async () 
 // buildDeploymentContract — Vercel deployment
 // ---------------------------------------------------------------------------
 
-test("vercel deployment without OPENCLAW_PACKAGE_SPEC passes when default is pinned", async () => {
+test("vercel deployment without OPENCLAW_PACKAGE_SPEC warns when using fallback", async () => {
   process.env.VERCEL = "1";
   delete process.env.OPENCLAW_PACKAGE_SPEC;
   _setAiGatewayTokenOverrideForTesting("test-token");
@@ -89,9 +89,10 @@ test("vercel deployment without OPENCLAW_PACKAGE_SPEC passes when default is pin
     (r) => r.id === "openclaw-package-spec",
   );
   assert.ok(specReq, "expected openclaw-package-spec requirement");
-  // Default package spec is now pinned, so it should pass
-  assert.equal(specReq.status, "pass");
+  assert.equal(specReq.status, "warn");
+  assert.ok(specReq.message.includes("not set"));
   assert.ok(specReq.env.includes("OPENCLAW_PACKAGE_SPEC"));
+  assert.equal(contract.openclawPackageSpecSource, "fallback");
 });
 
 test("vercel deployment with openclaw@latest warns but does not fail contract", async () => {
@@ -121,6 +122,7 @@ test("vercel deployment with pinned openclaw version passes", async () => {
   );
   assert.ok(specReq, "expected openclaw-package-spec requirement");
   assert.equal(specReq.status, "pass");
+  assert.equal(contract.openclawPackageSpecSource, "explicit");
 });
 
 // ---------------------------------------------------------------------------
@@ -277,6 +279,7 @@ test("contract exposes expected metadata fields", async () => {
     ["oidc", "api-key", "unavailable"].includes(contract.aiGatewayAuth),
   );
   assert.equal(contract.openclawPackageSpec, "openclaw@3.1.0");
+  assert.equal(contract.openclawPackageSpecSource, "explicit");
   assert.ok(Array.isArray(contract.requirements));
 });
 
