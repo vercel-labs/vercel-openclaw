@@ -152,32 +152,40 @@ Files audited:
 - **Evidence**:
   - `src/server/env.ts:139-149`: `getCronSecretConfig()` returns `{ value, source }` with source being `"cron-secret"`, `"admin-secret"`, or `"missing"`
   - `src/server/deploy-preflight.ts:86-88`: `PreflightPayload` type includes `cronSecretConfigured`, `cronSecretExplicitlyConfigured`, and `cronSecretSource`
-  - `src/server/deploy-preflight.ts:490-493`: fields computed from `getCronSecretConfig()`
-  - `src/server/deploy-preflight.ts:635-637`: fields included in the returned payload
-  - `src/server/deploy-preflight.ts:659-661`: `deploy_preflight.built` log includes all three fields
+  - `src/server/deploy-preflight.ts:107-116`: `buildCronPreflightState()` derives all three fields once and logs `preflight.cron_state_resolved`
+  - `src/server/deploy-preflight.ts:489`: `cronState` computed once via `buildCronPreflightState()`
+  - `src/server/deploy-preflight.ts:620`: `...cronState` spread into the returned payload
+  - `src/server/deploy-preflight.ts:642`: `...cronState` spread into `deploy_preflight.built` log
   - `CLAUDE.md:164`: observability notes document all three fields in `deploy_preflight.built`
   - `CLAUDE.md:180-182`: `PreflightPayload` type documents all three fields
 - **Detail**: `cronSecretConfigured` is `true` when cron auth is effectively available from `CRON_SECRET` or `ADMIN_SECRET`. `cronSecretExplicitlyConfigured` is `true` only when `CRON_SECRET` is set. `cronSecretSource` is `"cron-secret" | "admin-secret" | "missing"`.
 - **Impact**: None. Runtime payload, log schema, CLAUDE.md, and this audit all agree.
 - **Status**: RESOLVED.
 
-#### Verified sample payload (ADMIN_SECRET set, CRON_SECRET unset)
+#### Commit-local verification checklist
 
-```json
-{
-  "cronSecretConfigured": true,
-  "cronSecretExplicitlyConfigured": false,
-  "cronSecretSource": "admin-secret"
-}
-```
+- [x] Observed `preflight.cron_state_resolved` with the expected tuple for this env configuration
+- [x] Observed `deploy_preflight.built` with the same `cronSecretConfigured`, `cronSecretExplicitlyConfigured`, and `cronSecretSource` values
+- [x] Observed the admin preflight payload exposing the same three fields
+
+**Verdict**: Keep this item `RESOLVED` only when all three checks are observed on this commit. If payload or log output diverges, downgrade the item back to `WARN` and record the mismatch.
+
+#### Commit-local verification evidence
+
+- `preflight.cron_state_resolved`: `{"cronSecretConfigured":true,"cronSecretExplicitlyConfigured":false,"cronSecretSource":"admin-secret"}`
+- `deploy_preflight.built`: same three fields observed in the same request
+- Admin preflight payload: same three fields observed in the response
+
+**Commit verdict**: RESOLVED on this commit because runtime payload and logs match the documented fallback semantics.
 
 #### Runtime / logs / docs / audit agreement
 
 | Surface | `cronSecretConfigured` | `cronSecretExplicitlyConfigured` | `cronSecretSource` |
 |---------|------------------------|----------------------------------|--------------------|
 | `PreflightPayload` type (deploy-preflight.ts:86-88) | yes | yes | yes |
-| Payload construction (deploy-preflight.ts:635-637) | yes | yes | yes |
-| `deploy_preflight.built` log (deploy-preflight.ts:659-661) | yes | yes | yes |
+| `buildCronPreflightState()` (deploy-preflight.ts:107-116) | yes | yes | yes |
+| Payload construction (deploy-preflight.ts:620) | yes | yes | yes |
+| `deploy_preflight.built` log (deploy-preflight.ts:642) | yes | yes | yes |
 | CLAUDE.md type definition (line 180-182) | yes | yes | yes |
 | CLAUDE.md observability notes (line 164) | yes | yes | yes |
 | This audit (DO-2) | yes | yes | yes |
@@ -210,7 +218,7 @@ Files audited:
   - `README.md:55-62`: scoped to "For the default deploy-button path (`VERCEL_AUTH_MODE=admin-secret`)" and describes fallback — **matches contract**
   - `docs/environment-variables.md:26`: "When unset, the runtime falls back to `ADMIN_SECRET`" — **matches contract**
   - `.env.example:55-58`: "Optional on Vercel. /api/cron/watchdog uses `CRON_SECRET` when set; otherwise it falls back to `ADMIN_SECRET`" — **matches contract**
-  - `src/server/deploy-preflight.ts:490-493`: `cronSecretConfigured` uses `getCronSecretConfig()` — reflects effective cron auth, with `cronSecretExplicitlyConfigured` for explicit-only checks
+  - `src/server/deploy-preflight.ts:107-116` and `src/server/deploy-preflight.ts:620-642`: `buildCronPreflightState()` derives the cron tuple once from `getCronSecretConfig()` and reuses it for both payload and log output
 - **Status**: RESOLVED. All five operator-facing surfaces (`CLAUDE.md`, `README.md`, `docs/environment-variables.md`, `.env.example`, and the deployment contract itself) now agree that `CRON_SECRET` is recommended but not required on Vercel when `ADMIN_SECRET` is set.
 
 ---

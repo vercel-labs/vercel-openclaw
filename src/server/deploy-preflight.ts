@@ -94,6 +94,27 @@ export type PreflightPayload = {
   nextSteps: PreflightNextStep[];
 };
 
+// ---------------------------------------------------------------------------
+// Cron preflight state — derived once per preflight build, spread into both
+// the returned payload and the deploy_preflight.built info log.
+// ---------------------------------------------------------------------------
+
+type CronPreflightState = Pick<
+  PreflightPayload,
+  "cronSecretConfigured" | "cronSecretExplicitlyConfigured" | "cronSecretSource"
+>;
+
+function buildCronPreflightState(): CronPreflightState {
+  const cron = getCronSecretConfig();
+  const state: CronPreflightState = {
+    cronSecretConfigured: cron.value !== null,
+    cronSecretExplicitlyConfigured: cron.source === "cron-secret",
+    cronSecretSource: cron.source,
+  };
+  logInfo("preflight.cron_state_resolved", state);
+  return state;
+}
+
 type DisplayWebhookChannel = "slack" | "telegram" | "discord";
 
 function buildDisplayWebhookDiagnostics(
@@ -183,29 +204,41 @@ function contractRequirementToAction(
   };
 }
 
+type RequirementIndex = Map<string, DeploymentRequirement>;
+
+function indexRequirements(contract: DeploymentContract): RequirementIndex {
+  return new Map(
+    contract.requirements.map((req) => [req.id, req] as const),
+  );
+}
+
+function pushRequirementAction(
+  actions: PreflightAction[],
+  req: DeploymentRequirement | undefined,
+  id: PreflightActionId,
+): void {
+  if (!req || req.status === "pass") return;
+  actions.push({
+    id,
+    status: req.status === "fail" ? "required" : "recommended",
+    message: req.message,
+    remediation: req.remediation,
+    env: req.env,
+  });
+}
+
 function buildActions(input: {
-  publicOriginResolution: PublicOriginResolution | null;
+  contract: DeploymentContract;
   webhookBypassEnabled: boolean;
   webhookBypassRecommended: boolean;
-  storeBackend: "upstash" | "memory";
-  aiGatewayAuth: PreflightPayload["aiGatewayAuth"];
-  contract: DeploymentContract;
 }): PreflightAction[] {
   const actions: PreflightAction[] = [];
+  const byId = indexRequirements(input.contract);
 
-  // Derive public-origin action severity from contract requirement
-  const contractOriginReq = input.contract.requirements.find(
-    (r) => r.id === "public-origin",
-  );
-  if (contractOriginReq && contractOriginReq.status !== "pass") {
-    actions.push({
-      id: "configure-public-origin",
-      status: contractOriginReq.status === "fail" ? "required" : "recommended",
-      message: contractOriginReq.message,
-      remediation: contractOriginReq.remediation,
-      env: contractOriginReq.env,
-    });
-  }
+  pushRequirementAction(actions, byId.get("public-origin"), "configure-public-origin");
+  pushRequirementAction(actions, byId.get("store"), "configure-upstash");
+  pushRequirementAction(actions, byId.get("ai-gateway"), "configure-ai-gateway-auth");
+  pushRequirementAction(actions, byId.get("cron-secret"), "configure-cron-secret");
 
   if (input.webhookBypassRecommended && !input.webhookBypassEnabled) {
     actions.push({
@@ -219,50 +252,8 @@ function buildActions(input: {
     });
   }
 
-  // Derive store action severity from contract requirement
-  const contractStoreReq = input.contract.requirements.find(
-    (r) => r.id === "store",
-  );
-  if (contractStoreReq && contractStoreReq.status !== "pass") {
-    actions.push({
-      id: "configure-upstash",
-      status: contractStoreReq.status === "fail" ? "required" : "recommended",
-      message: contractStoreReq.message,
-      remediation: contractStoreReq.remediation,
-      env: contractStoreReq.env,
-    });
-  }
-
-  // Derive ai-gateway action severity from contract requirement
-  const contractGatewayReq = input.contract.requirements.find(
-    (r) => r.id === "ai-gateway",
-  );
-  if (contractGatewayReq && contractGatewayReq.status !== "pass") {
-    actions.push({
-      id: "configure-ai-gateway-auth",
-      status: contractGatewayReq.status === "fail" ? "required" : "recommended",
-      message: contractGatewayReq.message,
-      remediation: contractGatewayReq.remediation,
-      env: contractGatewayReq.env,
-    });
-  }
-
-  // Derive cron-secret action from contract requirement
-  const contractCronReq = input.contract.requirements.find(
-    (r) => r.id === "cron-secret",
-  );
-  if (contractCronReq && contractCronReq.status !== "pass") {
-    actions.push({
-      id: "configure-cron-secret",
-      status: contractCronReq.status === "fail" ? "required" : "recommended",
-      message: contractCronReq.message,
-      remediation: contractCronReq.remediation,
-      env: contractCronReq.env,
-    });
-  }
-
-  // Translate contract requirements into actions (openclaw-package-spec, oauth)
-  const seenActionIds = new Set<PreflightActionId>();
+  // Translate remaining contract requirements into actions (openclaw-package-spec, oauth)
+  const seenActionIds = new Set(actions.map((a) => a.id));
   for (const req of input.contract.requirements) {
     const action = contractRequirementToAction(req);
     if (action && !seenActionIds.has(action.id)) {
@@ -270,6 +261,14 @@ function buildActions(input: {
       actions.push(action);
     }
   }
+
+  logInfo("preflight.actions_built", {
+    actionIds: actions.map((a) => `${a.id}:${a.status}`),
+    actionCount: actions.length,
+    webhookBypassEnabled: input.webhookBypassEnabled,
+    webhookBypassRecommended: input.webhookBypassRecommended,
+    requirementCount: input.contract.requirements.length,
+  });
 
   return actions;
 }
@@ -487,10 +486,7 @@ export async function buildDeployPreflight(
 
   const aiGatewayAuth = contract.aiGatewayAuth;
 
-  const cronSecret = getCronSecretConfig();
-  const cronSecretConfigured = cronSecret.value !== null;
-  const cronSecretExplicitlyConfigured = cronSecret.source === "cron-secret";
-  const cronSecretSource = cronSecret.source;
+  const cronState = buildCronPreflightState();
   const webhookDiagnostics = buildWebhookDiagnostics(
     request,
     publicOriginResolution,
@@ -504,18 +500,14 @@ export async function buildDeployPreflight(
   // openclaw-package-spec, and auth config.
   // ---------------------------------------------------------------------------
 
-  const contractOriginReq = contract.requirements.find(
-    (r) => r.id === "public-origin",
-  );
-  const contractStoreReq = contract.requirements.find(
-    (r) => r.id === "store",
-  );
-  const contractGatewayReq = contract.requirements.find(
-    (r) => r.id === "ai-gateway",
-  );
-  const packageSpecReq = contract.requirements.find(
-    (r) => r.id === "openclaw-package-spec",
-  );
+  const byId = indexRequirements(contract);
+
+  const contractOriginReq = byId.get("public-origin");
+  const contractStoreReq = byId.get("store");
+  const contractGatewayReq = byId.get("ai-gateway");
+  const packageSpecReq = byId.get("openclaw-package-spec");
+  const cronSecretReq = byId.get("cron-secret");
+
   const authReqs = contract.requirements.filter(
     (r) =>
       r.id === "oauth-client-id" ||
@@ -529,10 +521,6 @@ export async function buildDeployPreflight(
     : authReqs.some((r) => r.status === "warn")
       ? "warn"
       : "pass";
-
-  const cronSecretReq = contract.requirements.find(
-    (r) => r.id === "cron-secret",
-  );
 
   const bootstrapCheck = await buildBootstrapExposureCheck();
 
@@ -610,12 +598,9 @@ export async function buildDeployPreflight(
   ];
 
   const actions = buildActions({
-    publicOriginResolution,
+    contract,
     webhookBypassEnabled,
     webhookBypassRecommended,
-    storeBackend,
-    aiGatewayAuth,
-    contract,
   });
 
   const ok =
@@ -632,9 +617,7 @@ export async function buildDeployPreflight(
     webhookBypassRecommended,
     storeBackend,
     aiGatewayAuth,
-    cronSecretConfigured,
-    cronSecretExplicitlyConfigured,
-    cronSecretSource,
+    ...cronState,
     publicOriginResolution,
     webhookDiagnostics,
     channels,
@@ -656,9 +639,7 @@ export async function buildDeployPreflight(
     webhookBypassRecommended: payload.webhookBypassRecommended,
     storeBackend: payload.storeBackend,
     aiGatewayAuth: payload.aiGatewayAuth,
-    cronSecretConfigured: payload.cronSecretConfigured,
-    cronSecretExplicitlyConfigured: payload.cronSecretExplicitlyConfigured,
-    cronSecretSource: payload.cronSecretSource,
+    ...cronState,
     actionCount: payload.actions.length,
     consumedContractIds,
   });
