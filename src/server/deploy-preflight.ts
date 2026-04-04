@@ -648,7 +648,7 @@ export async function buildDeployPreflight(
     .filter((r) => r.status !== "pass")
     .map((r) => `${r.id}:${r.status}`);
 
-  logDebug("deploy_preflight.built", {
+  logInfo("deploy_preflight.built", {
     ok: payload.ok,
     authMode: payload.authMode,
     publicOrigin: payload.publicOrigin,

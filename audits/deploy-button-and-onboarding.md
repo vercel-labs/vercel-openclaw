@@ -147,15 +147,42 @@ Files audited:
   - `scripts/check-verifier-contract.mjs`: updated comment to reference pinned fallback
 - **Status**: RESOLVED. All operator-facing surfaces now agree the runtime falls back to a pinned known-good version, not `openclaw@latest`.
 
-### DO-2 (P3/RESOLVED) -- `cronSecretConfigured` preflight field now uses `getCronSecretConfig()`
+### DO-2 (P3/RESOLVED) -- Preflight now exposes effective cron auth, explicit config, and source
 
 - **Evidence**:
-  - `src/server/deploy-preflight.ts:490-493`: `const cronSecret = getCronSecretConfig(); const cronSecretConfigured = cronSecret.value !== null;`
   - `src/server/env.ts:139-149`: `getCronSecretConfig()` returns `{ value, source }` with source being `"cron-secret"`, `"admin-secret"`, or `"missing"`
-  - `src/server/deployment-contract.ts:164-214`: `checkCronSecret()` returns `warn` (not `fail`) on Vercel when falling back to `ADMIN_SECRET`
-- **Detail**: The preflight payload now exposes three cron-related fields via `getCronSecretConfig()`: `cronSecretConfigured` (effective — true when any secret is available), `cronSecretExplicitlyConfigured` (true only when `CRON_SECRET` is explicitly set), and `cronSecretSource` (`"cron-secret"`, `"admin-secret"`, or `"missing"`). This aligns preflight with the deployment contract's fallback semantics.
-- **Impact**: None. Contract and preflight now agree on cron auth status.
-- **Status**: RESOLVED. Preflight and contract are fully aligned on cron secret resolution.
+  - `src/server/deploy-preflight.ts:86-88`: `PreflightPayload` type includes `cronSecretConfigured`, `cronSecretExplicitlyConfigured`, and `cronSecretSource`
+  - `src/server/deploy-preflight.ts:490-493`: fields computed from `getCronSecretConfig()`
+  - `src/server/deploy-preflight.ts:635-637`: fields included in the returned payload
+  - `src/server/deploy-preflight.ts:659-661`: `deploy_preflight.built` log includes all three fields
+  - `CLAUDE.md:164`: observability notes document all three fields in `deploy_preflight.built`
+  - `CLAUDE.md:180-182`: `PreflightPayload` type documents all three fields
+- **Detail**: `cronSecretConfigured` is `true` when cron auth is effectively available from `CRON_SECRET` or `ADMIN_SECRET`. `cronSecretExplicitlyConfigured` is `true` only when `CRON_SECRET` is set. `cronSecretSource` is `"cron-secret" | "admin-secret" | "missing"`.
+- **Impact**: None. Runtime payload, log schema, CLAUDE.md, and this audit all agree.
+- **Status**: RESOLVED.
+
+#### Verified sample payload (ADMIN_SECRET set, CRON_SECRET unset)
+
+```json
+{
+  "cronSecretConfigured": true,
+  "cronSecretExplicitlyConfigured": false,
+  "cronSecretSource": "admin-secret"
+}
+```
+
+#### Runtime / logs / docs / audit agreement
+
+| Surface | `cronSecretConfigured` | `cronSecretExplicitlyConfigured` | `cronSecretSource` |
+|---------|------------------------|----------------------------------|--------------------|
+| `PreflightPayload` type (deploy-preflight.ts:86-88) | yes | yes | yes |
+| Payload construction (deploy-preflight.ts:635-637) | yes | yes | yes |
+| `deploy_preflight.built` log (deploy-preflight.ts:659-661) | yes | yes | yes |
+| CLAUDE.md type definition (line 180-182) | yes | yes | yes |
+| CLAUDE.md observability notes (line 164) | yes | yes | yes |
+| This audit (DO-2) | yes | yes | yes |
+
+**Verdict**: Zero doc-only fields, zero runtime-only fields. All surfaces agree.
 
 ### DO-3 (P3/WARN) -- No minimum length enforcement on ADMIN_SECRET
 
