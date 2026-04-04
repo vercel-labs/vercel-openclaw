@@ -241,6 +241,54 @@ test("WhatsApp webhook: fast path connection failure sends boot message after re
   });
 });
 
+test("WhatsApp webhook: unexpected enqueue failure returns 500", async () => {
+  await withHarness(async (h) => {
+    await configureWhatsApp(h);
+    const route = getWhatsAppWebhookRoute();
+    const store = getStore();
+    const acquireMock = mock.method(store, "acquireLock", async () => {
+      throw new Error("store unavailable");
+    });
+
+    try {
+      const req = buildWhatsAppWebhook({
+        appSecret: APP_SECRET,
+        payload: {
+          object: "whatsapp_business_account",
+          entry: [
+            {
+              changes: [
+                {
+                  value: {
+                    metadata: { phone_number_id: "123456789" },
+                    messages: [
+                      {
+                        from: "15551234567",
+                        id: "wamid.unexpected-failure-1",
+                        type: "text",
+                        text: { body: "hello" },
+                      },
+                    ],
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      });
+      const result = await callRoute(route.POST, req);
+      assert.equal(result.status, 500);
+      assert.deepEqual(result.json, {
+        ok: false,
+        error: "WORKFLOW_START_FAILED",
+        retryable: true,
+      });
+    } finally {
+      acquireMock.mock.restore();
+    }
+  });
+});
+
 test("WhatsApp webhook: releases dedup lock and returns 500 when workflow start fails", async () => {
   await withHarness(async (h) => {
     await configureWhatsApp(h);

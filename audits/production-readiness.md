@@ -35,7 +35,7 @@ These are the most important items to address after launch, ordered by risk:
 | 2 | Auth core (`admin-auth.ts`, `rate-limit.ts`) lacks direct unit tests | [test-coverage-gaps.md](test-coverage-gaps.md) | Edge cases in timing-safe comparison, CSRF |
 | 3 | Upstash store Lua scripts untested | [test-coverage-gaps.md](test-coverage-gaps.md) | Lock race conditions in production |
 | 4 | Cron watchdog uses non-timing-safe secret comparison | [auth-session-security.md](auth-session-security.md) | Low practical risk on Vercel |
-| 5 | Telegram/WhatsApp outer try/catch swallows unhandled errors | [channel-webhook-reliability.md](channel-webhook-reliability.md) | Edge case message loss |
+| 5 | ~~Telegram/WhatsApp outer try/catch swallows unhandled errors~~ | [channel-webhook-reliability.md](channel-webhook-reliability.md) | **Fixed** — CW-3/CW-4 now return retryable 500 |
 | 6 | Firewall store-before-sandbox-sync ordering gap | [firewall-correctness.md](firewall-correctness.md) | Diverged firewall state |
 | 7 | Deployment contract evaluation invisible in admin log ring buffer | [error-handling-observability.md](error-handling-observability.md) | Operator confusion |
 | 8 | `cronSecretConfigured` preflight signal misleading when only ADMIN_SECRET set | [readiness-restore-and-ops.md](readiness-restore-and-ops.md) | False negative in diagnostics |
@@ -58,6 +58,10 @@ These are the most important items to address after launch, ordered by risk:
 1. **CW-1, CW-2**: Aligned fast-path webhook comments in Slack and WhatsApp routes to match Telegram's wording — prevents contributor confusion about duplicate delivery semantics.
    - `src/app/api/channels/slack/webhook/route.ts:244-254`
    - `src/app/api/channels/whatsapp/webhook/route.ts:159-169`
+
+2. **CW-3, CW-4**: Telegram and WhatsApp outer try/catch blocks now release dedup locks and return retryable 500 instead of swallowing errors and returning 200. Regression tests added for both channels.
+   - `src/app/api/channels/telegram/webhook/route.ts:208-220`
+   - `src/app/api/channels/whatsapp/webhook/route.ts:262-274`
 
 ## What's Working Well
 

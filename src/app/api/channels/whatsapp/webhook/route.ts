@@ -125,9 +125,9 @@ export async function POST(request: Request): Promise<Response> {
     return Response.json({ ok: true });
   }
 
+  let dedupLock: WhatsAppWebhookDedupLock | null = null;
   try {
     const messageId = extractWhatsAppMessageId(payload);
-    let dedupLock: WhatsAppWebhookDedupLock | null = null;
     if (messageId) {
       const dedupKey = channelDedupKey("whatsapp", messageId);
       const dedupToken = await getStore().acquireLock(dedupKey, 24 * 60 * 60);
@@ -257,11 +257,19 @@ export async function POST(request: Request): Promise<Response> {
       }));
       return workflowStartFailedResponse();
     }
+
+    return Response.json({ ok: true });
   } catch (error) {
-    logError("channels.whatsapp_webhook_enqueue_failed", {
+    const dedupRelease = await releaseWhatsAppWebhookDedupLockForRetry(dedupLock);
+    logError("channels.whatsapp_webhook_unexpected_failure", {
+      requestId: requestId ?? null,
+      dedupLockKey: dedupLock?.key ?? null,
+      dedupLockReleaseAttempted: dedupRelease.attempted,
+      dedupLockReleased: dedupRelease.released,
+      dedupLockReleaseError: dedupRelease.releaseError,
+      retryable: true,
       error: error instanceof Error ? error.message : String(error),
     });
+    return workflowStartFailedResponse();
   }
-
-  return Response.json({ ok: true });
 }

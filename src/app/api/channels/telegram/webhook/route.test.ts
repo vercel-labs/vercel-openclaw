@@ -259,6 +259,42 @@ test("Telegram webhook: duplicate update_id is deduplicated", async () => {
   });
 });
 
+test("Telegram webhook: unexpected enqueue failure returns 500", async () => {
+  await withHarness(async (h) => {
+    await configureTelegram(h);
+    const route = getTelegramWebhookRoute();
+    const store = getStore();
+    const acquireMock = mock.method(store, "acquireLock", async () => {
+      throw new Error("store unavailable");
+    });
+
+    try {
+      const req = buildTelegramWebhook({
+        webhookSecret: TELEGRAM_WEBHOOK_SECRET,
+        payload: {
+          update_id: 123456,
+          message: {
+            message_id: 1,
+            from: { id: 123, first_name: "Test", is_bot: false },
+            chat: { id: 123, type: "private", first_name: "Test" },
+            date: Math.floor(Date.now() / 1000),
+            text: "hello",
+          },
+        },
+      });
+      const result = await callRoute(route.POST, req);
+      assert.equal(result.status, 500);
+      assert.deepEqual(result.json, {
+        ok: false,
+        error: "WORKFLOW_START_FAILED",
+        retryable: true,
+      });
+    } finally {
+      acquireMock.mock.restore();
+    }
+  });
+});
+
 test("Telegram webhook: releases dedup lock and returns 500 when workflow start fails", async () => {
   await withHarness(async (h) => {
     await configureTelegram(h);

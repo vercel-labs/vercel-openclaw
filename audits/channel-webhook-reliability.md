@@ -90,19 +90,17 @@
 - **Severity**: P3 (enhancement, not a reliability issue)
 - **Recommended fix**: Consider adding a fast-path for Discord when the sandbox is running, following the Telegram pattern (any-HTTP-ack). Low priority given experimental status.
 
-### WARN — Telegram outer try/catch swallows errors silently
+### FIXED — Telegram unexpected enqueue failures now preserve provider retry
 
-- **Evidence**: `src/app/api/channels/telegram/webhook/route.ts:92-211`
-- **Detail**: The entire Telegram processing logic (dedup, fast-path, boot message, workflow start) is wrapped in an outer try/catch at lines 92 and 206-210. If `reconcileStaleRunningStatus()` throws (unlikely but possible on store failure), the error is caught, logged via `logError`, and the route returns 200 — meaning Telegram will not redeliver. The inner workflow-start catch correctly returns 500, but errors in the dedup or fast-path sections could be swallowed.
-- **Severity**: P2 (edge case reliability)
-- **Recommended fix**: Narrow the outer try/catch or ensure it returns 500 for errors that indicate the message was never handled.
+- **Evidence**: `src/app/api/channels/telegram/webhook/route.ts:208-220`
+- **Detail**: The outer catch no longer swallows unexpected enqueue failures. It releases any dedup lock it holds via `releaseTelegramWebhookDedupLockForRetry()`, logs `channels.telegram_webhook_unexpected_failure` with dedup release diagnostics and `retryable: true`, and returns the retryable 500 envelope from `workflowStartFailedResponse()`. Regression test at `route.test.ts` ("unexpected enqueue failure returns 500") confirms the fix by faulting `acquireLock()`.
+- **Status**: **Fixed** — unexpected pre-handoff failures now preserve provider redelivery.
 
-### WARN — WhatsApp outer try/catch swallows errors silently
+### FIXED — WhatsApp unexpected enqueue failures now preserve provider retry
 
-- **Evidence**: `src/app/api/channels/whatsapp/webhook/route.ts:128-261`
-- **Detail**: Same pattern as Telegram. Outer try/catch at lines 128 and 257-261 catches and logs but returns 200 for any uncaught error in the dedup/fast-path/boot-message sections.
-- **Severity**: P2 (edge case reliability)
-- **Recommended fix**: Same as Telegram — narrow scope or return 500 for unhandled errors.
+- **Evidence**: `src/app/api/channels/whatsapp/webhook/route.ts:262-274`
+- **Detail**: The outer catch no longer swallows unexpected enqueue failures. It releases any dedup lock it holds via `releaseWhatsAppWebhookDedupLockForRetry()`, logs `channels.whatsapp_webhook_unexpected_failure` with dedup release diagnostics and `retryable: true`, and returns the retryable 500 envelope from `workflowStartFailedResponse()`. Regression test at `route.test.ts` ("unexpected enqueue failure returns 500") confirms the fix by faulting `acquireLock()`.
+- **Status**: **Fixed** — unexpected pre-handoff failures now preserve provider redelivery.
 
 ### PASS — Bot message filtering (Slack)
 
@@ -164,8 +162,8 @@
 |---|---|---|---|---|
 | CW-1 | P2 | Slack | Fast-path leading comment contradicts actual behavior | **Fixed** |
 | CW-2 | P2 | WhatsApp | Fast-path leading comment contradicts actual behavior | **Fixed** |
-| CW-3 | P2 | Telegram | Outer try/catch swallows errors, returns 200 on unhandled failure | Open |
-| CW-4 | P2 | WhatsApp | Outer try/catch swallows errors, returns 200 on unhandled failure | Open |
+| CW-3 | P2 | Telegram | Outer try/catch swallows errors, returns 200 on unhandled failure | **Fixed** |
+| CW-4 | P2 | WhatsApp | Outer try/catch swallows errors, returns 200 on unhandled failure | **Fixed** |
 | CW-5 | P2 | Discord | No test coverage at all | Open |
 | CW-6 | P3 | Slack | Missing test for fast-path network failure (reconcile path) | Open |
 | CW-7 | P3 | Discord | No fast-path forwarding (all interactions go through workflow) | Open |
@@ -176,7 +174,7 @@
 
 1. **CW-1, CW-2**: ~~Update leading block comments in Slack and WhatsApp to match the Telegram wording.~~ **Done** — comments aligned in both files.
 
-2. **CW-3, CW-4**: Narrow the outer try/catch in Telegram (`route.ts:92-211`) and WhatsApp (`route.ts:128-261`). If the error occurs before the workflow start (e.g., during dedup lock acquisition or reconciliation), the message was never handled and should return 500 so the provider can redeliver. The workflow-start catch already handles its own errors correctly.
+2. **CW-3, CW-4**: ~~Narrow the outer try/catch in Telegram and WhatsApp to return 500 for unhandled errors.~~ **Done** — outer catch now releases dedup locks and returns retryable 500 in both routes.
 
 3. **CW-5**: Add a basic Discord webhook test file covering signature validation, ping response, happy path workflow start, and workflow start failure with dedup release.
 
@@ -198,8 +196,8 @@ The actual runtime behavior across all channels with fast paths is **uniform and
 | Sandbox not running | Boot msg + workflow | Boot msg + workflow | Boot msg + workflow | Wake path |
 | Workflow start fails | Release dedup + 500 | Release dedup + 500 | Release dedup + 500 | Provider can redeliver |
 
-The invariant is: **only acknowledge the webhook when the native handler received the payload OR the workflow was successfully started**. The one exception is the outer try/catch in Telegram and WhatsApp that can swallow pre-workflow errors (CW-3, CW-4).
+The invariant is: **only acknowledge the webhook when the native handler received the payload OR the workflow was successfully started**. With CW-3 and CW-4 fixed, this invariant now holds without exceptions across all channels.
 
 ## Release Recommendation
 
-**Prelaunch-warning**: No launch-blocking issues found. The webhook reliability subsystem is well-structured with consistent dedup, signature validation, fast-path forwarding, and workflow fallback across all channels. The P2 items (misleading comments, outer catch scope, missing Discord tests) should be addressed before or shortly after launch but do not risk message loss in normal operation. The outer try/catch issue (CW-3, CW-4) is the highest-priority fix as it could theoretically swallow a message on an unlikely store failure during dedup acquisition.
+**Prelaunch-warning**: No launch-blocking issues remain. CW-1 through CW-4 are fixed with test coverage. The webhook reliability subsystem is well-structured with consistent dedup, signature validation, fast-path forwarding, and workflow fallback across all channels. The remaining P2 item (CW-5: missing Discord route-level tests) and P3 items (CW-6, CW-7) should be addressed post-launch.

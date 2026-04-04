@@ -89,9 +89,9 @@ export async function POST(request: Request): Promise<Response> {
   // Return 200 only after the update is handled or successfully handed off.
   // If workflow start fails after dedup lock acquisition, return 500 so
   // Telegram can redeliver the same update.
+  let dedupLock: TelegramWebhookDedupLock | null = null;
   try {
     const updateId = extractUpdateId(payload);
-    let dedupLock: TelegramWebhookDedupLock | null = null;
     if (updateId) {
       const dedupKey = channelDedupKey("telegram", updateId);
       const dedupToken = await getStore().acquireLock(dedupKey, 24 * 60 * 60);
@@ -203,11 +203,19 @@ export async function POST(request: Request): Promise<Response> {
       }));
       return workflowStartFailedResponse();
     }
+
+    return Response.json({ ok: true });
   } catch (error) {
-    logError("channels.telegram_webhook_enqueue_failed", {
+    const dedupRelease = await releaseTelegramWebhookDedupLockForRetry(dedupLock);
+    logError("channels.telegram_webhook_unexpected_failure", {
+      requestId: requestId ?? null,
+      dedupLockKey: dedupLock?.key ?? null,
+      dedupLockReleaseAttempted: dedupRelease.attempted,
+      dedupLockReleased: dedupRelease.released,
+      dedupLockReleaseError: dedupRelease.releaseError,
+      retryable: true,
       error: error instanceof Error ? error.message : String(error),
     });
+    return workflowStartFailedResponse();
   }
-
-  return Response.json({ ok: true });
 }
