@@ -81,8 +81,8 @@ for (const relPath of docFiles) {
 // ---------------------------------------------------------------------------
 // OPENCLAW_PACKAGE_SPEC policy accuracy check
 // The deployment contract warns (not fails) on Vercel when the spec is
-// unset or unpinned. The runtime still falls back to openclaw@latest with a
-// warning log. Docs must not contradict either of these facts.
+// unset or unpinned. The runtime falls back to a pinned known-good version
+// (currently openclaw@2026.3.28). Docs must not contradict either of these facts.
 // ---------------------------------------------------------------------------
 
 const policyDocFiles = ["README.md", "CLAUDE.md", "CONTRIBUTING.md"];
@@ -102,7 +102,7 @@ const policyContradictions = [
   {
     pattern: /\bruntime\s+refuses\s+to\s+install\b/gi,
     label:
-      'claims runtime refuses to install when OPENCLAW_PACKAGE_SPEC is unpinned — runtime falls back to openclaw@latest',
+      'claims runtime refuses to install when OPENCLAW_PACKAGE_SPEC is unpinned — runtime falls back to a pinned known-good version',
   },
   // NOTE: "api-key" is now a valid AI Gateway auth mode alongside "oidc"
   // and "unavailable". The previous guards against stale "api-key"

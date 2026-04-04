@@ -35,10 +35,10 @@ Files audited:
 
 | ID   | Severity | Status | Summary |
 |------|----------|--------|---------|
-| DO-1 | P2       | WARN   | Docs say `OPENCLAW_PACKAGE_SPEC` defaults to `openclaw@latest`; runtime uses pinned `openclaw@2026.3.28` |
+| DO-1 | P2       | RESOLVED | Docs now reflect the pinned runtime fallback `openclaw@2026.3.28` instead of `openclaw@latest` |
 | DO-2 | P3       | RESOLVED | `cronSecretConfigured` intentionally reports explicit `CRON_SECRET` configuration only; fallback source is tracked separately by runtime/contract logic |
 | DO-3 | P3       | WARN   | No minimum length enforcement on `ADMIN_SECRET` |
-| DO-4 | P3       | WARN   | `NEXT_PUBLIC_SANDBOX_SCOPE` and `NEXT_PUBLIC_SANDBOX_PROJECT` missing from `docs/environment-variables.md` |
+| DO-4 | P3       | RESOLVED | `docs/environment-variables.md` now documents `NEXT_PUBLIC_SANDBOX_SCOPE` and `NEXT_PUBLIC_SANDBOX_PROJECT` |
 | DO-5 | P3       | PASS   | Deploy button `envDescription` references CRON_SECRET fallback (matches runtime) |
 | DO-6 | P2       | RESOLVED | All operator-facing surfaces now agree: `CRON_SECRET` is recommended (not required) on Vercel when `ADMIN_SECRET` is set; deployment contract returns `warn` (not `fail`) |
 
@@ -54,14 +54,14 @@ Files audited:
 - Only `ADMIN_SECRET` is prompted -- this is correct because:
   - Upstash is auto-provisioned by the integration
   - AI Gateway uses Vercel OIDC automatically on deployed environments
-  - `CRON_SECRET` falls back to `ADMIN_SECRET` via `getCronSecret()` (`src/server/env.ts:132-137`)
+  - `CRON_SECRET` falls back to `ADMIN_SECRET` via `getCronSecretConfig()` (`src/server/env.ts:139-149`)
   - Public origin resolves from Vercel system env vars automatically
 - `envDescription` correctly explains the CRON_SECRET fallback
 
 ### PASS -- Getting Started instructions match actual behavior
 
 - **Evidence**: `README.md:25-31`
-- Step 1 (Deploy): auto-provisions Upstash, asks for ADMIN_SECRET -- confirmed
+- Step 1 (Deploy): auto-provisions Upstash, asks for ADMIN_SECRET — confirmed
 - Step 2 (Sign in): login form appears at `/` when unauthenticated (`src/components/admin-shell.tsx:455-502`)
 - Step 3 (Use OpenClaw): `/gateway` proxy triggers sandbox create if needed; first boot ~1min, resume ~10s -- consistent with lifecycle code
 - Step 4 (Verify): launch verification is destructive, correctly distinguished from preflight
@@ -119,8 +119,8 @@ Files audited:
 
 ### PASS -- Cron watchdog auth works with deploy-button configuration
 
-- **Evidence**: `src/app/api/cron/watchdog/route.ts:6-19`, `src/server/env.ts:132-137`
-- `getCronSecret()` returns `ADMIN_SECRET` when `CRON_SECRET` is unset
+- **Evidence**: `src/app/api/cron/watchdog/route.ts:6-19`, `src/server/env.ts:139-149`
+- `getCronSecretConfig()` returns `ADMIN_SECRET` when `CRON_SECRET` is unset
 - Watchdog checks `Authorization: Bearer` or `x-cron-secret` header
 - Vercel Cron sends the secret automatically for authenticated cron routes
 - Schedule in `vercel.json`: `"0 8 * * *"` (daily at 8am UTC, Hobby-compatible)
@@ -136,22 +136,22 @@ Files audited:
 
 ## Issues Detail
 
-### DO-1 (P2/WARN) -- Documentation says `openclaw@latest` fallback; runtime uses pinned version
+### DO-1 (P2/RESOLVED) -- Documentation now reflects pinned fallback
 
 - **Evidence**:
-  - `src/server/env.ts:282`: `const OPENCLAW_DEFAULT_PACKAGE_SPEC = "openclaw@2026.3.28";`
-  - `docs/environment-variables.md:44`: "When unset, the runtime falls back to `openclaw@latest`"
-  - `CONTRIBUTING.md:150`: "defaults to `openclaw@latest`"
-  - `CLAUDE.md:553`: "Defaults to `openclaw@latest` when unset in local dev"
-- **Detail**: The runtime was changed to use a pinned fallback (`openclaw@2026.3.28`) because upstream releases can ship broken dependencies (see code comment referencing openclaw/openclaw#59081). Three documentation files still reference the old `openclaw@latest` fallback behavior.
-- **Impact**: Operators reading docs will expect `@latest` behavior. If they deliberately leave `OPENCLAW_PACKAGE_SPEC` unset expecting bleeding-edge, they will silently get `2026.3.28`. Conversely, the pinned fallback is actually better for launch stability -- but the docs should reflect reality.
-- **Fix**: Update `docs/environment-variables.md:44`, `CONTRIBUTING.md:150`, and `CLAUDE.md:553` to say the fallback is a pinned known-good version rather than `openclaw@latest`. The `env.ts` code comment already explains why.
+  - `src/server/env.ts:298`: `const OPENCLAW_DEFAULT_PACKAGE_SPEC = "openclaw@2026.3.28";`
+  - `docs/environment-variables.md`: updated to "falls back to a pinned known-good version (currently `openclaw@2026.3.28`)"
+  - `CONTRIBUTING.md`: updated to "falls back to a pinned known-good version (currently `openclaw@2026.3.28`)"
+  - `CLAUDE.md`: updated both line 155 (preflight description) and env var table to reference pinned fallback
+  - `.env.example`: updated to reference pinned fallback
+  - `scripts/check-verifier-contract.mjs`: updated comment to reference pinned fallback
+- **Status**: RESOLVED. All operator-facing surfaces now agree the runtime falls back to a pinned known-good version, not `openclaw@latest`.
 
 ### DO-2 (P3/RESOLVED) -- `cronSecretConfigured` preflight field intentionally reports explicit config only
 
 - **Evidence**:
   - `src/server/deploy-preflight.ts:487-489`: `const cronSecretConfigured = Boolean(process.env.CRON_SECRET?.trim());`
-  - `src/server/env.ts:132-137`: `getCronSecret()` falls back to `ADMIN_SECRET`
+  - `src/server/env.ts:139-149`: `getCronSecretConfig()` falls back to `ADMIN_SECRET`
   - `src/server/deployment-contract.ts:164-214`: `checkCronSecret()` returns `warn` (not `fail`) on Vercel when falling back to `ADMIN_SECRET`
 - **Detail**: The `cronSecretConfigured` field in the preflight payload reads `process.env.CRON_SECRET` directly instead of using `getCronSecret()`. This is intentional: `cronSecretConfigured` is an explicit-configuration signal for operators and preflight UI. It should not be used as the canonical source-of-truth for effective cron authentication, which may come from `CRON_SECRET` or `ADMIN_SECRET` depending on runtime/contract behavior. The deployment contract's `checkCronSecret()` separately handles the full resolution, returning `warn` on Vercel when only `ADMIN_SECRET` is available.
 - **Impact**: None. The deployment contract check for `cron-secret` correctly distinguishes the fallback source and reports `warn` (not `fail`) when `ADMIN_SECRET` is the effective auth source. The `cronSecretConfigured` field is a narrow explicit-config indicator, not a verdict on whether cron auth works.
@@ -167,14 +167,12 @@ Files audited:
 - **Impact**: Low -- this is a solo-developer tool, not a multi-tenant system. The timing-safe comparison and rate limiting mitigate brute-force risk. However, weak passwords on a public-facing admin panel are a preventable risk.
 - **Fix (optional)**: Add a warning log when `ADMIN_SECRET` is shorter than 16 characters. Do not reject short secrets at runtime (would break existing deployments), but consider a preflight warning.
 
-### DO-4 (P3/WARN) -- Terminal tab env vars missing from docs
+### DO-4 (P3/RESOLVED) -- Terminal tab env vars now documented
 
 - **Evidence**:
-  - `.env.example:72-73`: `NEXT_PUBLIC_SANDBOX_SCOPE` and `NEXT_PUBLIC_SANDBOX_PROJECT` documented
-  - `docs/environment-variables.md`: no mention of these vars
-- **Detail**: These optional vars pre-fill the `npx sandbox connect` command in the Terminal tab. They are in `.env.example` but not in the formal env var docs.
-- **Impact**: Minor. Operators needing team/project scoping for the Terminal tab won't find them in the reference docs.
-- **Fix**: Add a "Terminal" section to `docs/environment-variables.md` with these two vars.
+  - `.env.example:71-73`: `NEXT_PUBLIC_SANDBOX_SCOPE` and `NEXT_PUBLIC_SANDBOX_PROJECT` documented
+  - `docs/environment-variables.md`: "Terminal tab helpers" section added with both vars
+- **Status**: RESOLVED. `docs/environment-variables.md` now has a dedicated "Terminal tab helpers" section documenting both variables.
 
 ### DO-6 (P2/RESOLVED) -- Cron-auth guidance is now consistent across all operator-facing surfaces
 
@@ -184,7 +182,7 @@ Files audited:
   - `CLAUDE.md:549`: "Recommended on Vercel … The deployment contract **warns** (not fails) on Vercel when only `ADMIN_SECRET` is available" — **matches contract**
   - `README.md:55-62`: scoped to "For the default deploy-button path (`VERCEL_AUTH_MODE=admin-secret`)" and describes fallback — **matches contract**
   - `docs/environment-variables.md:26`: "When unset, the runtime falls back to `ADMIN_SECRET`" — **matches contract**
-  - `.env.example:55-58`: "Recommended on deployed environments. When unset, /api/cron/watchdog falls back to ADMIN_SECRET" — **matches contract**
+  - `.env.example:55-58`: "Optional on Vercel. /api/cron/watchdog uses `CRON_SECRET` when set; otherwise it falls back to `ADMIN_SECRET`" — **matches contract**
   - `src/server/deploy-preflight.ts:487-489`: `cronSecretConfigured` reads `process.env.CRON_SECRET` directly — intentional explicit-config indicator (see DO-2), not a verdict on effective auth
 - **Status**: RESOLVED. All five operator-facing surfaces (`CLAUDE.md`, `README.md`, `docs/environment-variables.md`, `.env.example`, and the deployment contract itself) now agree that `CRON_SECRET` is recommended but not required on Vercel when `ADMIN_SECRET` is set.
 
@@ -192,14 +190,10 @@ Files audited:
 
 ## Recommended Fixes (ranked by severity)
 
-1. **P2 (DO-1)** -- Update `docs/environment-variables.md:44`, `CONTRIBUTING.md:150`, and `CLAUDE.md:553` to reflect that the fallback is a pinned known-good version (currently `openclaw@2026.3.28`), not `openclaw@latest`. This is a documentation accuracy issue that could confuse operators before Monday launch.
-
-2. **P3 (DO-3)** -- Consider adding a preflight warning when `ADMIN_SECRET` is shorter than 16 characters. Not a launch blocker.
-
-3. **P3 (DO-4)** -- Add `NEXT_PUBLIC_SANDBOX_SCOPE` and `NEXT_PUBLIC_SANDBOX_PROJECT` to `docs/environment-variables.md`. Post-launch acceptable.
+1. **P3 (DO-3)** -- Consider adding a preflight warning when `ADMIN_SECRET` is shorter than 16 characters. Not a launch blocker.
 
 ---
 
 ## Release Recommendation
 
-**No launch blockers.** The deploy-button flow is correct and complete. Auth is secure. Preflight and launch verification catch all required config. The one P2 issue (DO-1) is a documentation accuracy gap -- the runtime behavior is actually better than what the docs describe (pinned fallback is more stable than `@latest`). Fixing DO-1 before launch is recommended to avoid operator confusion but is not functionally blocking.
+**No launch blockers.** The deploy-button flow is correct and complete. Auth is secure. Preflight and launch verification catch all required config. DO-1 (package spec fallback docs), DO-2 (cron config field scope), DO-4 (terminal tab env vars), DO-5 (deploy button copy), and DO-6 (cron-auth consistency) are all resolved. The only remaining open item is DO-3 (admin secret minimum length), which is a low-priority hardening improvement.
