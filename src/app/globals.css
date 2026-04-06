@@ -60,6 +60,102 @@
   --font-mono: var(--font-geist-mono), ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
   --radius: 8px;
   --shadow: 0 0 0 1px var(--border);
+
+  /* Extended palette (button states, accents) */
+  --hover-bg: #222;
+  --primary-hover: #e8e8e8;
+  --success-emphasis: #0a7c42;
+  --success-emphasis-hover: #0d9950;
+  --danger-emphasis: #7f1d1d;
+  --danger-text: #ef4444;
+  --danger-text-hover: #fca5a5;
+  --danger-light: #f9a8ab;
+  --selection-bg: rgba(255, 255, 255, 0.16);
+  --subtle-bg: rgba(255, 255, 255, 0.04);
+  --subtle-bg-hover: rgba(255, 255, 255, 0.06);
+  --subtle-border: rgba(255, 255, 255, 0.03);
+  --scrollbar-thumb: #222;
+  --scrollbar-thumb-hover: #333;
+}
+
+/* ────── Light mode ────── */
+
+.light {
+  color-scheme: light;
+
+  /* Surfaces */
+  --background: #fff;
+  --background-elevated: #fafafa;
+  --background-muted: #f5f5f5;
+
+  /* Text */
+  --foreground: #171717;
+  --foreground-muted: #666;
+  --foreground-subtle: #888;
+
+  /* Card / Popover */
+  --card: #fff;
+  --card-foreground: #171717;
+  --popover: #fff;
+  --popover-foreground: #171717;
+
+  /* Brand accent */
+  --primary: #000;
+  --primary-foreground: #fff;
+
+  /* Secondary / Muted / Accent */
+  --secondary: #f5f5f5;
+  --secondary-foreground: #171717;
+  --muted: #f5f5f5;
+  --muted-foreground: #666;
+  --accent: #f5f5f5;
+  --accent-foreground: #171717;
+
+  /* Destructive */
+  --destructive: #e5484d;
+  --destructive-foreground: #fff;
+
+  /* Borders & Focus */
+  --border: rgba(0, 0, 0, 0.08);
+  --border-strong: rgba(0, 0, 0, 0.14);
+  --input: #e5e5e5;
+  --ring: #666;
+
+  /* Semantic status (darker for light bg contrast) */
+  --success: #1a7f37;
+  --success-surface: rgba(26, 127, 55, 0.08);
+  --warning: #bf8700;
+  --warning-surface: rgba(191, 135, 0, 0.08);
+  --error: #cf222e;
+  --danger: #cf222e;
+  --danger-surface: rgba(207, 34, 46, 0.08);
+  --info: #0550ae;
+  --info-surface: rgba(5, 80, 174, 0.08);
+
+  /* Channel brand colors (unchanged) */
+  --discord: #5865f2;
+  --telegram: #2aabee;
+  --slack: #611f69;
+
+  /* Elevation */
+  --card-border: #e5e5e5;
+  --shadow: 0 0 0 1px var(--border);
+
+  /* Extended palette */
+  --hover-bg: #f0f0f0;
+  --primary-hover: #333;
+  --success-emphasis: #1a7f37;
+  --success-emphasis-hover: #1a9741;
+  --danger-emphasis: #fee2e2;
+  --danger-text: #cf222e;
+  --danger-text-hover: #a40e26;
+  --danger-light: #cf222e;
+  --selection-bg: rgba(0, 0, 0, 0.12);
+  --subtle-bg: rgba(0, 0, 0, 0.03);
+  --subtle-bg-hover: rgba(0, 0, 0, 0.06);
+  --subtle-border: rgba(0, 0, 0, 0.04);
+  --scrollbar-thumb: #d4d4d4;
+  --scrollbar-thumb-hover: #a3a3a3;
 }
 
 * {
@@ -97,7 +193,7 @@ textarea {
 }
 
 ::selection {
-  background: rgba(255, 255, 255, 0.16);
+  background: var(--selection-bg);
   color: var(--foreground);
 }
 
@@ -273,7 +369,7 @@ h3 {
 .button:hover:not(:disabled),
 .pill:hover:not(:disabled) {
   border-color: var(--border-strong);
-  background: #222;
+  background: var(--hover-bg);
 }
 
 .button:focus-visible,
@@ -287,14 +383,14 @@ a[href]:focus-visible {
 }
 
 .button.primary {
-  border-color: #fff;
-  background: #fff;
-  color: #000;
+  border-color: var(--primary);
+  background: var(--primary);
+  color: var(--primary-foreground);
 }
 
 .button.primary:hover:not(:disabled) {
-  background: #e8e8e8;
-  border-color: #e8e8e8;
+  background: var(--primary-hover);
+  border-color: var(--primary-hover);
 }
 
 .button.secondary,
@@ -304,36 +400,47 @@ a[href]:focus-visible {
 }
 
 .button.success {
-  background: #0a7c42;
-  border-color: #0a7c42;
+  background: var(--success-emphasis);
+  border-color: var(--success-emphasis);
   color: #fff;
 }
 
 .button.success:hover:not(:disabled) {
-  background: #0d9950;
-  border-color: #0d9950;
+  background: var(--success-emphasis-hover);
+  border-color: var(--success-emphasis-hover);
 }
 
 .button.danger {
   background: transparent;
-  border-color: #7f1d1d;
-  color: #ef4444;
+  border-color: var(--danger-emphasis);
+  color: var(--danger-text);
 }
 
 .button.danger:hover:not(:disabled) {
-  background: #7f1d1d;
-  color: #fca5a5;
+  background: var(--danger-emphasis);
+  color: var(--danger-text-hover);
 }
 
 .button.secondary:hover:not(:disabled),
 .button.accent:hover:not(:disabled),
 .button.ghost:hover:not(:disabled) {
-  background: #222;
+  background: var(--hover-bg);
 }
 
 .button.ghost {
   background: transparent;
   color: var(--foreground-muted);
+}
+
+.theme-toggle {
+  width: 32px;
+  height: 32px;
+  min-width: 32px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
 }
 
 /* ────── Metrics ────── */
@@ -425,9 +532,9 @@ a[href]:focus-visible {
 }
 
 .pill.active {
-  border-color: #fff;
-  background: #fff;
-  color: #000;
+  border-color: var(--primary);
+  background: var(--primary);
+  color: var(--primary-foreground);
 }
 
 /* ────── Form fields ────── */
@@ -648,9 +755,9 @@ a[href]:focus-visible {
 }
 
 .event-category-chip.active {
-  border-color: #fff;
-  background: #fff;
-  color: #000;
+  border-color: var(--primary);
+  background: var(--primary);
+  color: var(--primary-foreground);
 }
 
 .event-pagination {
@@ -752,7 +859,7 @@ a[href]:focus-visible {
   margin: 8px 0 0;
   padding: 6px 12px;
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--subtle-bg);
   color: var(--muted);
   font-size: 12px;
   line-height: 1.5;
@@ -795,7 +902,7 @@ a[href]:focus-visible {
 .policy-meta code {
   font-family: var(--font-mono);
   font-size: 11px;
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--subtle-bg-hover);
   padding: 1px 5px;
   border-radius: 4px;
 }
@@ -866,7 +973,7 @@ a[href]:focus-visible {
   padding: 10px 12px;
   border: none;
   background: transparent;
-  color: #f9a8ab;
+  color: var(--danger-light);
   font-size: 13px;
   font-weight: 500;
   cursor: pointer;
@@ -1038,7 +1145,7 @@ a[href]:focus-visible {
   border: 1px solid rgba(229, 72, 77, 0.2);
   border-radius: 8px;
   background: var(--danger-surface);
-  color: #f9a8ab;
+  color: var(--danger-light);
   font-size: 13px;
 }
 
@@ -1317,7 +1424,7 @@ a[href]:focus-visible {
 .channel-pill.bad {
   border-color: rgba(229, 72, 77, 0.2);
   background: var(--danger-surface);
-  color: #f9a8ab;
+  color: var(--danger-light);
 }
 
 .inline-code {
@@ -1343,7 +1450,7 @@ a[href]:focus-visible {
 
 .check-row input {
   margin: 0;
-  accent-color: #fff;
+  accent-color: var(--primary);
 }
 
 /* ────── Channel wizard ────── */
@@ -2122,7 +2229,7 @@ a[href]:focus-visible {
   align-items: baseline;
   gap: 10px;
   padding: 4px 12px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+  border-bottom: 1px solid var(--subtle-border);
   font-family: var(--font-geist-mono), ui-monospace, monospace;
   font-size: 12px;
   line-height: 1.6;
@@ -2205,9 +2312,9 @@ a[href]:focus-visible {
 }
 
 .logs-source-pill.active {
-  border-color: #fff;
-  background: #fff;
-  color: #000;
+  border-color: var(--primary);
+  background: var(--primary);
+  color: var(--primary-foreground);
 }
 
 .log-copy-btn {
@@ -2456,26 +2563,31 @@ a[href]:focus-visible {
 
 /* ────── Scrollbar ────── */
 
-.dark {
-  scrollbar-color: #222 transparent;
+.dark,
+.light {
+  scrollbar-color: var(--scrollbar-thumb) transparent;
 }
 
-.dark ::-webkit-scrollbar {
+.dark ::-webkit-scrollbar,
+.light ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
 }
 
-.dark ::-webkit-scrollbar-track {
+.dark ::-webkit-scrollbar-track,
+.light ::-webkit-scrollbar-track {
   background: transparent;
 }
 
-.dark ::-webkit-scrollbar-thumb {
-  background: #222;
+.dark ::-webkit-scrollbar-thumb,
+.light ::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
   border-radius: 999px;
 }
 
-.dark ::-webkit-scrollbar-thumb:hover {
-  background: #333;
+.dark ::-webkit-scrollbar-thumb:hover,
+.light ::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
 }
 
 html body[data-scroll-locked] {
@@ -2611,7 +2723,7 @@ html body[data-scroll-locked] {
 
 .status-setup-step[data-state="current"],
 .status-setup-step[data-state="failed"] {
-  border-color: var(--border-strong, rgba(255, 255, 255, 0.24));
+  border-color: var(--border-strong);
   background: var(--background-muted);
   color: var(--foreground);
 }

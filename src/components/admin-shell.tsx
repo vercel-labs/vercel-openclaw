@@ -5,6 +5,7 @@ import { useCallback, startTransition, useEffect, useMemo, useState } from "reac
 import { toast } from "sonner";
 import { Tabs } from "@/components/ui/tabs";
 import { BrandIcon } from "@/components/ui/brand-icon";
+import { ThemeToggle } from "@/components/ui/theme-toggle";
 import { StatusPanel } from "@/components/panels/status-panel";
 import { FirewallPanel } from "@/components/panels/firewall-panel";
 import { ChannelsPanel } from "@/components/panels/channels-panel";
@@ -359,11 +360,15 @@ export function AdminShell({
   }, [ingestFirewallLearning, refreshPassive, shouldPollFirewallIngest]);
 
   useEffect(() => {
+    // Don't poll when not authenticated (status is null = login screen).
+    // Polling without a session triggers 401 → "Session expired" toast.
+    if (!status) return;
+
     startTransition(() => {
       void pollStatus();
     });
 
-    const pollIntervalMs = status && TRANSITIONAL_STATUSES.has(status.status)
+    const pollIntervalMs = TRANSITIONAL_STATUSES.has(status.status)
       ? 2000
       : 5000;
     const interval = window.setInterval(() => {
@@ -488,11 +493,14 @@ export function AdminShell({
             <BrandIcon size={40} />
             VClaw Sandbox
           </h1>
-          <div className="auth-chip">
-            <span>
-              {status.user?.name ?? status.user?.email ?? "Protected viewer"}
-            </span>
-            <a href="/api/auth/signout">Sign out</a>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <ThemeToggle />
+            <div className="auth-chip">
+              <span>
+                {status.user?.name ?? status.user?.email ?? "Protected viewer"}
+              </span>
+              <a href="/api/auth/signout">Sign out</a>
+            </div>
           </div>
         </div>
       </section>

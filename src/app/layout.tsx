@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { GeistSans } from "geist/font/sans";
 import { GeistMono } from "geist/font/mono";
 import { Toaster } from "sonner";
+import { ThemeProvider } from "@/components/theme-provider";
 
 import "./globals.css";
 
@@ -19,11 +20,14 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={`dark ${GeistSans.variable} ${GeistMono.variable}`}
+      className={`${GeistSans.variable} ${GeistMono.variable}`}
+      suppressHydrationWarning
     >
       <body className="app-body">
-        {children}
-        <Toaster theme="dark" position="bottom-right" richColors />
+        <ThemeProvider>
+          {children}
+          <Toaster theme="system" position="bottom-right" richColors />
+        </ThemeProvider>
       </body>
     </html>
   );
