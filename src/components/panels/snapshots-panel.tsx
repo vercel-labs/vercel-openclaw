@@ -94,7 +94,6 @@ export function SnapshotsPanel({
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ reason: "manual" }),
       label: "Create snapshot",
-      successMessage: "Snapshot created",
     });
     await fetchSnapshots();
   };
@@ -113,7 +112,6 @@ export function SnapshotsPanel({
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ snapshotId }),
       label: `Restore ${snapshotId.slice(0, 12)}...`,
-      successMessage: "Restore initiated",
     });
   };
 
@@ -131,7 +129,6 @@ export function SnapshotsPanel({
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ snapshotId }),
       label: `Delete ${snapshotId.slice(0, 12)}...`,
-      successMessage: "Snapshot deleted",
     });
     if (result.ok) {
       await fetchSnapshots();
@@ -150,7 +147,6 @@ export function SnapshotsPanel({
 
     const success = await runAction("/api/admin/reset", {
       label: "Reset Sandbox",
-      successMessage: "Sandbox reset initiated",
       method: "POST",
     });
     if (success) {

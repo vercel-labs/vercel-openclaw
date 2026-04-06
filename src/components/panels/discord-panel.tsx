@@ -94,7 +94,6 @@ export function DiscordPanel({
 
     const result = await requestJson("/api/channels/discord", {
       label: getChannelActionLabel("discord", editing ? "update" : "connect"),
-      successMessage: editing ? "Discord credentials updated" : "Discord connected",
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -118,7 +117,6 @@ export function DiscordPanel({
     setPanelError(null);
     await runAction("/api/channels/discord/register-command", {
       label: "Register Discord command",
-      successMessage: "Discord command registered",
       method: "POST",
     });
   }
@@ -136,7 +134,6 @@ export function DiscordPanel({
     setPanelError(null);
     const success = await runAction("/api/channels/discord", {
       label: getChannelActionLabel("discord", "disconnect"),
-      successMessage: "Discord disconnected",
       method: "DELETE",
     });
     if (success) {

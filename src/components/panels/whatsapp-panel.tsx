@@ -144,7 +144,6 @@ export function WhatsAppPanel({
     setPanelError(null);
     const result = await requestJson("/api/channels/whatsapp", {
       label: getChannelActionLabel("whatsapp", editing ? "update" : "connect"),
-      successMessage: editing ? "WhatsApp credentials updated" : "WhatsApp connected",
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -179,7 +178,6 @@ export function WhatsAppPanel({
     setPanelError(null);
     const success = await runAction("/api/channels/whatsapp", {
       label: getChannelActionLabel("whatsapp", "disconnect"),
-      successMessage: "WhatsApp disconnected",
       method: "DELETE",
     });
     if (success) {

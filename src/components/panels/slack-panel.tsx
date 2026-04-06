@@ -159,7 +159,6 @@ export function SlackPanel({
       "/api/channels/slack/test",
       {
         label: "Test Slack token",
-        successMessage: "Slack token verified",
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ botToken: botToken.trim() }),
@@ -179,7 +178,6 @@ export function SlackPanel({
       "/api/channels/slack",
       {
         label: getChannelActionLabel("slack", editing ? "update" : "connect"),
-        successMessage: editing ? "Slack credentials updated" : "Slack connected",
         method: "PUT",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -208,7 +206,6 @@ export function SlackPanel({
       "/api/channels/slack/manifest",
       {
         label: "Create Slack app",
-        successMessage: "Slack app manifest opened",
         method: "GET",
         refreshAfter: false,
       },
@@ -231,7 +228,6 @@ export function SlackPanel({
     setPanelError(null);
     const success = await runAction("/api/channels/slack", {
       label: getChannelActionLabel("slack", "disconnect"),
-      successMessage: "Slack disconnected",
       method: "DELETE",
     });
     if (success) {

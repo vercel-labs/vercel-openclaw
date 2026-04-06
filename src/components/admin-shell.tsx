@@ -101,7 +101,6 @@ function extractLiveConfigSync(
 
 export type RequestJsonInput = RequestInit & {
   label: string;
-  successMessage?: string;
   refreshAfter?: boolean;
   toastSuccess?: boolean;
   toastError?: boolean;
@@ -251,7 +250,7 @@ export async function requestJsonCore<T>(
         deps.toastError(syncMessage);
       }
     } else if (shouldToastSuccess) {
-      deps.toastSuccess(input.successMessage ?? input.label);
+      deps.toastSuccess(input.label);
     }
     return result;
   } catch (nextError) {
@@ -287,17 +286,12 @@ export async function requestJsonCore<T>(
   }
 }
 
-const CHECK_HEALTH_PENDING_ACTION = "Check health";
 const TRANSITIONAL_STATUSES = new Set([
   "creating",
   "setup",
   "booting",
   "restoring",
 ]);
-
-export function getStatusRequestPath(health = false): string {
-  return health ? "/api/status?health=1" : "/api/status";
-}
 
 export function AdminShell({
   initialStatus = null,
@@ -318,17 +312,10 @@ export function AdminShell({
     [],
   );
 
-  const fetchStatus = useCallback(async ({
-    health = false,
-    userInitiated = false,
-  }: {
-    health?: boolean;
-    userInitiated?: boolean;
-  } = {}) => {
+  const fetchStatus = useCallback(async () => {
     const result = await fetchAdminJsonCore<StatusPayload>(
-      getStatusRequestPath(health),
+      "/api/status",
       readDeps,
-      { toastError: userInitiated },
     );
     if (result.ok) {
       setStatus(result.data);
@@ -337,17 +324,6 @@ export function AdminShell({
 
   const refreshPassive = useCallback(async () => {
     await fetchStatus();
-  }, [fetchStatus]);
-
-  const checkHealth = useCallback(async () => {
-    setPendingAction(CHECK_HEALTH_PENDING_ACTION);
-    try {
-      await fetchStatus({ health: true, userInitiated: true });
-    } finally {
-      setPendingAction((current) =>
-        current === CHECK_HEALTH_PENDING_ACTION ? null : current,
-      );
-    }
   }, [fetchStatus]);
 
   const ingestFirewallLearning = useCallback(async () => {
@@ -401,20 +377,20 @@ export function AdminShell({
 
   async function requestJson<T>(
     action: string,
-    input: RequestInit & { label: string; successMessage?: string; refreshAfter?: boolean },
+    input: RequestInit & { label: string; refreshAfter?: boolean },
   ): Promise<ActionResult<T>> {
-    return requestJsonCore<T>(action, input, {
+    return requestJsonCore<T>(action, { ...input, toastSuccess: false }, {
       setPendingAction,
       setStatus: () => setStatus(null),
       refreshPassive,
-      toastSuccess: (msg) => toast.success(msg),
+      toastSuccess: () => {},
       toastError: (msg) => toast.error(msg),
     });
   }
 
   async function runAction(
     action: string,
-    input: RequestInit & { label: string; successMessage?: string },
+    input: RequestInit & { label: string },
   ): Promise<boolean> {
     const result = await requestJson(action, input);
     return result.ok;
@@ -532,7 +508,6 @@ export function AdminShell({
                     busy={busy}
                     pendingAction={pendingAction}
                     runAction={runAction}
-                    checkHealth={checkHealth}
                   />
                 </section>
               )}

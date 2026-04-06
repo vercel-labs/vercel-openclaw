@@ -18,7 +18,6 @@ type StatusPanelProps = {
   busy: boolean;
   pendingAction: string | null;
   runAction: RunAction;
-  checkHealth: () => Promise<void>;
 };
 
 const NEEDS_RESTART = new Set<SingleStatus>(["error", "stopped", "uninitialized"]);
@@ -218,15 +217,11 @@ function getRestoreReadiness(restoreTarget: StatusPayload["restoreTarget"]): Sta
   if (!restoreTarget.attestation) return null;
   const att = restoreTarget.attestation;
   if (att.reusable) return { label: "Restore readiness", value: "Pre-warmed" };
-  if (att.needsPrepare) {
-    return {
-      label: "Restore readiness",
-      value: "Needs preparation",
-      detail: att.reasons.join("; "),
-      warn: true,
-    };
-  }
-  return null;
+  return {
+    label: "Restore readiness",
+    value: "Will sync on start",
+    detail: "Config and assets are applied automatically during restore",
+  };
 }
 
 function getStoppedFacts(status: StatusPayload): StatusFact[] {
@@ -330,7 +325,6 @@ export function StatusPanel({
   busy,
   pendingAction,
   runAction,
-  checkHealth,
 }: StatusPanelProps) {
   const { confirm: confirmStop, dialogProps: stopDialogProps } = useConfirm();
 
@@ -351,14 +345,6 @@ export function StatusPanel({
   function handleRestart(): void {
     void runAction("/api/admin/ensure", {
       label: primaryActionLabel,
-      successMessage:
-        lifecycleStatus === "uninitialized"
-          ? "Sandbox creation initiated"
-          : lifecycleStatus === "stopped"
-            ? "Sandbox start initiated"
-            : hasSnapshot
-              ? "Sandbox restore initiated"
-              : "Fresh sandbox creation initiated",
       method: "POST",
     });
   }
@@ -374,7 +360,6 @@ export function StatusPanel({
     if (!ok) return;
     void runAction("/api/admin/stop", {
       label: "Stop sandbox",
-      successMessage: "Sandbox stopped",
       method: "POST",
     });
   }
@@ -390,7 +375,6 @@ export function StatusPanel({
   const isLifecycleTransition = IS_TRANSITIONAL.has(lifecycleStatus);
   const isTransitional = isLifecycleTransition || isStopping;
   const errorCopy = status.lastError ? friendlyError(status.lastError) : null;
-  const isCheckingHealth = pendingAction === "Check health";
   const setupProgress = status.setupProgress;
   const showSetupProgress = Boolean(
     setupProgress && (isLifecycleTransition || setupProgress.phase === "failed"),
@@ -485,14 +469,6 @@ export function StatusPanel({
         )}
         {showRunningActions && (
           <>
-            <button
-              className="button ghost"
-              disabled={busy || isCheckingHealth}
-              onClick={() => void checkHealth()}
-              type="button"
-            >
-              {isCheckingHealth ? "Checking health\u2026" : "Check health"}
-            </button>
             <button
               className="button danger"
               disabled={busy}

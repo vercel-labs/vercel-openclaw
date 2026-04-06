@@ -77,7 +77,6 @@ export function TelegramPanel({
       "/api/channels/telegram/preview",
       {
         label: "Preview Telegram bot",
-        successMessage: "Telegram bot previewed",
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ botToken: botToken.trim() }),
@@ -94,7 +93,6 @@ export function TelegramPanel({
     setPanelError(null);
     const result = await requestJson("/api/channels/telegram", {
       label: getChannelActionLabel("telegram", editing ? "update" : "connect"),
-      successMessage: editing ? "Telegram credentials updated" : "Telegram connected",
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ botToken: botToken.trim() }),
@@ -122,7 +120,6 @@ export function TelegramPanel({
     setPanelError(null);
     const success = await runAction("/api/channels/telegram", {
       label: getChannelActionLabel("telegram", "disconnect"),
-      successMessage: "Telegram disconnected",
       method: "DELETE",
     });
     if (success) {
@@ -138,7 +135,6 @@ export function TelegramPanel({
     setSyncingCommands(true);
     await runAction("/api/channels/telegram/sync-commands", {
       label: "Sync Telegram commands",
-      successMessage: "Telegram commands synced",
       method: "POST",
     });
     setSyncingCommands(false);

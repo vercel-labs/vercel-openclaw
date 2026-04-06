@@ -402,12 +402,11 @@ describe("requestJsonCore live-config-sync header detection", () => {
       });
   }
 
-  test("degraded sync header suppresses success toast and shows warning toast", async () => {
+  test("degraded sync header shows warning toast", async () => {
     const toasts: { type: string; message: string }[] = [];
     let refreshCalled = false;
     const result = await requestJsonCore("/api/channels/slack", {
       label: "Save Slack",
-      successMessage: "Slack connected",
       method: "PUT",
     }, makeDeps({
       fetchFn: mockFetchWithHeaders(200, { configured: true }, {
@@ -426,11 +425,10 @@ describe("requestJsonCore live-config-sync header detection", () => {
     assert.ok(refreshCalled, "status must be refreshed on degraded sync");
   });
 
-  test("failed sync header suppresses success toast and shows error toast", async () => {
+  test("failed sync header shows error toast", async () => {
     const toasts: { type: string; message: string }[] = [];
     const result = await requestJsonCore("/api/channels/slack", {
       label: "Save Slack",
-      successMessage: "Slack connected",
       method: "PUT",
     }, makeDeps({
       fetchFn: mockFetchWithHeaders(200, { configured: true }, {
@@ -447,11 +445,11 @@ describe("requestJsonCore live-config-sync header detection", () => {
     assert.equal(toasts[0].message, "Config sync failed.");
   });
 
-  test("applied sync header shows normal success toast", async () => {
+  test("applied sync header does not toast", async () => {
     const toasts: { type: string; message: string }[] = [];
     const result = await requestJsonCore("/api/channels/slack", {
       label: "Save Slack",
-      successMessage: "Slack connected",
+      toastSuccess: false,
       method: "PUT",
     }, makeDeps({
       fetchFn: mockFetchWithHeaders(200, { configured: true }, {
@@ -462,16 +460,14 @@ describe("requestJsonCore live-config-sync header detection", () => {
     }));
 
     assert.ok(result.ok);
-    assert.equal(toasts.length, 1, "exactly one toast");
-    assert.equal(toasts[0].type, "success");
-    assert.equal(toasts[0].message, "Slack connected");
+    assert.deepEqual(toasts, [], "no toast when success toasts suppressed");
   });
 
-  test("skipped sync header shows normal success toast", async () => {
+  test("skipped sync header does not toast", async () => {
     const toasts: { type: string; message: string }[] = [];
     const result = await requestJsonCore("/api/channels/slack", {
       label: "Save Slack",
-      successMessage: "Slack connected",
+      toastSuccess: false,
       method: "PUT",
     }, makeDeps({
       fetchFn: mockFetchWithHeaders(200, { configured: true }, {
@@ -482,15 +478,14 @@ describe("requestJsonCore live-config-sync header detection", () => {
     }));
 
     assert.ok(result.ok);
-    assert.equal(toasts.length, 1, "exactly one toast");
-    assert.equal(toasts[0].type, "success");
-    assert.equal(toasts[0].message, "Slack connected");
+    assert.deepEqual(toasts, [], "no toast when success toasts suppressed");
   });
 
-  test("no sync header shows normal success toast", async () => {
+  test("no sync header does not toast when success suppressed", async () => {
     const toasts: { type: string; message: string }[] = [];
     const result = await requestJsonCore("/api/status", {
       label: "Check status",
+      toastSuccess: false,
       method: "GET",
     }, makeDeps({
       fetchFn: mockFetch(200, { ok: true }),
@@ -499,8 +494,7 @@ describe("requestJsonCore live-config-sync header detection", () => {
     }));
 
     assert.ok(result.ok);
-    assert.equal(toasts.length, 1, "exactly one toast");
-    assert.equal(toasts[0].type, "success");
+    assert.deepEqual(toasts, [], "no toast when success toasts suppressed");
   });
 
   test("degraded liveConfigSync in body is preserved on meta and emits live-config-warning event", async () => {
@@ -514,7 +508,6 @@ describe("requestJsonCore live-config-sync header detection", () => {
       };
       const result = await requestJsonCore("/api/channels/slack", {
         label: "Save Slack",
-        successMessage: "Slack connected",
         method: "PUT",
       }, makeDeps({
         fetchFn: mockFetchWithHeaders(200, { configured: true, liveConfigSync: syncPayload }, {

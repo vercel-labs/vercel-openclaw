@@ -232,7 +232,7 @@ export function FirewallPanel({
   async function approveMultipleDomains(domains: string[]): Promise<void> {
     await runFirewallMutation("/api/firewall/allowlist", {
       label: `Approve ${domains.length} domains`,
-      successMessage: `${domains.length} domains approved`,
+
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ domains }),
@@ -247,7 +247,6 @@ export function FirewallPanel({
     try {
       const result = await requestJson<BlockTestResult>("/api/firewall/test", {
         label: "Test domain",
-        successMessage: "Domain tested",
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ domain }),
@@ -270,7 +269,6 @@ export function FirewallPanel({
 
     const ok = await runFirewallMutation("/api/firewall/allowlist", {
       label: "Approve domains",
-      successMessage: "Domains approved",
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ domains }),
@@ -283,7 +281,6 @@ export function FirewallPanel({
   async function approveSingleDomain(domain: string): Promise<void> {
     await runFirewallMutation("/api/firewall/allowlist", {
       label: `Approve ${domain}`,
-      successMessage: `${domain} approved`,
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ domains: [domain] }),
@@ -301,7 +298,6 @@ export function FirewallPanel({
     if (!ok) return;
     await runFirewallMutation("/api/firewall/learned", {
       label: `Dismiss ${domain}`,
-      successMessage: `${domain} dismissed`,
       method: "DELETE",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ domains: [domain] }),
@@ -338,7 +334,6 @@ export function FirewallPanel({
                   onClick={() =>
                     void runFirewallMutation("/api/firewall", {
                       label: `Set mode ${mode}`,
-                      successMessage: `Firewall set to ${mode}`,
                       method: "PUT",
                       headers: { "content-type": "application/json" },
                       body: JSON.stringify({ mode }),
@@ -528,7 +523,6 @@ export function FirewallPanel({
                     if (!ok) return;
                     void runFirewallMutation("/api/firewall/promote", {
                       label: "Promote learned domains",
-                      successMessage: "Learned domains promoted to enforcing",
                       method: "POST",
                     });
                   })()
@@ -564,7 +558,6 @@ export function FirewallPanel({
                             if (!ok) return;
                             void runFirewallMutation("/api/firewall/allowlist", {
                               label: `Remove ${domain}`,
-                              successMessage: `${domain} removed`,
                               method: "DELETE",
                               headers: { "content-type": "application/json" },
                               body: JSON.stringify({ domains: [domain] }),
