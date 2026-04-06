@@ -198,12 +198,6 @@ export function SnapshotsPanel({
 
       {/* Snapshot list — fixed min-height avoids CLS when count changes */}
       <div className="snapshot-list-container">
-        {loading && snapshots.length === 0 && (
-          <div className="snapshot-loading">
-            <div className="skeleton-line" />
-            <div className="skeleton-line" />
-          </div>
-        )}
         {!loading && snapshots.length === 0 && (
           <p className="empty-token">No snapshots in history yet.</p>
         )}
