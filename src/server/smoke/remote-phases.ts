@@ -5,7 +5,7 @@
  * a structured PhaseResult. No external dependencies — plain fetch().
  */
 
-import { authHeaders, getAuthSource } from "./remote-auth.js";
+import { authHeaders, getAuthSource as _getAuthSource } from "./remote-auth.js";
 import {
   buildSlackSmokePayload,
   buildDiscordSmokePayload,
@@ -1269,15 +1269,15 @@ export async function restoreFromSnapshot(
 // ---------------------------------------------------------------------------
 
 const HEAL_GATEWAY_TIMEOUT_MS = 60_000;
-const HEAL_POST_KILL_SETTLE_MS = 3_000;
-const HEAL_DEAD_CHECK_TIMEOUT_MS = 10_000;
+const _HEAL_POST_KILL_SETTLE_MS = 3_000;
+const _HEAL_DEAD_CHECK_TIMEOUT_MS = 10_000;
 
 /**
  * Run a command on the sandbox via the admin SSH endpoint.
  * The SSH endpoint is auth-gated (admin secret or session cookie)
  * and only reachable with valid credentials.
  */
-async function sshCommand(
+async function _sshCommand(
   baseUrl: string,
   command: string,
   timeoutMs: number,

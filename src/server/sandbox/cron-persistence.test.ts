@@ -30,7 +30,6 @@ import {
   CRON_NEXT_WAKE_KEY,
 } from "@/server/sandbox/lifecycle";
 import { getStore, getInitializedMeta } from "@/server/store/store";
-import { OPENCLAW_GATEWAY_RESTART_SCRIPT_PATH } from "@/server/openclaw/config";
 import type { StoredCronRecord } from "@/shared/types";
 
 // ---------------------------------------------------------------------------

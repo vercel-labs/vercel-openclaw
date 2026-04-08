@@ -9,7 +9,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { ChannelReply, ReplyMedia } from "@/server/channels/core/types";
+import type { ChannelReply } from "@/server/channels/core/types";
 import {
   inferMimeTypeFromFilename,
   isSafeFilename,

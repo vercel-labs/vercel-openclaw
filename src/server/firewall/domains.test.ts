@@ -356,7 +356,7 @@ test("groupByRegistrableDomain handles amazonaws.com as public suffix", () => {
   const groups = groupByRegistrableDomain(domains);
 
   // s3.amazonaws.com is itself a multi-label suffix, so those two group together
-  const s3Group = groups.find((g) => g.registrableDomain === "us-east-1.s3.amazonaws.com" || g.registrableDomain === "us-west-2.s3.amazonaws.com");
+  const _s3Group = groups.find((g) => g.registrableDomain === "us-east-1.s3.amazonaws.com" || g.registrableDomain === "us-west-2.s3.amazonaws.com");
   // ec2.amazonaws.com should be its own group
   const ec2Group = groups.find((g) => g.registrableDomain === "ec2.amazonaws.com");
   assert.ok(ec2Group);

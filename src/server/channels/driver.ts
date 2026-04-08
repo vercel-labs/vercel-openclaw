@@ -1,5 +1,4 @@
 import * as path from "node:path";
-import type { ChannelName } from "@/shared/channels";
 import type {
   ChannelReply,
   ReplyBinarySource,
@@ -338,4 +337,3 @@ export async function resolveSandboxMedia(
     media: resolvedMedia ?? reply.media,
   };
 }
-

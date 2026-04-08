@@ -11,7 +11,6 @@ import test from "node:test";
 import {
   getSandboxController,
   _setSandboxControllerForTesting,
-  type SandboxController,
   type SandboxHandle,
   type CommandResult,
   type SnapshotResult,
@@ -127,7 +126,7 @@ test("controller: FakeSandboxHandle.responders override default command result",
   const events: SandboxEvent[] = [];
   const handle = new FakeSandboxHandle("sbx-resp", events);
 
-  handle.responders.push((cmd, args) => {
+  handle.responders.push((cmd, _args) => {
     if (cmd === "node") {
       return { exitCode: 42, output: async () => "custom output" };
     }

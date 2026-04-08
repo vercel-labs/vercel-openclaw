@@ -25,14 +25,12 @@ import {
   getAdminStopRoute,
   callGatewayGet,
   callAdminPost,
-  drainAfterCallbacks,
   buildGetRequest,
   buildPostRequest,
 } from "@/test-utils/route-caller";
 import {
   ensureSandboxRunning,
   probeGatewayReady,
-  stopSandbox,
 } from "@/server/sandbox/lifecycle";
 
 // ---------------------------------------------------------------------------
@@ -41,7 +39,7 @@ import {
 patchNextServerAfter();
 
 // Pre-load route modules (they will use the patched `after`)
-const gatewayRoute = getGatewayRoute();
+const _gatewayRoute = getGatewayRoute();
 const adminEnsureRoute = getAdminEnsureRoute();
 const adminStopRoute = getAdminStopRoute();
 
@@ -96,7 +94,7 @@ test("Auth gate: unauthenticated GET /gateway returns 401 when no bearer token",
     const response = await mod.GET(request, {
       params: Promise.resolve({ path: undefined }),
     });
-    const text = await response.text();
+    const _text = await response.text();
 
     // Should be 401 — no bearer token, no admin session cookie
     assert.equal(response.status, 401);

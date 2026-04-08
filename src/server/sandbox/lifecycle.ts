@@ -22,7 +22,7 @@ import {
 } from "@/server/env";
 import { applyFirewallPolicyToSandbox, toNetworkPolicy } from "@/server/firewall/policy";
 import { logError, logInfo, logWarn } from "@/server/log";
-import { setupOpenClaw, CommandFailedError, waitForGatewayReady } from "@/server/openclaw/bootstrap";
+import { setupOpenClaw, CommandFailedError } from "@/server/openclaw/bootstrap";
 import {
   computeGatewayConfigHash,
   GATEWAY_CONFIG_HASH_VERSION,
@@ -2675,7 +2675,7 @@ async function createAndBootstrapSandboxWithinLifecycleLock(
   }
 }
 
-async function restoreSandboxFromSnapshot(
+async function _restoreSandboxFromSnapshot(
   origin: string,
   options?: { skipPublicReady?: boolean; op?: OperationContext },
 ): Promise<SingleMeta> {
@@ -3443,7 +3443,7 @@ async function syncRestoreAssetsIfNeeded(
 // Snapshot metadata
 // ---------------------------------------------------------------------------
 
-function recordSnapshotMetadata(
+function _recordSnapshotMetadata(
   meta: SingleMeta,
   snapshotId: string,
   reason: string,

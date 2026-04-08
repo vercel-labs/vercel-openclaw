@@ -54,7 +54,6 @@ import {
   OPENCLAW_TELEGRAM_WEBHOOK_PORT,
   computeGatewayConfigHash,
 } from "@/server/openclaw/config";
-import { buildRestoreAssetManifest } from "@/server/openclaw/restore-assets";
 import {
   FakeSandboxController,
   FakeSandboxHandle,
@@ -1185,7 +1184,7 @@ test("restoreSandboxFromSnapshot fails closed when enforcing firewall sync fails
       new Response('<div id="openclaw-app"></div>', { status: 200 });
 
     try {
-      const { handle, meta } = await triggerRestore(fake, {
+      const { handle: _handle, meta } = await triggerRestore(fake, {
         tokenOverride: "test-ai-key",
       });
 
@@ -1381,7 +1380,7 @@ test("persistent resume passes restore env to fast-restore script", async () => 
     });
 
     // Pre-register a resumed handle so the fast-restore path is taken
-    const resumeHandle = preRegisterResumeHandle(fake);
+    const _resumeHandle = preRegisterResumeHandle(fake);
 
     globalThis.fetch = async () =>
       new Response('<div id="openclaw-app"></div>', { status: 200 });

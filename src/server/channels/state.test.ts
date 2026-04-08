@@ -1,8 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { SingleMeta } from "@/shared/types";
-import { createDefaultMeta } from "@/shared/types";
 import type {
   SlackChannelConfig,
   TelegramChannelConfig,

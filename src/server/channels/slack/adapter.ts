@@ -583,13 +583,6 @@ function toNonEmptyString(value: unknown): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
-function toObjectRecord(value: unknown): Record<string, unknown> | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return null;
-  }
-  return value as Record<string, unknown>;
-}
-
 function toReplyImages(reply: ChannelReply): NonNullable<ChannelReply["images"]> {
   return reply.images ?? [];
 }

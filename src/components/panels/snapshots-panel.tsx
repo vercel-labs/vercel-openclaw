@@ -81,7 +81,7 @@ export function SnapshotsPanel({
     } finally {
       setLoading(false);
     }
-  }, [active, readDeps, snapshots.length]);
+  }, [active, readDeps]);
 
   useEffect(() => {
     if (!active) return;

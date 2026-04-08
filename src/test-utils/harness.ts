@@ -27,7 +27,6 @@ import {
   telegramOkResponse,
   discordOkResponse,
   type FakeFetch,
-  type CapturedRequest,
 } from "@/test-utils/fake-fetch";
 import {
   SIGN_IN_ENV,
@@ -37,7 +36,6 @@ import { resetAfterCallbacks } from "@/test-utils/route-caller";
 import {
   FakeSandboxController,
   type SandboxEvent,
-  type SandboxEventKind,
 } from "@/test-utils/fake-sandbox-controller";
 import {
   ensureSandboxRunning,

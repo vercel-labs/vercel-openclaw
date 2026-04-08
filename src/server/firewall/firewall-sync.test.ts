@@ -168,7 +168,7 @@ test("setFirewallMode from learning to disabled syncs allow-all to sandbox", asy
 // ---------------------------------------------------------------------------
 
 test("syncFirewallPolicyIfRunning reports applied:false when sandbox is not running", async () => {
-  await withHarness(async (h) => {
+  await withHarness(async (_h) => {
     // Default meta is uninitialized — no sandbox
     const result = await syncFirewallPolicyIfRunning();
     assert.equal(result.applied, false);

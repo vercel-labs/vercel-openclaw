@@ -20,7 +20,7 @@ import {
 } from "@/server/channels/webhook-urls";
 import { getSlackInstallConfig } from "@/server/channels/slack/install-config";
 import { buildDeploymentContract } from "@/server/deployment-contract";
-import { logDebug, logInfo } from "@/server/log";
+import { logDebug } from "@/server/log";
 import { getInitializedMeta, mutateMeta } from "@/server/store/store";
 
 export type {

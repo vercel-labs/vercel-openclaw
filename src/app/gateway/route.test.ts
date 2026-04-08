@@ -22,9 +22,7 @@ import {
   getGatewayRoute,
   callGatewayGet,
   callGatewayMethod,
-  drainAfterCallbacks,
   buildGetRequest,
-  buildPostRequest,
 } from "@/test-utils/route-caller";
 import {
   ensureSandboxRunning,
@@ -185,7 +183,7 @@ test("Gateway: HTML response includes injected script with gateway token", async
   const h = createScenarioHarness();
   try {
     await driveToRunning(h);
-    const meta = await h.getMeta();
+    const _meta = await h.getMeta();
 
     h.fakeFetch.reset();
     h.fakeFetch.onGet(/fake\.vercel\.run/, () =>
@@ -298,7 +296,7 @@ test("Gateway: upstream redirect to same sandbox host is rewritten to relative p
   const h = createScenarioHarness();
   try {
     await driveToRunning(h);
-    const meta = await h.getMeta();
+    const _meta = await h.getMeta();
 
     h.fakeFetch.reset();
     // Simulate a redirect from the sandbox to itself (e.g., /dashboard → /dashboard/)
@@ -469,7 +467,7 @@ test("Gateway: query params are forwarded to upstream (sensitive params stripped
       const response = await mod.GET(request, {
         params: Promise.resolve({ path: ["search"] }),
       });
-      const text = await response.text();
+      const _text = await response.text();
       assert.equal(response.status, 200);
       assert.ok(capturedUrl, "Should have captured upstream URL");
       const url = capturedUrl as string;
@@ -815,7 +813,6 @@ test("Gateway: OPTIONS is forwarded to upstream and returns response", async () 
 // ===========================================================================
 
 for (const method of ["PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"] as const) {
-  const isMutation = ["PUT", "PATCH", "DELETE"].includes(method);
   test(`Gateway: unauthenticated ${method} returns 401 when no bearer token`, async () => {
     const h = createScenarioHarness();
     try {

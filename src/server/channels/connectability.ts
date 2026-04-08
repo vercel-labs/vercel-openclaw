@@ -9,7 +9,7 @@ import {
   type DeploymentContract,
   type DeploymentRequirement,
 } from "@/server/deployment-contract";
-import { logDebug, logInfo } from "@/server/log";
+import { logDebug } from "@/server/log";
 import { getProtectionBypassSecret } from "@/server/public-url";
 import { buildChannelDisplayWebhookUrl } from "@/server/channels/webhook-urls";
 

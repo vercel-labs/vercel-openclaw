@@ -337,7 +337,7 @@ export function createWhatsAppAdapter(
     },
 
     async sendBootMessage(message, text) {
-      const result = await sendMessage(
+      await sendMessage(
         config.accessToken ?? "",
         message.phoneNumberId,
         message.from,

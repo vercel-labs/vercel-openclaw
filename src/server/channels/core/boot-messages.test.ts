@@ -3,10 +3,8 @@ import test from "node:test";
 
 import {
   runWithBootMessages,
-  type BootMessagesResult,
 } from "@/server/channels/core/boot-messages";
 import type {
-  BootMessageHandle,
   ExtractedChannelMessage,
   PlatformAdapter,
 } from "@/server/channels/core/types";

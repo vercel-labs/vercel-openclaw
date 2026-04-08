@@ -7,8 +7,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { NetworkPolicy } from "@vercel/sandbox";
-
 import { createDefaultMeta } from "@/shared/types";
 import { toNetworkPolicy, applyFirewallPolicyToSandbox } from "@/server/firewall/policy";
 import { FakeSandboxHandle, type SandboxEvent } from "@/test-utils/fake-sandbox-controller";

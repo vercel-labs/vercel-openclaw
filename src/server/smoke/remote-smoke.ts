@@ -27,8 +27,8 @@ import {
   channelRoundTrip,
   channelWakeFromSleep,
   ensureRunning,
-  snapshotStop,
-  restoreFromSnapshot,
+  snapshotStop as _snapshotStop,
+  restoreFromSnapshot as _restoreFromSnapshot,
   selfHealTokenRefresh,
 } from "./remote-phases.js";
 import { setAuthCookie, setProtectionBypass, getAuthSource } from "./remote-auth.js";

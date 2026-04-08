@@ -264,7 +264,6 @@ function getStoppedFacts(status: StatusPayload): StatusFact[] {
 
 function getRunningFacts(status: StatusPayload): StatusFact[] {
   const facts: StatusFact[] = [];
-  const lifecycle = status.lifecycle;
 
   // Gateway — only show when we have a real probe result
   if (status.gatewayStatus !== "unknown") {

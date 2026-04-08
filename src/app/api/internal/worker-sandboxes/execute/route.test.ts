@@ -254,7 +254,7 @@ test("worker-sandbox execute captures output files", async () => {
     const token = await buildWorkerSandboxBearerToken();
 
     // Pre-seed a file in the sandbox filesystem
-    const handle = h.controller.lastCreated();
+    const _handle = h.controller.lastCreated();
     // We need to set up the file via a command responder or write it after create
     // The fake controller's readFileToBuffer returns null by default for unknown paths
     // Let's test that missing files are gracefully skipped
