@@ -50,6 +50,7 @@ export function SnapshotsPanel({
   const [loading, setLoading] = useState(true);
   const [readError, setReadError] = useState<string | null>(null);
   const { confirm, dialogProps } = useConfirm();
+  const { confirm: confirmSnapshot, dialogProps: snapshotDialogProps } = useConfirm();
   const { confirm: confirmReset, dialogProps: resetDialogProps } = useConfirm();
 
   const lifecycleStatus = status.status as SingleStatus;
@@ -89,13 +90,29 @@ export function SnapshotsPanel({
   }, [active, fetchSnapshots]);
 
   const handleSnapshot = async () => {
-    await runAction("/api/admin/snapshots", {
+    const ok = await confirmSnapshot({
+      title: "Take snapshot?",
+      description:
+        "This will stop the running sandbox to create a snapshot. It will automatically restart afterward.",
+      confirmLabel: "Take Snapshot",
+      variant: "danger",
+    });
+    if (!ok) return;
+
+    const success = await runAction("/api/admin/snapshots", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ reason: "manual" }),
       label: "Create snapshot",
     });
     await fetchSnapshots();
+
+    if (success) {
+      await runAction("/api/admin/ensure", {
+        method: "POST",
+        label: "Restarting sandbox",
+      });
+    }
   };
 
   const handleRestore = async (snapshotId: string) => {
@@ -275,6 +292,7 @@ export function SnapshotsPanel({
         </section>
       ) : null}
       <ConfirmDialog {...dialogProps} />
+      <ConfirmDialog {...snapshotDialogProps} />
       <ConfirmDialog {...resetDialogProps} />
     </article>
   );
