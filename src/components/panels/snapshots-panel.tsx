@@ -251,7 +251,7 @@ export function SnapshotsPanel({
         })}
       </ul>
 
-      {lifecycleStatus !== "uninitialized" ? (
+      {lifecycleStatus !== "uninitialized" && (status.sandboxId || snapshots.length > 0) ? (
         <section className="danger-zone">
           <p className="danger-zone-label">Danger zone</p>
           <div className="danger-zone-card">
