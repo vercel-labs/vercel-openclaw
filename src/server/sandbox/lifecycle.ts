@@ -2150,7 +2150,11 @@ export async function reconcileSandboxHealth(options: {
   const sandboxId = meta.sandboxId;
   const probe = await probeGatewayReady();
   if (probe.ready) {
-    return { status: "ready", meta, repaired: false };
+    // Refresh lastAccessedAt so the UI doesn't derive "asleep" from stale timestamps
+    const freshMeta = await mutateMeta((m) => {
+      m.lastAccessedAt = Date.now();
+    });
+    return { status: "ready", meta: freshMeta, repaired: false };
   }
 
   // Stale running state detected — repair.
