@@ -2677,7 +2677,7 @@ html body[data-scroll-locked] {
   padding: 16px;
   border: 1px solid var(--border);
   border-radius: 12px;
-  background: rgba(24, 24, 27, 0.5);
+  background: var(--secondary);
 }
 
 .status-callout-title {

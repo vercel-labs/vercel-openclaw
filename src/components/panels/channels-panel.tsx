@@ -448,36 +448,8 @@ export function ChannelsPanel({
         </div>
       ) : null}
 
-      {/* ── Deployment Protection detected ── */}
-      {preflight?.deploymentProtectionDetected && !preflight?.webhookBypassEnabled ? (
-        <div
-          className="error-banner"
-          style={{ marginTop: 16, marginBottom: 16 }}
-          aria-live="polite"
-          data-preflight-banner="deployment-protection"
-        >
-          <p style={{ margin: 0, fontWeight: 500 }}>
-            Vercel Deployment Protection is blocking webhook delivery.
-          </p>
-          <p className="muted-copy" style={{ margin: "4px 0 0" }}>
-            Channel webhooks from Slack, Telegram, WhatsApp, and Discord cannot reach this deployment.
-          </p>
-          <details className="channel-details" style={{ marginTop: 10 }}>
-            <summary>How to fix</summary>
-            <div className="channel-details-body">
-              <ol style={{ margin: 0, paddingLeft: 20 }}>
-                <li className="muted-copy">In the Vercel Dashboard, open your project and go to <strong>Settings &gt; Deployment Protection</strong>.</li>
-                <li className="muted-copy">Under <strong>Protection Bypass for Automation</strong>, enable it and copy the generated secret.</li>
-                <li className="muted-copy">Add <code>VERCEL_AUTOMATION_BYPASS_SECRET</code> as an environment variable with the copied value.</li>
-                <li className="muted-copy">Redeploy for the change to take effect.</li>
-              </ol>
-            </div>
-          </details>
-        </div>
-      ) : null}
-
-      {/* ── Preflight deployment blockers ── */}
-      {preflightSummary.ok === false ? (
+      {/* ── Deployment blockers (consolidated) ── */}
+      {(preflight?.deploymentProtectionDetected && !preflight?.webhookBypassEnabled) || preflightSummary.ok === false ? (
         <div
           className="error-banner"
           style={{ marginTop: 16, marginBottom: 16 }}
@@ -487,23 +459,42 @@ export function ChannelsPanel({
           <p style={{ margin: 0, fontWeight: 500 }}>
             Resolve deployment blockers before connecting channels.
           </p>
-          {preflightSummary.blockerMessages.map((message) => (
-            <p key={message} className="muted-copy" style={{ margin: "4px 0 0" }}>
-              {message}
+
+          {preflight?.deploymentProtectionDetected && !preflight?.webhookBypassEnabled ? (
+            <p className="muted-copy" style={{ margin: "4px 0 0" }}>
+              Vercel Deployment Protection is blocking webhook delivery — Slack, Telegram, WhatsApp, and Discord webhooks cannot reach this deployment.
             </p>
-          ))}
-          {preflightSummary.requiredRemediations.length > 0 ? (
-            <details className="channel-details" style={{ marginTop: 10 }}>
-              <summary>Required changes</summary>
-              <div className="channel-details-body">
-                {preflightSummary.requiredRemediations.map((remediation) => (
-                  <p key={remediation} className="muted-copy" style={{ margin: 0 }}>
-                    {remediation}
-                  </p>
-                ))}
-              </div>
-            </details>
           ) : null}
+
+          {preflightSummary.ok === false
+            ? preflightSummary.blockerMessages
+                .filter((msg) => !msg.toLowerCase().includes("deployment protection"))
+                .map((message) => (
+                  <p key={message} className="muted-copy" style={{ margin: "4px 0 0" }}>
+                    {message}
+                  </p>
+                ))
+            : null}
+
+          <details className="channel-details" style={{ marginTop: 10 }}>
+            <summary>How to fix</summary>
+            <div className="channel-details-body">
+              {preflight?.deploymentProtectionDetected && !preflight?.webhookBypassEnabled ? (
+                <ol style={{ margin: 0, paddingLeft: 20 }}>
+                  <li style={{ fontSize: 13, color: "var(--foreground-subtle)", lineHeight: 1.5 }}>In the Vercel Dashboard, open your project and go to <strong>Settings &gt; Deployment Protection</strong>.</li>
+                  <li style={{ fontSize: 13, color: "var(--foreground-subtle)", lineHeight: 1.5 }}>Under <strong>Protection Bypass for Automation</strong>, enable it and copy the generated secret.</li>
+                  <li style={{ fontSize: 13, color: "var(--foreground-subtle)", lineHeight: 1.5 }}>Add <code>VERCEL_AUTOMATION_BYPASS_SECRET</code> as an environment variable with the copied value.</li>
+                  <li style={{ fontSize: 13, color: "var(--foreground-subtle)", lineHeight: 1.5 }}>Redeploy for the change to take effect.</li>
+                </ol>
+              ) : null}
+              {preflightSummary.requiredRemediations.map((remediation) => (
+                <p key={remediation} style={{ margin: 0, fontSize: 13, color: "var(--foreground-subtle)", lineHeight: 1.5 }}>
+                  {remediation}
+                </p>
+              ))}
+            </div>
+          </details>
+
           {preflightLoadedAt ? (
             <p className="muted-copy" style={{ margin: "8px 0 0" }}>
               Checked {new Date(preflightLoadedAt).toLocaleTimeString()}

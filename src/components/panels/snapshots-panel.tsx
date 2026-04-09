@@ -251,27 +251,29 @@ export function SnapshotsPanel({
         })}
       </ul>
 
-      <section className="danger-zone">
-        <p className="danger-zone-label">Danger zone</p>
-        <div className="danger-zone-card">
-          <div className="danger-zone-body">
-            <div className="danger-zone-copy">
-              <p className="danger-zone-title">Reset sandbox</p>
-              <p className="danger-zone-text">
-                Delete the current sandbox and snapshots, then build a fresh one.
-              </p>
+      {lifecycleStatus !== "uninitialized" ? (
+        <section className="danger-zone">
+          <p className="danger-zone-label">Danger zone</p>
+          <div className="danger-zone-card">
+            <div className="danger-zone-body">
+              <div className="danger-zone-copy">
+                <p className="danger-zone-title">Reset sandbox</p>
+                <p className="danger-zone-text">
+                  Delete the current sandbox and snapshots, then build a fresh one.
+                </p>
+              </div>
+              <button
+                className="button danger"
+                disabled={isResetDisabled}
+                onClick={() => void handleReset()}
+                type="button"
+              >
+                Reset Sandbox
+              </button>
             </div>
-            <button
-              className="button danger"
-              disabled={isResetDisabled}
-              onClick={() => void handleReset()}
-              type="button"
-            >
-              Reset Sandbox
-            </button>
           </div>
-        </div>
-      </section>
+        </section>
+      ) : null}
       <ConfirmDialog {...dialogProps} />
       <ConfirmDialog {...resetDialogProps} />
     </article>
