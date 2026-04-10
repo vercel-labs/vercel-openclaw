@@ -31,6 +31,7 @@ import {
   OPENCLAW_GATEWAY_RESTART_SCRIPT_PATH,
   OPENCLAW_GATEWAY_TOKEN_PATH,
   OPENCLAW_LOG_FILE,
+  OPENCLAW_OPERATOR_SCOPES,
   OPENCLAW_STATE_DIR,
   OPENCLAW_TELEGRAM_WEBHOOK_PORT,
   toWhatsAppGatewayConfig,
@@ -2049,6 +2050,7 @@ export async function probeGatewayReady(
       headers: {
         Accept: "text/html",
         Authorization: `Bearer ${meta.gatewayToken}`,
+        "x-openclaw-scopes": OPENCLAW_OPERATOR_SCOPES,
       },
       signal: AbortSignal.timeout(options?.timeoutMs ?? 5_000),
     });

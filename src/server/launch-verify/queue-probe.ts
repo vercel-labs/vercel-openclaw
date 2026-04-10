@@ -4,6 +4,7 @@ import { pollUntil } from "@/server/async/poll";
 import { extractReply, toPlainText } from "@/server/channels/core/reply";
 import { callGatewayWithAuthRecovery } from "@/server/gateway/auth-recovery";
 import { logInfo, logWarn } from "@/server/log";
+import { OPENCLAW_OPERATOR_SCOPES } from "@/server/openclaw/config";
 import { ensureFreshGatewayToken } from "@/server/sandbox/lifecycle";
 import { getInitializedMeta, getStore } from "@/server/store/store";
 
@@ -174,6 +175,7 @@ export async function runLaunchVerifyCompletion(options: {
               "Content-Type": "application/json",
               Authorization: `Bearer ${gatewayToken}`,
               "X-AI-Gateway-Token": gatewayToken,
+              "x-openclaw-scopes": OPENCLAW_OPERATOR_SCOPES,
             },
             body: JSON.stringify({
               model: "default",

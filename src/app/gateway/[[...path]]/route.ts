@@ -21,6 +21,7 @@ import {
   reconcileSandboxHealth,
   touchRunningSandbox,
 } from "@/server/sandbox/lifecycle";
+import { OPENCLAW_OPERATOR_SCOPES } from "@/server/openclaw/config";
 import { getSandboxHeartbeatIntervalMs } from "@/server/sandbox/timeout";
 import { GATEWAY_CHAT_PATH } from "@/shared/gateway-paths";
 
@@ -147,6 +148,7 @@ async function handleProxy(request: Request, path: string): Promise<Response> {
   const targetUrl = buildSandboxTargetUrl(routeUrl, path, queryString);
   const headers = buildSafeProxyHeaders(request, targetUrl.toString(), {
     authorization: `Bearer ${meta.gatewayToken}`,
+    "x-openclaw-scopes": OPENCLAW_OPERATOR_SCOPES,
   });
 
   // Buffer the request body so we can replay it on 401 retry.

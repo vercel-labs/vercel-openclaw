@@ -60,6 +60,14 @@ export const OPENCLAW_STARTUP_SCRIPT_PATH = "/vercel/sandbox/.on-restore.sh";
 export const OPENCLAW_FAST_RESTORE_SCRIPT_PATH = `${OPENCLAW_STATE_DIR}/.fast-restore.sh`;
 export const OPENCLAW_GATEWAY_RESTART_SCRIPT_PATH = `${OPENCLAW_STATE_DIR}/.restart-gateway.sh`;
 
+/**
+ * HTTP header required by OpenClaw 2026.3.28+ to grant operator scopes
+ * on gateway HTTP API endpoints (e.g. /v1/chat/completions).
+ * The gateway reads scopes from this request header, not from device-auth.json.
+ */
+export const OPENCLAW_SCOPES_HEADER = "x-openclaw-scopes";
+export const OPENCLAW_OPERATOR_SCOPES = "operator.admin,operator.read,operator.write,operator.approvals,operator.pairing";
+
 function readBooleanEnv(name: string, defaultValue = false): boolean {
   const raw = process.env[name]?.trim().toLowerCase();
   if (!raw) {
