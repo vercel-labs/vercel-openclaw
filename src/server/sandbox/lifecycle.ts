@@ -27,6 +27,7 @@ import {
   computeGatewayConfigHash,
   GATEWAY_CONFIG_HASH_VERSION,
   OPENCLAW_BIN,
+  OPENCLAW_CONFIG_PATH,
   OPENCLAW_FAST_RESTORE_SCRIPT_PATH,
   OPENCLAW_GATEWAY_RESTART_SCRIPT_PATH,
   OPENCLAW_GATEWAY_TOKEN_PATH,
@@ -3304,6 +3305,45 @@ async function _restoreSandboxFromSnapshot(
         });
       } catch (err) {
         logWarn("sandbox.restore.telegram_webhook_reconcile_failed", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+
+      // OpenClaw's config normalization may overwrite the webhookSecret we
+      // wrote to openclaw.json (e.g. after an OpenClaw version update that
+      // triggers a gateway restart).  The gateway then calls setWebhook with
+      // its own secret, creating a mismatch between the app metadata and what
+      // Telegram actually sends.  Read back the sandbox's config and sync the
+      // metadata if it drifted.
+      try {
+        const configBuf = await sandbox.readFileToBuffer({
+          path: OPENCLAW_CONFIG_PATH,
+        });
+        if (configBuf) {
+          const sandboxConfig = JSON.parse(configBuf.toString("utf8")) as {
+            channels?: { telegram?: { webhookSecret?: string } };
+          };
+          const sandboxSecret = sandboxConfig?.channels?.telegram?.webhookSecret;
+          if (sandboxSecret && sandboxSecret !== latest.channels.telegram?.webhookSecret) {
+            const { setTelegramChannelConfig } = await import("@/server/channels/state");
+            const currentMeta = await getInitializedMeta();
+            const currentTg = currentMeta.channels.telegram;
+            if (currentTg) {
+              const now = Date.now();
+              await setTelegramChannelConfig({
+                ...currentTg,
+                webhookSecret: sandboxSecret,
+                previousWebhookSecret: currentTg.webhookSecret,
+                previousSecretExpiresAt: now + 10 * 60 * 1000,
+              });
+              logInfo("sandbox.restore.telegram_secret_synced_from_sandbox", {
+                reason: "gateway_config_overwrite",
+              });
+            }
+          }
+        }
+      } catch (err) {
+        logWarn("sandbox.restore.telegram_secret_sync_failed", {
           error: err instanceof Error ? err.message : String(err),
         });
       }
