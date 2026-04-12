@@ -3023,9 +3023,12 @@ async function _restoreSandboxFromSnapshot(
       .update(JSON.stringify(requestedFirewallPolicy))
       .digest("hex");
 
-    // Firewall policy applied post-create (networkPolicy on snapshot restore
-    // returns 400).  Runs concurrently with the fast-restore script below.
-    // Returns a structured result so enforcing mode can gate readiness.
+    // Firewall policy applied post-create BEFORE the fast-restore script so
+    // the AI Gateway auth transform is active when the gateway starts.
+    // Without this, the gateway's prewarmConfiguredPrimaryModel discovery
+    // fetch hangs for 17+ seconds because the firewall transform that
+    // injects the Authorization header isn't applied yet.
+    // Awaiting first adds ~180ms but saves 17+ seconds of startup delay.
     const firewallPromise = (async () => {
       const startedAt = Date.now();
       try {
@@ -3069,6 +3072,11 @@ async function _restoreSandboxFromSnapshot(
         };
       }
     })();
+
+    // Await firewall before gateway starts so network policy transforms are
+    // active.  This is critical for ai-gateway.vercel.sh — without the auth
+    // transform, the gateway's model prewarm fetch hangs until timeout (~17s).
+    await firewallPromise;
 
     {
       const t0 = Date.now();
