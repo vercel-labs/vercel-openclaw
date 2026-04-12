@@ -59,7 +59,7 @@ export const OPENCLAW_LOG_FILE = "/tmp/openclaw.log";
 export const OPENCLAW_STARTUP_SCRIPT_PATH = "/vercel/sandbox/.on-restore.sh";
 export const OPENCLAW_FAST_RESTORE_SCRIPT_PATH = `${OPENCLAW_STATE_DIR}/.fast-restore.sh`;
 export const OPENCLAW_GATEWAY_RESTART_SCRIPT_PATH = `${OPENCLAW_STATE_DIR}/.restart-gateway.sh`;
-export const OPENCLAW_DIAG_SCRIPT_PATH = "/usr/local/bin/oc-diag";
+export const OPENCLAW_DIAG_SCRIPT_PATH = `${OPENCLAW_STATE_DIR}/oc-diag`;
 
 /**
  * HTTP header required by OpenClaw 2026.3.28+ to grant operator scopes
