@@ -36,3 +36,27 @@ npx sandbox create --snapshot <snapshot_id>
 ## Will this always require pinning?
 
 The current plan is to keep using a pinned version until release coverage improves. We are working with the OpenClaw team on tests that exercise restart, sleep, wake, and resume behavior so these regressions are caught earlier.
+
+## Find an issue?
+
+If something looks wrong in `vercel-openclaw`, report it in the [issue tracker](https://github.com/vercel-labs/vercel-openclaw/issues). Include the pinned OpenClaw version, what you were doing, and any relevant admin logs or status details so the regression is easier to reproduce.
+
+## I sent a message, the sandbox woke up, but nothing came back
+
+The gateway boots in stages — it starts its HTTP server first, then initializes channels (Telegram, Slack, etc.) afterward. If your message hits the sandbox during that gap, it can get silently dropped. You'll see the sandbox status as "running" but the channel handler isn't actually listening yet.
+
+To check, connect to the sandbox and run the built-in diagnostic:
+```bash
+npx sandbox connect <sandbox_id>
+oc-diag
+```
+
+This checks the gateway process, port 3000, the Telegram handler on port 8787, Slack, AI Gateway connectivity, and the provider discovery configuration. Look for any `warn` or `fail` lines — they'll tell you exactly what's not ready yet.
+
+You can also poke the Telegram handler directly:
+```bash
+curl -s -o /dev/null -w "%{http_code}" -X POST http://localhost:8787/telegram-webhook
+```
+- **401** means the handler is up (it's rejecting your missing secret — that's good)
+- **200** with no body means the base server caught your request and threw it away
+- **Connection refused** means the server hasn't started at all

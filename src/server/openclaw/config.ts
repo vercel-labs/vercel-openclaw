@@ -59,6 +59,7 @@ export const OPENCLAW_LOG_FILE = "/tmp/openclaw.log";
 export const OPENCLAW_STARTUP_SCRIPT_PATH = "/vercel/sandbox/.on-restore.sh";
 export const OPENCLAW_FAST_RESTORE_SCRIPT_PATH = `${OPENCLAW_STATE_DIR}/.fast-restore.sh`;
 export const OPENCLAW_GATEWAY_RESTART_SCRIPT_PATH = `${OPENCLAW_STATE_DIR}/.restart-gateway.sh`;
+export const OPENCLAW_DIAG_SCRIPT_PATH = "/usr/local/bin/oc-diag";
 
 /**
  * HTTP header required by OpenClaw 2026.3.28+ to grant operator scopes
@@ -769,6 +770,7 @@ export OPENCLAW_GATEWAY_PORT="${OPENCLAW_PORT}"
 export OPENCLAW_GATEWAY_TOKEN="\$gateway_token"
 export OPENAI_BASE_URL="https://ai-gateway.vercel.sh/v1"
 export OPENCLAW_TEST_ONLY_PROVIDER_PLUGIN_IDS="vercel-ai-gateway"
+chmod +x "${OPENCLAW_DIAG_SCRIPT_PATH}" 2>/dev/null || true
 ${buildNetLearnWriteShell()}
 export NODE_OPTIONS="\${NODE_OPTIONS:-} --require=${OPENCLAW_NET_LEARN_PATH}"
 # Integrity check: fail fast if bundled peer dependencies are missing.
@@ -3177,5 +3179,111 @@ openclaw cron status                  # Scheduler status
 - Jobs survive sandbox restarts via snapshot persistence.
 - The host watchdog checks every 5 minutes and wakes the sandbox if a job is due.
 - Minimum interval for \\\`--every\\\` is 1 minute.
+`;
+}
+
+export function buildDiagScript(): string {
+  return `#!/bin/bash
+# oc-diag — quick health check for vercel-openclaw sandbox
+# Run from inside the sandbox via: npx sandbox connect <id>
+
+set -euo pipefail
+
+BOLD="\\033[1m"
+DIM="\\033[2m"
+GREEN="\\033[32m"
+YELLOW="\\033[33m"
+RED="\\033[31m"
+RESET="\\033[0m"
+
+ok()   { printf "  \${GREEN}ok\${RESET}    %s\\n" "$1"; }
+warn() { printf "  \${YELLOW}warn\${RESET}  %s\\n" "$1"; }
+fail() { printf "  \${RED}fail\${RESET}  %s\\n" "$1"; }
+info() { printf "  \${DIM}info\${RESET}  %s\\n" "$1"; }
+
+echo ""
+printf "\${BOLD}oc-diag\${RESET} — sandbox health check\\n"
+echo ""
+
+# --- OpenClaw version ---
+OC_VERSION=\$(openclaw --version 2>/dev/null || echo "unknown")
+info "OpenClaw version: \$OC_VERSION"
+
+# --- Gateway process ---
+GW_PID=\$(pgrep -of openclaw-gateway 2>/dev/null || true)
+if [ -n "\$GW_PID" ]; then
+  ok "Gateway process running (PID \$GW_PID)"
+else
+  fail "Gateway process not found"
+fi
+
+# --- Port 3000 (gateway HTTP) ---
+HTTP_STATUS=\$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 http://127.0.0.1:${OPENCLAW_PORT}/ 2>/dev/null || echo "000")
+if [ "\$HTTP_STATUS" = "200" ]; then
+  ok "Port ${OPENCLAW_PORT} (gateway): responding"
+elif [ "\$HTTP_STATUS" = "000" ]; then
+  fail "Port ${OPENCLAW_PORT} (gateway): not listening"
+else
+  warn "Port ${OPENCLAW_PORT} (gateway): HTTP \$HTTP_STATUS"
+fi
+
+# --- Port 8787 (Telegram webhook handler) ---
+TG_STATUS=\$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 -X POST -H "Content-Type: application/json" -d '{"probe":true}' http://127.0.0.1:${OPENCLAW_TELEGRAM_WEBHOOK_PORT}${OPENCLAW_TELEGRAM_INTERNAL_WEBHOOK_PATH} 2>/dev/null || echo "000")
+if [ "\$TG_STATUS" = "401" ]; then
+  ok "Port ${OPENCLAW_TELEGRAM_WEBHOOK_PORT} (Telegram): handler registered (401 = secret check active)"
+elif [ "\$TG_STATUS" = "200" ]; then
+  warn "Port ${OPENCLAW_TELEGRAM_WEBHOOK_PORT} (Telegram): base server responding (handler not registered yet)"
+  info "The Telegram handler hasn't finished starting — messages may be silently dropped"
+elif [ "\$TG_STATUS" = "000" ]; then
+  fail "Port ${OPENCLAW_TELEGRAM_WEBHOOK_PORT} (Telegram): not listening"
+else
+  info "Port ${OPENCLAW_TELEGRAM_WEBHOOK_PORT} (Telegram): HTTP \$TG_STATUS"
+fi
+
+# --- Slack handler ---
+SLACK_STATUS=\$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 -X POST http://127.0.0.1:${OPENCLAW_PORT}/slack/events 2>/dev/null || echo "000")
+if [ "\$SLACK_STATUS" = "401" ] || [ "\$SLACK_STATUS" = "403" ]; then
+  ok "Slack handler: registered at /slack/events"
+elif [ "\$SLACK_STATUS" = "404" ]; then
+  warn "Slack handler: not registered yet (404)"
+elif [ "\$SLACK_STATUS" = "000" ]; then
+  fail "Slack handler: port ${OPENCLAW_PORT} not reachable"
+else
+  info "Slack handler: HTTP \$SLACK_STATUS"
+fi
+
+# --- AI Gateway connectivity ---
+GW_STATUS=\$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 ${AI_GATEWAY_BASE_URL}/models 2>/dev/null || echo "000")
+if [ "\$GW_STATUS" = "200" ]; then
+  ok "AI Gateway: reachable"
+elif [ "\$GW_STATUS" = "000" ]; then
+  fail "AI Gateway: unreachable (network/firewall issue)"
+else
+  warn "AI Gateway: HTTP \$GW_STATUS"
+fi
+
+# --- Config file ---
+if [ -f "${OPENCLAW_CONFIG_PATH}" ]; then
+  ok "Config: ${OPENCLAW_CONFIG_PATH} exists"
+else
+  fail "Config: ${OPENCLAW_CONFIG_PATH} missing"
+fi
+
+# --- Gateway token ---
+if [ -s "${OPENCLAW_GATEWAY_TOKEN_PATH}" ]; then
+  ok "Gateway token: present"
+else
+  fail "Gateway token: missing or empty"
+fi
+
+# --- Provider discovery filter ---
+if [ -n "\${OPENCLAW_TEST_ONLY_PROVIDER_PLUGIN_IDS:-}" ]; then
+  ok "Provider discovery: filtered to \$OPENCLAW_TEST_ONLY_PROVIDER_PLUGIN_IDS"
+else
+  warn "Provider discovery: not filtered (all providers will be discovered on startup)"
+  info "This can add 30+ seconds to channel startup. See FAQ for details."
+fi
+
+echo ""
 `;
 }
