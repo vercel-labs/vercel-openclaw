@@ -870,6 +870,34 @@ echo '{"event":"fast_restore.start_gateway"}' >&2
 setsid ${OPENCLAW_BIN} gateway --port ${OPENCLAW_PORT} --bind loopback >> ${OPENCLAW_LOG_FILE} 2>&1 &
 echo '{"event":"fast_restore.readiness_loop"}' >&2
 case "\${1:-}" in ''|*[!0-9]*) _ready_timeout=60 ;; *) _ready_timeout=\$1 ;; esac
+_telegram_expected=0
+_telegram_config_present=0
+if [ -f "${OPENCLAW_CONFIG_PATH}" ]; then
+  _telegram_cfg=$(node -e '
+const fs = require("fs");
+try {
+  const cfg = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+  const tg = cfg && cfg.channels && cfg.channels.telegram;
+  const present = Boolean(tg && typeof tg === "object");
+  const expected = Boolean(
+    tg &&
+    typeof tg === "object" &&
+    tg.enabled !== false &&
+    typeof tg.botToken === "string" &&
+    tg.botToken.length > 0
+  );
+  process.stdout.write(JSON.stringify({ present, expected }));
+} catch {
+  process.stdout.write(JSON.stringify({ present: false, expected: false }));
+}
+' "${OPENCLAW_CONFIG_PATH}" 2>/dev/null || echo '{"present":false,"expected":false}')
+  case "\$_telegram_cfg" in
+    *'"present":true'*) _telegram_config_present=1 ;;
+  esac
+  case "\$_telegram_cfg" in
+    *'"expected":true'*) _telegram_expected=1 ;;
+  esac
+fi
 _ready_start=\$(date +%s%N 2>/dev/null || echo 0)
 _attempts=0
 _ready=0
@@ -892,55 +920,81 @@ _ready_ms=0
 if [ "\$_ready_start" != "0" ] && [ "\$_ready_end" != "0" ]; then
   _ready_ms=\$(( (_ready_end - _ready_start) / 1000000 ))
 fi
+_tg_ready=0
+_tg_status=0
+_tg_wait_ms=0
+_tg_error=""
+if [ "\$_ready" = "1" ] && [ "\$_telegram_expected" = "1" ]; then
+  _tg_start=\$(date +%s%N 2>/dev/null || echo 0)
+  _tg_deadline=\$(( \$(date +%s) + _ready_timeout ))
+  while [ "\$(date +%s)" -lt "\$_tg_deadline" ]; do
+    _tg_status=\$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 -X POST -H 'Content-Type: application/json' -H 'x-telegram-bot-api-secret-token: probe-invalid-secret' -d '{"probe":true}' http://127.0.0.1:${OPENCLAW_TELEGRAM_WEBHOOK_PORT}${OPENCLAW_TELEGRAM_INTERNAL_WEBHOOK_PATH} 2>/tmp/openclaw-tg-probe.err || echo "000")
+    if [ "\$_tg_status" = "401" ]; then
+      _tg_ready=1
+      _tg_error=""
+      break
+    fi
+    if [ "\$_tg_status" = "000" ]; then
+      _tg_error=\$(tail -n 1 /tmp/openclaw-tg-probe.err 2>/dev/null || true)
+    else
+      _tg_error=""
+    fi
+    sleep 0.2
+  done
+  _tg_end=\$(date +%s%N 2>/dev/null || echo 0)
+  if [ "\$_tg_start" != "0" ] && [ "\$_tg_end" != "0" ]; then
+    _tg_wait_ms=\$(( (_tg_end - _tg_start) / 1000000 ))
+  fi
+  printf '{"event":"fast_restore.telegram_probe","expected":%s,"configPresent":%s,"ready":%s,"status":"%s","waitMs":%d,"error":"%s"}\\n' \\
+    "\$([ "\$_telegram_expected" = "1" ] && echo true || echo false)" \\
+    "\$([ "\$_telegram_config_present" = "1" ] && echo true || echo false)" \\
+    "\$([ "\$_tg_ready" = "1" ] && echo true || echo false)" \\
+    "\$_tg_status" \\
+    "\$_tg_wait_ms" \\
+    "\${_tg_error//\"/\\\\\"}" >&2
+fi
 if [ "\$_ready" = "1" ]; then
-  printf '{"ready":true,"attempts":%d,"readyMs":%d}\\n' "\$_attempts" "\$_ready_ms"
-  # Clear stale pending pairing requests — if a previous CLI connection
-  # left a non-silent pending request, it blocks auto-pairing for all
-  # subsequent local CLI connections (cron tool, gateway status, etc.).
-  rm -f "${OPENCLAW_STATE_DIR}/devices/pending.json"
-  # Force-pair: re-establish device identity in paired.json so local CLI
-  # connections (cron tool, gateway status, etc.) are accepted by the
-  # gateway without manual pairing approval.
-  node -e '
-const fs = require("fs");
-const path = require("path");
-const crypto = require("crypto");
-const stateDir = "${OPENCLAW_STATE_DIR}";
-const identityDir = path.join(stateDir, "identity");
-const identityPath = path.join(identityDir, "device.json");
-let identity;
-try { identity = JSON.parse(fs.readFileSync(identityPath, "utf8")); } catch {}
-if (!identity) {
-  fs.mkdirSync(identityDir, { recursive: true });
-  const kp = crypto.generateKeyPairSync("ed25519");
-  identity = {
-    publicKeyPem: kp.publicKey.export({ type: "spki", format: "pem" }),
-    privateKeyPem: kp.privateKey.export({ type: "pkcs8", format: "pem" }),
-    createdAtMs: Date.now(),
-  };
-  fs.writeFileSync(identityPath, JSON.stringify(identity, null, 2) + "\\n", { mode: 0o600 });
-}
-const pubKey = crypto.createPublicKey(identity.publicKeyPem);
-const spkiDer = pubKey.export({ type: "spki", format: "der" });
-const rawKey = spkiDer.subarray(12);
-const deviceId = crypto.createHash("sha256").update(rawKey).digest("hex");
-const publicKeyRawBase64Url = rawKey.toString("base64").replace(/\\+/g,"-").replace(/\\//g,"_").replace(/=/g,"");
-const devicesDir = path.join(stateDir, "devices");
-fs.mkdirSync(devicesDir, { recursive: true });
-const pairedPath = path.join(devicesDir, "paired.json");
-let paired = {};
-try { paired = JSON.parse(fs.readFileSync(pairedPath, "utf8")); } catch {}
-if (!paired || typeof paired !== "object" || Array.isArray(paired)) paired = {};
-for (const [id, entry] of Object.entries(paired)) { if (!entry || typeof entry !== "object" || !entry.role) delete paired[id]; }
-paired[deviceId] = { deviceId, publicKey: publicKeyRawBase64Url, approvedAtMs: Date.now(), role: "operator", roles: ["operator"], scopes: ["operator.admin","operator.read","operator.write","operator.approvals","operator.pairing"] };
-fs.writeFileSync(pairedPath, JSON.stringify(paired, null, 2) + "\\n", { mode: 0o600 });
-const gt = process.env.OPENCLAW_GATEWAY_TOKEN;
-if (gt) { const dap = path.join(stateDir, "identity", "device-auth.json"); fs.mkdirSync(path.dirname(dap), { recursive: true }); fs.writeFileSync(dap, JSON.stringify({ version: 1, deviceId, tokens: { operator: { token: gt, role: "operator", scopes: ["operator.admin","operator.read","operator.write","operator.approvals","operator.pairing"], updatedAtMs: Date.now() } } }, null, 2) + "\\n", { mode: 0o600 }); }
-console.error(JSON.stringify({ event: "fast_restore.force_pair", deviceId }));
-' 2>&1 || echo '{"event":"fast_restore.force_pair_failed"}' >&2
-  # Ensure OPENCLAW_GATEWAY_PORT is in the shell profile so agent tools
-  # (cron, gateway status) can connect.  Old snapshots may lack this.
-  ${buildGatewayPortProfileShell()}
+  if [ "\$_telegram_expected" = "1" ] && [ "\$_tg_ready" != "1" ]; then
+    printf '{"ready":false,"attempts":%d,"readyMs":%d,"telegramExpected":true,"telegramConfigPresent":%s,"telegramReady":false,"telegramStatus":%s,"telegramWaitMs":%d,"telegramError":%s}\\n' \\
+      "\$_attempts" \\
+      "\$_ready_ms" \\
+      "\$([ "\$_telegram_config_present" = "1" ] && echo true || echo false)" \\
+      "\$_tg_status" \\
+      "\$_tg_wait_ms" \\
+      "\$(if [ -n "\$_tg_error" ]; then printf '\"%s\"' "\${_tg_error//\"/\\\\\"}"; else printf 'null'; fi)"
+    echo '{"event":"fast_restore.telegram_not_ready_before_completion"}' >&2
+    exit 1
+  fi
+  printf '{"ready":true,"attempts":%d,"readyMs":%d,"telegramExpected":%s,"telegramConfigPresent":%s,"telegramReady":%s,"telegramStatus":%s,"telegramWaitMs":%d,"telegramError":%s}\\n' \\
+    "\$_attempts" \\
+    "\$_ready_ms" \\
+    "\$([ "\$_telegram_expected" = "1" ] && echo true || echo false)" \\
+    "\$([ "\$_telegram_config_present" = "1" ] && echo true || echo false)" \\
+    "\$([ "\$_tg_ready" = "1" ] && echo true || echo false)" \\
+    "\$(if [ "\$_telegram_expected" = "1" ]; then printf '%s' "\$_tg_status"; else printf 'null'; fi)" \\
+    "\$(if [ "\$_telegram_expected" = "1" ]; then printf '%d' "\$_tg_wait_ms"; else printf '0'; fi)" \\
+    "\$(if [ -n "\$_tg_error" ]; then printf '\"%s\"' "\${_tg_error//\"/\\\\\"}"; else printf 'null'; fi)"
+  # Defer non-critical post-ready maintenance so channel drains can use the
+  # freshly restored Telegram listener immediately. These tasks help CLI/tool
+  # flows after resume, but they do not need to block the current webhook.
+  (
+    _post_ready_started=\$(date +%s%N 2>/dev/null || echo 0)
+    rm -f "${OPENCLAW_STATE_DIR}/devices/pending.json"
+    if node "${OPENCLAW_FORCE_PAIR_SCRIPT_PATH}" "${OPENCLAW_STATE_DIR}"; then
+      _force_pair_result="ok"
+    else
+      _force_pair_result="failed"
+    fi
+    ${buildGatewayPortProfileShell()}
+    _post_ready_finished=\$(date +%s%N 2>/dev/null || echo 0)
+    _post_ready_ms=0
+    if [ "\$_post_ready_started" != "0" ] && [ "\$_post_ready_finished" != "0" ]; then
+      _post_ready_ms=\$(( (_post_ready_finished - _post_ready_started) / 1000000 ))
+    fi
+    printf '{"event":"fast_restore.post_ready_tasks_complete","forcePairResult":"%s","durationMs":%d}\\n' \\
+      "\$_force_pair_result" \\
+      "\$_post_ready_ms"
+  ) >> ${OPENCLAW_LOG_FILE} 2>&1 &
   # Telegram deleteWebhook: removed — the app's webhook route handles
   #   incoming messages and forwards to the sandbox fast path when running.
   #   Deleting the webhook here created a deadlock: no webhook → no messages
@@ -3285,6 +3339,33 @@ fi
 # --- Config file ---
 if [ -f "${OPENCLAW_CONFIG_PATH}" ]; then
   ok "Config: ${OPENCLAW_CONFIG_PATH} exists"
+  TG_CFG=$(node -e '
+const fs = require("fs");
+try {
+  const cfg = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+  const tg = cfg && cfg.channels && cfg.channels.telegram;
+  process.stdout.write(JSON.stringify({
+    present: Boolean(tg && typeof tg === "object"),
+    enabled: Boolean(
+      tg &&
+      typeof tg === "object" &&
+      tg.enabled !== false &&
+      typeof tg.botToken === "string" &&
+      tg.botToken.length > 0
+    ),
+  }));
+} catch {
+  process.stdout.write(JSON.stringify({ present: false, enabled: false }));
+}
+' "${OPENCLAW_CONFIG_PATH}" 2>/dev/null || echo '{"present":false,"enabled":false}')
+  case "$TG_CFG" in
+    *'"present":true'*) ok "Config: Telegram block present" ;;
+    *) warn "Config: Telegram block missing" ;;
+  esac
+  case "$TG_CFG" in
+    *'"enabled":true'*) ok "Config: Telegram expected on restore" ;;
+    *) info "Config: Telegram not expected on restore" ;;
+  esac
 else
   fail "Config: ${OPENCLAW_CONFIG_PATH} missing"
 fi

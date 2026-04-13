@@ -277,17 +277,39 @@ async function ensureTelegramConfigured() {
 
 async function stopSandbox() {
   log("phase: stopping sandbox...");
-  const res = await fetchJson("/api/admin/stop", {
-    method: "POST",
-    mutation: true,
-  });
-  if (!res.ok) {
-    throw new Error(
-      `stop failed: HTTP ${res.status} ${JSON.stringify(res.body)}`,
+  const deadline = Date.now() + 20_000;
+  let attempt = 0;
+  let delay = 500;
+
+  while (Date.now() < deadline) {
+    attempt += 1;
+    const res = await fetchJson("/api/admin/stop", {
+      method: "POST",
+      mutation: true,
+    });
+    if (res.ok) {
+      log(`sandbox stop initiated${attempt > 1 ? ` after retry ${attempt}` : ""}`);
+      return res.body;
+    }
+
+    const errorCode = res.body?.error;
+    const lifecycleLockUnavailable =
+      res.status === 500 && errorCode === "INTERNAL_ERROR";
+
+    if (!lifecycleLockUnavailable || Date.now() + delay >= deadline) {
+      throw new Error(
+        `stop failed: HTTP ${res.status} ${JSON.stringify(res.body)}`,
+      );
+    }
+
+    log(
+      `stop attempt ${attempt} hit lifecycle lock contention; retrying in ${delay}ms`,
     );
+    await sleep(delay);
+    delay = Math.min(Math.round(delay * 1.5), 2_000);
   }
-  log("sandbox stop initiated");
-  return res.body;
+
+  throw new Error("stop failed: lifecycle lock contention did not clear within 20s");
 }
 
 async function waitForStopped() {

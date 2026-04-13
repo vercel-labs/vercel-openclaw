@@ -971,6 +971,7 @@ async function forwardToNativeHandlerWithRetry(
       // A near-instant 200 with no body means the payload was silently
       // discarded.  Safe to retry — the handler never saw it.
       const swallowed = channel === "telegram"
+        && transport === "public"
         && result.status === 200
         && result.bodyLength === 0
         && (

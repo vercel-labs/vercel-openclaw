@@ -755,3 +755,95 @@ test("processChannelStep still forwards when both Telegram probes time out", asy
 
   assert.ok(forwardCalled, "forward should still be attempted even after both probes time out");
 });
+
+test("processChannelStep accepts local Telegram empty 200 without retrying", async () => {
+  _resetLogBuffer();
+
+  const dependencies = createWorkflowDependencies({
+    runWithBootMessages: async () => ({
+      meta: asMeta({
+        status: "running",
+        sandboxId: "sbx-local-200",
+        portUrls: { "3000": "https://gw.test", "8787": "https://tg.test" },
+        channels: {
+          telegram: { botToken: "tok", webhookSecret: "secret" } as never,
+          slack: null,
+          discord: null,
+          whatsapp: null,
+        },
+      }),
+      bootMessageSent: false,
+    }),
+    probeTelegramNativeHandlerLocally: async () => ({
+      status: 401,
+      ready: true,
+      error: null,
+      durationMs: 40,
+      bodyLength: 12,
+      bodyHead: "unauthorized",
+      headers: null,
+    }),
+    forwardToNativeHandlerWithRetry: async () => ({
+      ok: true,
+      status: 200,
+      attempts: 1,
+      totalMs: 42,
+      transport: "local",
+      retries: [],
+      attemptsDetail: [
+        {
+          attempt: 1,
+          startedAtMs: Date.now(),
+          elapsedMs: 42,
+          durationMs: 42,
+          status: 200,
+          ok: true,
+          bodyLength: 0,
+          bodyHead: "",
+          headers: {
+            server: null,
+            contentType: "text/plain; charset=utf-8",
+            contentLength: null,
+            xPoweredBy: null,
+            via: null,
+            cacheControl: null,
+          },
+          transport: "local",
+          classification: "accepted",
+        },
+      ],
+    }),
+    forwardTelegramToNativeHandlerLocally: async () => {
+      return {
+        ok: true,
+        status: 200,
+        durationMs: 42,
+        bodyLength: 0,
+        bodyHead: "",
+        headers: {
+          server: null,
+          contentType: "text/plain; charset=utf-8",
+          contentLength: null,
+          xPoweredBy: null,
+          via: null,
+          cacheControl: null,
+        },
+        error: null,
+      };
+    },
+  });
+
+  await processChannelStep("telegram", { update_id: 1 }, "test", "req-local-200", null, {
+    dependencies,
+  });
+
+  const logs = getServerLogs();
+  const summary = logs.find((entry) => entry.message === "channels.telegram_wake_summary");
+  assert.ok(summary, "telegram wake summary should be emitted");
+  assert.equal(summary.data?.retryingForwardAttempts, 1);
+  assert.equal(summary.data?.retryingForwardTransport, "local");
+  assert.equal(
+    summary.data?.retryingForwardAttemptTimeline?.[0]?.classification,
+    "accepted",
+  );
+});

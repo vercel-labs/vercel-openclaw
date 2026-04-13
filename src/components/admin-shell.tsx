@@ -491,11 +491,11 @@ export function AdminShell({
     <main className="shell">
       <section className="hero-card">
         <div className="hero-header">
-          <h1 style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <h1 style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0 }}>
             <BrandIcon size={40} />
-            VClaw Sandbox
+            <span className="brand-title">VClaw Sandbox</span>
           </h1>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
             <ThemeToggle />
             <div className="auth-chip">
               <span>

@@ -494,9 +494,9 @@ test("ensureSandboxRunning schedules restore when snapshot exists", async () => 
     assert.equal(result.state, "waiting");
     assert.ok(scheduledCallback, "Background work should have been scheduled");
 
-    // v2: scheduleLifecycleWork always sets status to "creating" (no "restoring")
+    // Restore scheduling should immediately surface "restoring" for snapshot wake flows.
     const meta = await getInitializedMeta();
-    assert.equal(meta.status, "creating");
+    assert.equal(meta.status, "restoring");
   });
 });
 
@@ -1632,9 +1632,9 @@ test("concurrent ensureSandboxRunning() calls from stopped produce exactly one r
       `Expected exactly 1 scheduled callback for restore, got ${callbacks.length}`,
     );
 
-    // v2: scheduleLifecycleWork always sets status to "creating" (no "restoring")
+    // Restore scheduling should immediately surface "restoring" for snapshot wake flows.
     const meta = await getInitializedMeta();
-    assert.equal(meta.status, "creating");
+    assert.equal(meta.status, "restoring");
   });
 });
 
@@ -1695,8 +1695,7 @@ test("ensureSandboxRunning recovers from error status by scheduling restore when
     assert.ok(scheduledCallback, "Should schedule restore work from error state with snapshot");
 
     const meta = await getInitializedMeta();
-    // v2: scheduleLifecycleWork always sets status to "creating" (no "restoring")
-    assert.equal(meta.status, "creating", "Should transition from error to creating when snapshot exists");
+    assert.equal(meta.status, "restoring", "Should transition from error to restoring when snapshot exists");
   });
 });
 
@@ -3129,9 +3128,9 @@ test("reconcileSandboxHealth delegates to ensureSandboxRunning when not running"
     assert.equal(result.status, "recovering");
     assert.equal(result.repaired, false);
     assert.ok(scheduledWork, "Recovery should have been scheduled via ensureSandboxRunning");
-    // v2: scheduleLifecycleWork always sets status to "creating" (no "restoring")
+    // Restore scheduling should immediately surface "restoring" when a snapshot exists.
     const meta = await getInitializedMeta();
-    assert.equal(meta.status, "creating");
+    assert.equal(meta.status, "restoring");
   });
 });
 
@@ -3202,10 +3201,10 @@ test("reconcileSandboxHealth with 410-style unreachable sandbox repairs correctl
       assert.equal(result.repaired, true);
       assert.ok(scheduledWork, "Recovery should have been scheduled");
 
-      // Verify meta was cleared and set to creating (v2: no "restoring" status)
+      // Verify meta was cleared and recovery is now surfaced as restoring.
       const meta = await getInitializedMeta();
       assert.equal(meta.sandboxId, null);
-      assert.equal(meta.status, "creating");
+      assert.equal(meta.status, "restoring");
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -3575,8 +3574,7 @@ test("concurrent ensureSandboxRunning with op context: exactly one restore, rest
     // Verify the lifecycle.action_chosen log was emitted
     const actionLog = logs.find((l) => l.message === "sandbox.lifecycle.action_chosen");
     assert.ok(actionLog, "Should emit sandbox.lifecycle.action_chosen");
-    // v2: scheduleLifecycleWork always uses "creating" (no "restoring")
-    assert.equal(actionLog.data?.action, "creating");
+    assert.equal(actionLog.data?.action, "restoring");
     assert.ok(actionLog.data?.opId, "action_chosen should include opId");
   });
 });
@@ -3687,6 +3685,10 @@ test("successful restore records localReadyMs from fast-restore script stdout in
       assert.ok(meta.lastRestoreMetrics, "Should have restore metrics");
       // The fake fast-restore script returns {"ready":true,"attempts":3,"readyMs":150}
       assert.equal(meta.lastRestoreMetrics.localReadyMs, 150, "localReadyMs should be parsed from stdout");
+      assert.ok(
+        (meta.lastRestoreMetrics.postLocalReadyBlockingMs ?? -1) >= 0,
+        "postLocalReadyBlockingMs should be recorded",
+      );
 
       // Also verify the completion log was emitted
       const logs = getServerLogs();
@@ -3697,6 +3699,76 @@ test("successful restore records localReadyMs from fast-restore script stdout in
       assert.equal(completionLog.data?.localReadyMs, 150);
     } finally {
       _setAiGatewayTokenOverrideForTesting(null);
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+test("successful restore records telegram listener readiness from fast-restore stdout in metrics", async () => {
+  const fake = new FakeSandboxController();
+  const originalFetch = globalThis.fetch;
+
+  fake.defaultResponders.push((cmd, args) => {
+    if (cmd === "bash" && args?.[0] === OPENCLAW_FAST_RESTORE_SCRIPT_PATH) {
+      const stdoutJson = JSON.stringify({
+        ready: true,
+        attempts: 4,
+        readyMs: 220,
+        telegramExpected: true,
+        telegramConfigPresent: true,
+        telegramReady: true,
+        telegramStatus: 401,
+        telegramWaitMs: 1800,
+        telegramError: null,
+      });
+      return {
+        exitCode: 0,
+        output: async (stream?: "stdout" | "stderr" | "both") => {
+          if (stream === "stdout") return stdoutJson;
+          if (stream === "stderr") return '{"event":"fast_restore.telegram_probe"}';
+          return `${stdoutJson}\n{"event":"fast_restore.telegram_probe"}`;
+        },
+      };
+    }
+    return undefined;
+  });
+
+  await withTestEnv(fake, async () => {
+    await mutateMeta((meta) => {
+      meta.status = "stopped";
+      meta.snapshotId = "snap-tg-ready";
+      meta.gatewayToken = "test-gw-token";
+      meta.channels.telegram = {
+        botToken: "tg-token",
+        webhookSecret: "tg-secret",
+        webhookUrl: "https://app.example.com/api/channels/telegram/webhook",
+        botUsername: "test_bot",
+        configuredAt: Date.now(),
+      };
+    });
+
+    globalThis.fetch = async () =>
+      new Response('<div id="openclaw-app"></div>', { status: 200 });
+
+    try {
+      const { meta } = await triggerRestore(fake, { tokenOverride: "test-key" });
+
+      assert.ok(meta.lastRestoreMetrics, "Should have restore metrics");
+      assert.equal(meta.lastRestoreMetrics.telegramExpected, true);
+      assert.equal(meta.lastRestoreMetrics.telegramConfigPresent, true);
+      assert.equal(meta.lastRestoreMetrics.telegramListenerReady, true);
+      assert.equal(meta.lastRestoreMetrics.telegramListenerStatus, 401);
+      assert.equal(meta.lastRestoreMetrics.telegramListenerWaitMs, 1800);
+      assert.equal(meta.lastRestoreMetrics.telegramListenerError, null);
+      assert.equal(meta.lastRestoreMetrics.telegramReconcileBlocking, false);
+      assert.equal(meta.lastRestoreMetrics.telegramSecretSyncBlocking, false);
+      assert.equal(meta.lastRestoreMetrics.telegramReconcileMs, null);
+      assert.equal(meta.lastRestoreMetrics.telegramSecretSyncMs, null);
+      assert.ok(
+        (meta.lastRestoreMetrics.postLocalReadyBlockingMs ?? -1) >= 0,
+        "postLocalReadyBlockingMs should be recorded",
+      );
+    } finally {
       globalThis.fetch = originalFetch;
     }
   });

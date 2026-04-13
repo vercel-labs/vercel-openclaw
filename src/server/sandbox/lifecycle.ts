@@ -2380,7 +2380,7 @@ async function scheduleLifecycleWork(options: {
     return;
   }
 
-  const nextStatus = "creating";
+  const nextStatus = latest.snapshotId ? "restoring" : "creating";
 
   if (options.op) {
     logInfo("sandbox.lifecycle.action_chosen", withOperationContext(options.op, {
@@ -2468,6 +2468,7 @@ async function createAndBootstrapSandboxWithinLifecycleLock(
     options?.op ? withOperationContext(options.op, extra) : (extra ?? {});
   const attemptId = randomUUID();
   const instanceId = current.id;
+  const isRestoreAttempt = Boolean(current.snapshotId) && current.status === "restoring";
 
   // Auth-required boot: on Vercel, require a usable AI Gateway credential.
   const credential = await resolveAiGatewayCredentialOptional();
@@ -2488,26 +2489,33 @@ async function createAndBootstrapSandboxWithinLifecycleLock(
   const initialProgress = await beginSetupProgress({
     attemptId,
     instanceId,
-    phase: "creating-sandbox",
+    phase: isRestoreAttempt ? "resuming-sandbox" : "creating-sandbox",
   });
   const progress = new SetupProgressWriter(initialProgress, instanceId);
-  progress.setPreview("Allocating sandbox");
+  progress.setPreview(
+    isRestoreAttempt ? "Restoring persistent sandbox" : "Allocating sandbox",
+  );
 
   try {
-    logInfo("sandbox.status_transition", ctx({ from: current.status, to: "creating" }));
+    logInfo("sandbox.status_transition", ctx({
+      from: current.status,
+      to: isRestoreAttempt ? "restoring" : "creating",
+    }));
     await mutateMeta((meta) => {
-      meta.status = "creating";
+      meta.status = isRestoreAttempt ? "restoring" : "creating";
       meta.lastError = null;
       meta.lifecycleAttemptId = attemptId;
 
-      // Creating a brand-new sandbox invalidates any previously prepared restore target.
-      meta.snapshotId = null;
-      meta.snapshotConfigHash = null;
-      meta.snapshotDynamicConfigHash = null;
-      meta.snapshotAssetSha256 = null;
-      meta.restorePreparedStatus = "dirty";
-      meta.restorePreparedReason = "snapshot-missing";
-      meta.restorePreparedAt = null;
+      if (!isRestoreAttempt) {
+        // Creating a brand-new sandbox invalidates any previously prepared restore target.
+        meta.snapshotId = null;
+        meta.snapshotConfigHash = null;
+        meta.snapshotDynamicConfigHash = null;
+        meta.snapshotAssetSha256 = null;
+        meta.restorePreparedStatus = "dirty";
+        meta.restorePreparedReason = "snapshot-missing";
+        meta.restorePreparedAt = null;
+      }
     });
 
     const vcpus = getSandboxVcpus();
@@ -2560,6 +2568,20 @@ async function createAndBootstrapSandboxWithinLifecycleLock(
       sandbox = await getSandboxController().get({ sandboxId: sandboxName });
       progress.appendLine("system", `Resumed: ${sandbox.sandboxId} status=${sandbox.status}`);
     } catch {
+      if (isRestoreAttempt) {
+        progress.setPhase("creating-sandbox", "Creating sandbox");
+        progress.setPreview("Allocating sandbox");
+        await mutateMeta((meta) => {
+          meta.status = "creating";
+          meta.snapshotId = null;
+          meta.snapshotConfigHash = null;
+          meta.snapshotDynamicConfigHash = null;
+          meta.snapshotAssetSha256 = null;
+          meta.restorePreparedStatus = "dirty";
+          meta.restorePreparedReason = "snapshot-missing";
+          meta.restorePreparedAt = null;
+        });
+      }
       progress.appendLine("system", `No existing sandbox — creating: ${sandboxName}`);
       try {
         sandbox = await getSandboxController().create({
@@ -2651,10 +2673,37 @@ async function createAndBootstrapSandboxWithinLifecycleLock(
 
       // Parse readiness timing from fast-restore script stdout.
       let localReadyMs = startupScriptMs;
+      let telegramExpected = false;
+      let telegramConfigPresent = false;
+      let telegramListenerReady = false;
+      let telegramListenerStatus: number | null = null;
+      let telegramListenerWaitMs: number | null = null;
+      let telegramListenerError: string | null = null;
+      let telegramReconcileMs: number | null = null;
+      let telegramSecretSyncMs: number | null = null;
+      let telegramReconcileBlocking = false;
+      let telegramSecretSyncBlocking = false;
       try {
         const stdout = await restoreResult.output("stdout");
-        const parsed = JSON.parse(stdout.trim());
+        const parsed = JSON.parse(stdout.trim()) as {
+          readyMs?: number;
+          telegramExpected?: boolean;
+          telegramConfigPresent?: boolean;
+          telegramReady?: boolean;
+          telegramStatus?: number | null;
+          telegramWaitMs?: number | null;
+          telegramError?: string | null;
+        };
         if (typeof parsed.readyMs === "number") localReadyMs = parsed.readyMs;
+        telegramExpected = parsed.telegramExpected === true;
+        telegramConfigPresent = parsed.telegramConfigPresent === true;
+        telegramListenerReady = parsed.telegramReady === true;
+        telegramListenerStatus =
+          typeof parsed.telegramStatus === "number" ? parsed.telegramStatus : null;
+        telegramListenerWaitMs =
+          typeof parsed.telegramWaitMs === "number" ? parsed.telegramWaitMs : null;
+        telegramListenerError =
+          typeof parsed.telegramError === "string" ? parsed.telegramError : null;
       } catch { /* best effort */ }
 
       // Apply firewall policy
@@ -2677,6 +2726,8 @@ async function createAndBootstrapSandboxWithinLifecycleLock(
 
       const sandboxResumeMs = Date.now() - resumeStart - assetSyncMs - startupScriptMs - firewallSyncMs;
       const totalMs = Date.now() - resumeStart;
+      const postLocalReadyBlockingMs =
+        localReadyMs > 0 ? Math.max(0, totalMs - localReadyMs) : totalMs;
 
       const metrics: RestorePhaseMetrics = {
         sandboxCreateMs: sandboxResumeMs,
@@ -2686,6 +2737,7 @@ async function createAndBootstrapSandboxWithinLifecycleLock(
         forcePairMs: 0,
         firewallSyncMs,
         localReadyMs,
+        postLocalReadyBlockingMs,
         publicReadyMs: 0,
         totalMs,
         skippedStaticAssetSync: false,
@@ -2693,6 +2745,16 @@ async function createAndBootstrapSandboxWithinLifecycleLock(
         vcpus,
         recordedAt: Date.now(),
         skippedPublicReady: true,
+        telegramExpected,
+        telegramConfigPresent,
+        telegramListenerReady,
+        telegramListenerStatus,
+        telegramListenerWaitMs,
+        telegramListenerError,
+        telegramReconcileBlocking,
+        telegramReconcileMs,
+        telegramSecretSyncBlocking,
+        telegramSecretSyncMs,
       };
 
       // Record token metadata and restore metrics.
@@ -2702,6 +2764,9 @@ async function createAndBootstrapSandboxWithinLifecycleLock(
         meta.portUrls = resolvePortUrls(sandbox);
         meta.lastAccessedAt = Date.now();
         meta.lastError = null;
+        meta.snapshotConfigHash = null;
+        meta.snapshotDynamicConfigHash = null;
+        meta.snapshotAssetSha256 = null;
         meta.lastRestoreMetrics = metrics;
         if (!meta.restoreHistory) meta.restoreHistory = [];
         meta.restoreHistory = [
@@ -2723,6 +2788,12 @@ async function createAndBootstrapSandboxWithinLifecycleLock(
         startupScriptMs,
         firewallSyncMs,
         localReadyMs,
+        telegramExpected,
+        telegramConfigPresent,
+        telegramListenerReady,
+        telegramListenerStatus,
+        telegramListenerWaitMs,
+        telegramListenerError,
       }));
       return getInitializedMeta();
     }
@@ -3144,6 +3215,16 @@ async function _restoreSandboxFromSnapshot(
     let firewallSyncMs = 0;
     let startupScriptMs = 0;
     let localReadyMs = 0;
+    let telegramExpected = false;
+    let telegramConfigPresent = false;
+    let telegramListenerReady = false;
+    let telegramListenerStatus: number | null = null;
+    let telegramListenerWaitMs: number | null = null;
+    let telegramListenerError: string | null = null;
+    let telegramReconcileMs: number | null = null;
+    let telegramSecretSyncMs: number | null = null;
+    let telegramReconcileBlocking = false;
+    let telegramSecretSyncBlocking = false;
 
     // Pre-compute firewall policy hash for structured outcome reporting.
     const requestedFirewallPolicy = toNetworkPolicy(
@@ -3244,6 +3325,9 @@ async function _restoreSandboxFromSnapshot(
             stderrHead: stderr.slice(0, 500),
             stderrUnavailable,
             startupScriptMs,
+            telegramExpected: stdout.includes('"telegramExpected":true'),
+            telegramConfigPresent: stdout.includes('"telegramConfigPresent":true'),
+            telegramReady: stdout.includes('"telegramReady":true'),
           },
         });
 
@@ -3261,10 +3345,25 @@ async function _restoreSandboxFromSnapshot(
             ready?: boolean;
             attempts?: number;
             readyMs?: number;
+            telegramExpected?: boolean;
+            telegramConfigPresent?: boolean;
+            telegramReady?: boolean;
+            telegramStatus?: number | null;
+            telegramWaitMs?: number | null;
+            telegramError?: string | null;
           };
 
           localReadyMs =
             typeof parsed.readyMs === "number" ? parsed.readyMs : startupScriptMs;
+          telegramExpected = parsed.telegramExpected === true;
+          telegramConfigPresent = parsed.telegramConfigPresent === true;
+          telegramListenerReady = parsed.telegramReady === true;
+          telegramListenerStatus =
+            typeof parsed.telegramStatus === "number" ? parsed.telegramStatus : null;
+          telegramListenerWaitMs =
+            typeof parsed.telegramWaitMs === "number" ? parsed.telegramWaitMs : null;
+          telegramListenerError =
+            typeof parsed.telegramError === "string" ? parsed.telegramError : null;
 
           logStateSnapshot({
             event: "sandbox.restore.local_ready_report",
@@ -3276,6 +3375,12 @@ async function _restoreSandboxFromSnapshot(
               attempts:
                 typeof parsed.attempts === "number" ? parsed.attempts : null,
               readyMs: typeof parsed.readyMs === "number" ? parsed.readyMs : null,
+              telegramExpected,
+              telegramConfigPresent,
+              telegramListenerReady,
+              telegramListenerStatus,
+              telegramListenerWaitMs,
+              telegramListenerError,
               startupScriptMs,
             },
           });
@@ -3438,14 +3543,21 @@ async function _restoreSandboxFromSnapshot(
     // baked-in startup script did.
     if (latest.channels.telegram?.botToken && latest.channels.telegram?.webhookUrl) {
       try {
+        const reconcileStartedAt = Date.now();
         const { reconcileTelegramIntegration } = await import("@/server/channels/telegram/reconcile");
         await reconcileTelegramIntegration({ force: true });
+        telegramReconcileMs = Date.now() - reconcileStartedAt;
+        telegramReconcileBlocking = true;
         logInfo("sandbox.restore.telegram_webhook_reconciled", {
           webhookUrl: redactBypassParam(latest.channels.telegram.webhookUrl),
+          telegramReconcileMs,
+          blockingPath: true,
         });
       } catch (err) {
         logWarn("sandbox.restore.telegram_webhook_reconcile_failed", {
           error: err instanceof Error ? err.message : String(err),
+          telegramReconcileMs,
+          blockingPath: true,
         });
       }
 
@@ -3456,6 +3568,7 @@ async function _restoreSandboxFromSnapshot(
       // Telegram actually sends.  Read back the sandbox's config and sync the
       // metadata if it drifted.
       try {
+        const secretSyncStartedAt = Date.now();
         const configBuf = await sandbox.readFileToBuffer({
           path: OPENCLAW_CONFIG_PATH,
         });
@@ -3478,13 +3591,18 @@ async function _restoreSandboxFromSnapshot(
               });
               logInfo("sandbox.restore.telegram_secret_synced_from_sandbox", {
                 reason: "gateway_config_overwrite",
+                blockingPath: true,
               });
             }
           }
         }
+        telegramSecretSyncMs = Date.now() - secretSyncStartedAt;
+        telegramSecretSyncBlocking = true;
       } catch (err) {
         logWarn("sandbox.restore.telegram_secret_sync_failed", {
           error: err instanceof Error ? err.message : String(err),
+          telegramSecretSyncMs,
+          blockingPath: true,
         });
       }
     }
@@ -3562,6 +3680,8 @@ async function _restoreSandboxFromSnapshot(
     }
 
     const totalMs = Date.now() - restoreStartedAt;
+    const postLocalReadyBlockingMs =
+      localReadyMs > 0 ? Math.max(0, totalMs - localReadyMs) : totalMs;
 
     const metrics: RestorePhaseMetrics = {
       sandboxCreateMs,
@@ -3571,6 +3691,7 @@ async function _restoreSandboxFromSnapshot(
       forcePairMs,
       firewallSyncMs,
       localReadyMs,
+      postLocalReadyBlockingMs,
       publicReadyMs,
       totalMs,
       skippedStaticAssetSync,
@@ -3591,6 +3712,16 @@ async function _restoreSandboxFromSnapshot(
       hotSpareHit,
       hotSparePromotionMs: hotSpareHit ? hotSparePromotionMs : 0,
       hotSpareRejectReason,
+      telegramExpected,
+      telegramConfigPresent,
+      telegramListenerReady,
+      telegramListenerStatus,
+      telegramListenerWaitMs,
+      telegramListenerError,
+      telegramReconcileBlocking,
+      telegramReconcileMs,
+      telegramSecretSyncBlocking,
+      telegramSecretSyncMs,
     };
 
     if (op) {

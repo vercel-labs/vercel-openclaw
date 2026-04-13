@@ -32,6 +32,8 @@ import {
   buildReasoningScript,
   buildCompareSkill,
   buildCompareScript,
+  OPENCLAW_FORCE_PAIR_SCRIPT_PATH,
+  OPENCLAW_STATE_DIR,
   OPENCLAW_TELEGRAM_WEBHOOK_HOST,
   OPENCLAW_TELEGRAM_INTERNAL_WEBHOOK_PATH,
   TELEGRAM_PUBLIC_WEBHOOK_PATH,
@@ -1196,6 +1198,23 @@ test("buildFastRestoreScript emits fast_restore.gateway_reset log with killed, s
   assert.ok(
     script.includes('"killMs"'),
     "expected killMs field in gateway_reset log",
+  );
+});
+
+test("buildFastRestoreScript defers post-ready force-pair work to background", () => {
+  const script = buildFastRestoreScript();
+
+  assert.ok(
+    script.includes('{"event":"fast_restore.post_ready_tasks_complete"'),
+    "expected post_ready_tasks_complete log event",
+  );
+  assert.ok(
+    script.includes(`node "${OPENCLAW_FORCE_PAIR_SCRIPT_PATH}" "${OPENCLAW_STATE_DIR}"`),
+    "expected deferred force-pair script invocation",
+  );
+  assert.ok(
+    script.includes(") >> /tmp/openclaw.log 2>&1 &"),
+    "expected post-ready work to run detached in background",
   );
 });
 

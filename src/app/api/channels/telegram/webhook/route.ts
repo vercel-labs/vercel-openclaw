@@ -10,6 +10,7 @@ import { extractRequestId, logError, logInfo, logWarn } from "@/server/log";
 import { createOperationContext, withOperationContext } from "@/server/observability/operation-context";
 import { OPENCLAW_TELEGRAM_WEBHOOK_PORT } from "@/server/openclaw/config";
 import { ensureFreshGatewayToken, getSandboxDomain, reconcileStaleRunningStatus } from "@/server/sandbox/lifecycle";
+import { channelForwardDiagnosticKey } from "@/server/store/keyspace";
 import { getInitializedMeta, getStore } from "@/server/store/store";
 
 type TelegramWebhookDedupLock = {
@@ -65,6 +66,16 @@ function workflowStartFailedResponse() {
     { ok: false, error: "WORKFLOW_START_FAILED", retryable: true },
     { status: 500 },
   );
+}
+
+async function persistWebhookDiagnostic(
+  value: Record<string, unknown>,
+): Promise<void> {
+  try {
+    await getStore().setValue(channelForwardDiagnosticKey(), value, 3600);
+  } catch {
+    // Best effort only. Diagnostics must never block webhook handling.
+  }
 }
 
 async function releaseTelegramWebhookDedupLockForRetry(
@@ -150,6 +161,23 @@ export async function POST(request: Request): Promise<Response> {
         ? Object.keys(payload as Record<string, unknown>).slice(0, 12)
         : [],
     }));
+    await persistWebhookDiagnostic({
+      phase: "webhook-accepted",
+      phaseUpdatedAt: Date.now(),
+      channel: "telegram",
+      requestId,
+      dedupId: updateId ?? null,
+      chatId,
+      receivedAtMs,
+      acceptedAtMs: Date.now(),
+      receivedToAcceptedMs: Date.now() - receivedAtMs,
+      metaStatus: meta.status,
+      sandboxId: meta.sandboxId ?? null,
+      snapshotId: meta.snapshotId ?? null,
+      hasPort3000Url: Boolean(meta.portUrls?.["3000"]),
+      hasPort8787Url: Boolean(meta.portUrls?.[String(OPENCLAW_TELEGRAM_WEBHOOK_PORT)]),
+      outcome: "accepted",
+    });
 
     // --- Fast path: forward to OpenClaw's native Telegram handler ---
     // When the sandbox is running, delegate entirely to the native handler on
@@ -252,12 +280,38 @@ export async function POST(request: Request): Promise<Response> {
           bootMessageId,
           receivedToBootMessageMs: Date.now() - receivedAtMs,
         }));
+        await persistWebhookDiagnostic({
+          phase: "boot-message-sent",
+          phaseUpdatedAt: Date.now(),
+          channel: "telegram",
+          requestId,
+          dedupId: updateId ?? null,
+          chatId,
+          receivedAtMs,
+          bootMessageId,
+          effectiveStatus: effectiveMeta.status,
+          sandboxId: effectiveMeta.sandboxId ?? null,
+          outcome: "accepted",
+        });
       } catch (err) {
         logWarn("channels.telegram_boot_message_failed", withOperationContext(op, {
           chatId,
           error: err instanceof Error ? err.message : String(err),
           receivedToBootMessageAttemptMs: Date.now() - receivedAtMs,
         }));
+        await persistWebhookDiagnostic({
+          phase: "boot-message-failed",
+          phaseUpdatedAt: Date.now(),
+          channel: "telegram",
+          requestId,
+          dedupId: updateId ?? null,
+          chatId,
+          receivedAtMs,
+          effectiveStatus: effectiveMeta.status,
+          sandboxId: effectiveMeta.sandboxId ?? null,
+          error: err instanceof Error ? err.message : String(err),
+          outcome: "accepted",
+        });
       }
     }
 
@@ -276,6 +330,20 @@ export async function POST(request: Request): Promise<Response> {
         bootMessageId,
         handoffDelayMs: Date.now() - receivedAtMs,
       }));
+      await persistWebhookDiagnostic({
+        phase: "workflow-started",
+        phaseUpdatedAt: Date.now(),
+        channel: "telegram",
+        requestId,
+        dedupId: updateId ?? null,
+        chatId,
+        receivedAtMs,
+        bootMessageId,
+        effectiveStatus: effectiveMeta.status,
+        sandboxId: effectiveMeta.sandboxId ?? null,
+        handoffDelayMs: Date.now() - receivedAtMs,
+        outcome: "workflow-started",
+      });
     } catch (error) {
       const dedupRelease = await releaseTelegramWebhookDedupLockForRetry(dedupLock);
       logWarn("channels.telegram_workflow_start_failed", withOperationContext(op, {
@@ -287,6 +355,24 @@ export async function POST(request: Request): Promise<Response> {
         dedupLockReleaseError: dedupRelease.releaseError,
         retryable: true,
       }));
+      await persistWebhookDiagnostic({
+        phase: "workflow-start-failed",
+        phaseUpdatedAt: Date.now(),
+        channel: "telegram",
+        requestId,
+        dedupId: updateId ?? null,
+        chatId,
+        receivedAtMs,
+        bootMessageId,
+        effectiveStatus: effectiveMeta.status,
+        sandboxId: effectiveMeta.sandboxId ?? null,
+        error: error instanceof Error ? error.message : String(error),
+        dedupLockKey: dedupLock?.key ?? null,
+        dedupLockReleaseAttempted: dedupRelease.attempted,
+        dedupLockReleased: dedupRelease.released,
+        dedupLockReleaseError: dedupRelease.releaseError,
+        outcome: "workflow-start-failed",
+      });
       return workflowStartFailedResponse();
     }
 
