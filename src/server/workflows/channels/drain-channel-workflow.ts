@@ -287,7 +287,7 @@ export async function processChannelStep(
         payload,
         readyMeta,
         getSandboxDomain,
-        forwardTelegramToNativeHandlerLocally,
+        localProbeResult?.ready === true ? null : forwardTelegramToNativeHandlerLocally,
       );
       forwardResult = { ok: retryingResult.ok, status: retryingResult.status };
     } else {
@@ -915,7 +915,7 @@ async function forwardToNativeHandlerWithRetry(
   payload: unknown,
   meta: import("@/shared/types").SingleMeta,
   getSandboxDomain: (port?: number) => Promise<string>,
-  forwardTelegramToNativeHandlerLocally: (
+  forwardTelegramToNativeHandlerLocally: ((
     sandboxId: string,
     payload: unknown,
     webhookSecret: string | null,
@@ -927,7 +927,7 @@ async function forwardToNativeHandlerWithRetry(
     bodyHead: string;
     headers: DiagnosticHeaders | null;
     error?: string | null;
-  }>,
+  }>) | null,
 ): Promise<RetryingForwardResult> {
   const startedAt = Date.now();
   const deadline = startedAt + RETRYING_FORWARD_TIMEOUT_MS;
@@ -937,7 +937,7 @@ async function forwardToNativeHandlerWithRetry(
   for (let attempt = 1; attempt <= RETRYING_FORWARD_MAX_ATTEMPTS && Date.now() < deadline; attempt++) {
     const attemptStartedAt = Date.now();
     try {
-      const result = channel === "telegram" && meta.sandboxId
+      const result = channel === "telegram" && meta.sandboxId && forwardTelegramToNativeHandlerLocally
         ? await forwardTelegramToNativeHandlerLocally(
             meta.sandboxId,
             payload,

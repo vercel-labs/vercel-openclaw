@@ -116,7 +116,13 @@ export async function runWithBootMessages<
         lastStatus = meta.status;
         const statusMessage = STATUS_MESSAGES[meta.status];
         if (statusMessage) {
-          await handle.update(statusMessage);
+          void handle.update(statusMessage).catch((error) => {
+            logWarn("channels.boot_message_update_failed", {
+              channel,
+              status: meta.status,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          });
         }
       }
 
@@ -137,9 +143,15 @@ export async function runWithBootMessages<
       ) {
         const probe = await probeGatewayReady();
         if (probe.ready) {
-          await handle.update(
-            STATUS_MESSAGES.running ?? "Processing your message\u2026",
-          );
+          void handle
+            .update(STATUS_MESSAGES.running ?? "Processing your message\u2026")
+            .catch((error) => {
+              logWarn("channels.boot_message_update_failed", {
+                channel,
+                status: "running",
+                error: error instanceof Error ? error.message : String(error),
+              });
+            });
           return {
             meta: await getInitializedMeta(),
             bootMessageSent: true,
@@ -157,16 +169,15 @@ export async function runWithBootMessages<
     }
   } finally {
     // Always clean up the boot message
-    try {
-      await sleep(BOOT_MESSAGE_CLEAR_DELAY_MS);
-      await handle.clear();
-    } catch (error) {
-      logWarn("channels.boot_message_cleanup_failed", {
-        channel,
-        phase: "finalize",
-        error: error instanceof Error ? error.message : String(error),
+    setTimeout(() => {
+      void handle.clear().catch((error) => {
+        logWarn("channels.boot_message_cleanup_failed", {
+          channel,
+          phase: "finalize",
+          error: error instanceof Error ? error.message : String(error),
+        });
       });
-    }
+    }, BOOT_MESSAGE_CLEAR_DELAY_MS).unref?.();
   }
 }
 

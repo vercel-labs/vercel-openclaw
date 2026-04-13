@@ -197,7 +197,8 @@ test("boot-messages: sends boot message and clears on running", async () => {
       assert.equal(result.bootMessageSent, true);
       // Should have sent initial boot message
       assert.ok(log.some((e) => e.action === "send"), "should have sent boot message");
-      // Should have cleared boot message
+      // Clear now happens asynchronously after the wake path returns.
+      await new Promise((r) => setTimeout(r, 600));
       assert.ok(log.some((e) => e.action === "clear"), "should have cleared boot message");
     } finally {
       globalThis.fetch = originalFetch;
@@ -237,6 +238,7 @@ test("boot-messages: boot message cleared after successful restore", async () =>
       assert.equal(result.bootMessageSent, true);
       // Boot message must always be cleared (even on success)
       assert.ok(log.some((e) => e.action === "send"), "should have sent boot message");
+      await new Promise((r) => setTimeout(r, 600));
       assert.ok(log.some((e) => e.action === "clear"), "should have cleared after restore");
     } finally {
       globalThis.fetch = originalFetch;
@@ -330,10 +332,10 @@ test("boot-messages: updates message on status transition", async () => {
       const updates = log.filter((e) => e.action === "update");
       assert.ok(updates.length >= 1, "should have at least one status update");
 
-      // Check that we see restoring and booting messages
+      // Check that we see restore-oriented status transitions
       const updateTexts = updates.map((e) => e.text).join("|");
       assert.ok(
-        updateTexts.includes("Creating") || updateTexts.includes("Starting"),
+        updateTexts.includes("Restoring") || updateTexts.includes("Starting"),
         `should have status transitions in: ${updateTexts}`,
       );
     } finally {
