@@ -10,6 +10,7 @@ export type SetupPhase =
   | "installing-bun"
   | "cleaning-cache"
   | "installing-peer-deps"
+  | "patching-openclaw"
   | "installing-plugin"
   | "writing-config"
   | "checking-version"
@@ -50,6 +51,7 @@ const PHASE_LABELS: Record<SetupPhase, string> = {
   "installing-bun": "Installing Bun",
   "cleaning-cache": "Cleaning cache",
   "installing-peer-deps": "Installing peer dependencies",
+  "patching-openclaw": "Patching OpenClaw",
   "installing-plugin": "Installing plugin",
   "writing-config": "Writing config",
   "checking-version": "Checking version",

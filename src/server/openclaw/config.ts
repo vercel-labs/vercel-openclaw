@@ -17,6 +17,7 @@ export const OPENCLAW_GATEWAY_TOKEN_PATH = `${OPENCLAW_STATE_DIR}/.gateway-token
 export const OPENCLAW_AI_GATEWAY_API_KEY_PATH = `${OPENCLAW_STATE_DIR}/.ai-gateway-api-key`;
 
 export const OPENCLAW_FORCE_PAIR_SCRIPT_PATH = `${OPENCLAW_STATE_DIR}/.force-pair.mjs`;
+export const OPENCLAW_INSTALL_PATCH_SCRIPT_PATH = `${OPENCLAW_STATE_DIR}/.apply-install-patches.mjs`;
 export const OPENCLAW_NET_LEARN_PATH = "/tmp/net-learn.js";
 export const OPENCLAW_TELEGRAM_BOT_TOKEN_PATH = `${OPENCLAW_STATE_DIR}/.telegram-bot-token`;
 export const OPENCLAW_TELEGRAM_WEBHOOK_PORT = 8787;

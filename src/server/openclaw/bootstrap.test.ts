@@ -8,6 +8,7 @@ import {
   OPENCLAW_CONFIG_PATH,
   OPENCLAW_FAST_RESTORE_SCRIPT_PATH,
   OPENCLAW_FORCE_PAIR_SCRIPT_PATH,
+  OPENCLAW_INSTALL_PATCH_SCRIPT_PATH,
   OPENCLAW_GATEWAY_RESTART_SCRIPT_PATH,
   OPENCLAW_GATEWAY_TOKEN_PATH,
   OPENCLAW_IMAGE_GEN_SCRIPT_PATH,
@@ -117,17 +118,19 @@ test("setupOpenClaw executes commands in correct order", async () => {
 
     const cmds = handle.commands.map((c) => c.cmd);
 
-    // npm install → bash (peer-deps) → sh (bun) → bash (cache) → openclaw --version → bash (startup)
-    // → bash (ps) → bash (ports) → bash (log) → curl (probe) → node (pair)
+    // npm install → bash (peer-deps) → sh (bun) → bash (cache) → node (install patch)
+    // → openclaw --version → bash (startup) → bash (ps) → bash (ports)
+    // → bash (log) → curl (probe) → node (pair)
     assert.equal(cmds[0], "npm", "first command should be npm install");
     assert.equal(cmds[1], "bash", "second command should be peer-deps install");
     assert.equal(cmds[2], "sh", "third command should be bun install");
     assert.equal(cmds[3], "bash", "fourth command should be npm cache cleanup");
-    assert.equal(cmds[4], OPENCLAW_BIN, "fifth command should be version check");
-    assert.equal(cmds[5], "bash", "sixth command should be startup script");
-    // cmds 6-8 are diagnostic checks (ps, ports, log)
+    assert.equal(cmds[4], "node", "fifth command should be install patch");
+    assert.equal(cmds[5], OPENCLAW_BIN, "sixth command should be version check");
+    assert.equal(cmds[6], "bash", "seventh command should be startup script");
+    // cmds 7-9 are diagnostic checks (ps, ports, log)
     const probeIdx = cmds.indexOf("curl");
-    assert.ok(probeIdx > 5, "gateway probe should come after startup");
+    assert.ok(probeIdx > 6, "gateway probe should come after startup");
     const pairIdx = cmds.indexOf("node", probeIdx);
     assert.ok(pairIdx > probeIdx, "force-pair should come after gateway probe");
 
@@ -147,11 +150,14 @@ test("setupOpenClaw executes commands in correct order", async () => {
       ].join("\n"),
     ]);
 
-    // Verify version check args (now at index 4)
-    assert.deepEqual(handle.commands[4].args, ["--version"]);
+    // Verify install patch args (now at index 4)
+    assert.deepEqual(handle.commands[4].args, [OPENCLAW_INSTALL_PATCH_SCRIPT_PATH]);
 
-    // Verify startup script invocation (now at index 5)
-    assert.deepEqual(handle.commands[5].args, [OPENCLAW_STARTUP_SCRIPT_PATH]);
+    // Verify version check args (now at index 5)
+    assert.deepEqual(handle.commands[5].args, ["--version"]);
+
+    // Verify startup script invocation (now at index 6)
+    assert.deepEqual(handle.commands[6].args, [OPENCLAW_STARTUP_SCRIPT_PATH]);
 
     // Verify force-pair invocation
     assert.deepEqual(handle.commands[pairIdx].args, [
@@ -183,6 +189,7 @@ test("setupOpenClaw writes all required config files", async () => {
       OPENCLAW_CONFIG_PATH,
       OPENCLAW_GATEWAY_TOKEN_PATH,
       OPENCLAW_FORCE_PAIR_SCRIPT_PATH,
+      OPENCLAW_INSTALL_PATCH_SCRIPT_PATH,
       OPENCLAW_STARTUP_SCRIPT_PATH,
       OPENCLAW_FAST_RESTORE_SCRIPT_PATH,
       OPENCLAW_GATEWAY_RESTART_SCRIPT_PATH,
@@ -215,6 +222,39 @@ test("setupOpenClaw writes all required config files", async () => {
     for (const p of expectedPaths) {
       assert.ok(writtenPaths.includes(p), `missing file: ${p}`);
     }
+  } finally {
+    h.teardown();
+  }
+});
+
+test("setupOpenClaw writes and runs the install patch script before version check", async () => {
+  const h = createScenarioHarness();
+  try {
+    const handle = await createHandle(h);
+
+    await setupOpenClaw(handle, {
+      gatewayToken: "tok-install-patch",
+      proxyOrigin: "https://proxy.test",
+    });
+
+    const patchFile = handle.writtenFiles.find(
+      (f) => f.path === OPENCLAW_INSTALL_PATCH_SCRIPT_PATH,
+    );
+    assert.ok(patchFile, "install patch script should be written");
+    assert.match(
+      patchFile.content.toString("utf8"),
+      /vercel-openclaw:qmd-warmup-delay/,
+      "install patch script should include the qmd warmup delay marker",
+    );
+
+    const patchCmdIdx = handle.commands.findIndex(
+      (c) => c.cmd === "node" && c.args?.[0] === OPENCLAW_INSTALL_PATCH_SCRIPT_PATH,
+    );
+    const versionCmdIdx = handle.commands.findIndex(
+      (c) => c.cmd === OPENCLAW_BIN && c.args?.[0] === "--version",
+    );
+    assert.ok(patchCmdIdx >= 0, "install patch command should run");
+    assert.ok(versionCmdIdx > patchCmdIdx, "install patch should run before version check");
   } finally {
     h.teardown();
   }
@@ -853,6 +893,44 @@ test("setupOpenClaw throws CommandFailedError on npm install non-zero exit code"
         const json = err.toJSON();
         assert.equal(json.command, "npm install");
         assert.equal(json.exitCode, 1);
+        return true;
+      },
+    );
+  } finally {
+    h.teardown();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Failure-path: install patch non-zero exit code throws CommandFailedError
+// ---------------------------------------------------------------------------
+
+test("setupOpenClaw throws CommandFailedError when install patching fails", async () => {
+  const h = createScenarioHarness();
+  try {
+    const handle = await createHandle(h);
+
+    handle.responders.push((cmd, args) => {
+      if (cmd === "node" && args?.[0] === OPENCLAW_INSTALL_PATCH_SCRIPT_PATH) {
+        return {
+          exitCode: 1,
+          output: async () => "target-not-found",
+        };
+      }
+      return undefined;
+    });
+
+    await assert.rejects(
+      () =>
+        setupOpenClaw(handle, {
+          gatewayToken: "tok",
+          proxyOrigin: "https://proxy.test",
+        }),
+      (err: unknown) => {
+        assert.ok(err instanceof CommandFailedError, `Expected CommandFailedError, got ${(err as Error).name}`);
+        assert.equal(err.command, "openclaw install patch");
+        assert.equal(err.exitCode, 1);
+        assert.ok(err.trimmedOutput.includes("target-not-found"));
         return true;
       },
     );

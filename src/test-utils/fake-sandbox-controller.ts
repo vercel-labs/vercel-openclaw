@@ -20,6 +20,7 @@ import type {
 import {
   OPENCLAW_FAST_RESTORE_SCRIPT_PATH,
   OPENCLAW_BIN,
+  OPENCLAW_INSTALL_PATCH_SCRIPT_PATH,
 } from "@/server/openclaw/config";
 
 // ---------------------------------------------------------------------------
@@ -167,6 +168,22 @@ export class FakeSandboxHandle implements SandboxHandle {
       writeToStream(stdout, "");
       writeToStream(stderr, "");
       return { exitCode: 0, output: async () => "" };
+    }
+    if (cmd === "node" && cmdArgs?.[0] === OPENCLAW_INSTALL_PATCH_SCRIPT_PATH) {
+      const patchResult = JSON.stringify({
+        status: "applied",
+        filePath: "/home/vercel-sandbox/.global/npm/lib/node_modules/openclaw/dist/server.impl-hash.js",
+      });
+      writeToStream(stdout, patchResult);
+      writeToStream(stderr, "");
+      return {
+        exitCode: 0,
+        output: async (stream?: "stdout" | "stderr" | "both") => {
+          if (stream === "stdout") return patchResult;
+          if (stream === "stderr") return "";
+          return patchResult;
+        },
+      };
     }
     // Fresh fake sandboxes do not have OpenClaw installed until bootstrap
     // succeeds, unless a test explicitly simulates a resumed persistent

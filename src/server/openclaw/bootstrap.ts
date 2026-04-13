@@ -10,10 +10,15 @@ import {
   BUN_INSTALL_DIR,
   OPENCLAW_BIN,
   OPENCLAW_FORCE_PAIR_SCRIPT_PATH,
+  OPENCLAW_INSTALL_PATCH_SCRIPT_PATH,
   OPENCLAW_LOG_FILE,
   OPENCLAW_STARTUP_SCRIPT_PATH,
   OPENCLAW_STATE_DIR,
 } from "@/server/openclaw/config";
+import {
+  buildOpenClawInstallPatchScript,
+  parseOpenClawInstallPatchOutcome,
+} from "@/server/openclaw/install-patches";
 import {
   buildBootstrapFiles,
   buildRestoreAssetManifest,
@@ -252,15 +257,21 @@ export async function setupOpenClaw(
   progress?.setPhase("writing-config", "Writing gateway config");
   progress?.appendLine("system", "Writing OpenClaw config and startup files");
 
-  const bootstrapFiles = buildBootstrapFiles({
-    gatewayToken: options.gatewayToken,
-    apiKey: options.apiKey,
-    proxyOrigin: options.proxyOrigin,
-    telegramBotToken: options.telegramBotToken,
-    telegramWebhookSecret: options.telegramWebhookSecret,
-    slackCredentials: options.slackCredentials,
-    whatsappConfig: options.whatsappConfig,
-  });
+  const bootstrapFiles = [
+    ...buildBootstrapFiles({
+      gatewayToken: options.gatewayToken,
+      apiKey: options.apiKey,
+      proxyOrigin: options.proxyOrigin,
+      telegramBotToken: options.telegramBotToken,
+      telegramWebhookSecret: options.telegramWebhookSecret,
+      slackCredentials: options.slackCredentials,
+      whatsappConfig: options.whatsappConfig,
+    }),
+    {
+      path: OPENCLAW_INSTALL_PATCH_SCRIPT_PATH,
+      content: Buffer.from(buildOpenClawInstallPatchScript()),
+    },
+  ];
 
   logInfo("openclaw.setup.bootstrap_files_prepared", {
     sandboxId: sandbox.sandboxId,
@@ -269,6 +280,33 @@ export async function setupOpenClaw(
   });
 
   await sandbox.writeFiles(bootstrapFiles);
+
+  progress?.setPhase("patching-openclaw", "Applying OpenClaw install patches");
+  const installPatchResult = await sandbox.runCommand({
+    cmd: "node",
+    args: [OPENCLAW_INSTALL_PATCH_SCRIPT_PATH],
+    stdout: progress?.makeWritable("stdout"),
+    stderr: progress?.makeWritable("stderr"),
+  });
+  await assertCommandSuccess("openclaw install patch", installPatchResult);
+  const installPatchOutput = (await installPatchResult.output("stdout")).trim();
+  const installPatchOutcome = parseOpenClawInstallPatchOutcome(installPatchOutput);
+  if (!installPatchOutcome) {
+    logWarn("openclaw.setup.install_patch_output_unparsed", {
+      sandboxId: sandbox.sandboxId,
+      output: installPatchOutput.slice(0, 500),
+    });
+  } else if (installPatchOutcome.status === "skipped") {
+    logWarn("openclaw.setup.install_patch_skipped", {
+      sandboxId: sandbox.sandboxId,
+      ...installPatchOutcome,
+    });
+  } else {
+    logInfo("openclaw.setup.install_patch_applied", {
+      sandboxId: sandbox.sandboxId,
+      ...installPatchOutcome,
+    });
+  }
 
   progress?.setPhase("checking-version", "Checking installed version");
   const versionResult = await sandbox.runCommand({
