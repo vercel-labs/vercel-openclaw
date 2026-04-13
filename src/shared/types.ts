@@ -348,6 +348,8 @@ export type RestorePhaseMetrics = {
   forcePairMs: number;
   firewallSyncMs: number;
   localReadyMs: number;
+  /** Wall-clock ms spent after local readiness before restore returned. */
+  postLocalReadyBlockingMs?: number;
   publicReadyMs: number;
   totalMs: number;
   skippedStaticAssetSync: boolean;
@@ -369,6 +371,26 @@ export type RestorePhaseMetrics = {
   hotSparePromotionMs?: number;
   /** Reason the hot-spare was rejected, or null on hit. */
   hotSpareRejectReason?: string | null;
+  /** Whether Telegram config was expected during restore. */
+  telegramExpected?: boolean;
+  /** Whether the restored sandbox config contained channels.telegram. */
+  telegramConfigPresent?: boolean;
+  /** Whether the Telegram listener was confirmed ready during restore. */
+  telegramListenerReady?: boolean;
+  /** HTTP status observed from the in-sandbox Telegram probe, if any. */
+  telegramListenerStatus?: number | null;
+  /** Wall-clock ms spent waiting for the Telegram listener probe. */
+  telegramListenerWaitMs?: number | null;
+  /** Error from the Telegram listener probe, if any. */
+  telegramListenerError?: string | null;
+  /** Whether synchronous Telegram webhook reconcile ran on the blocking path. */
+  telegramReconcileBlocking?: boolean;
+  /** Wall-clock ms spent in synchronous Telegram webhook reconcile, if any. */
+  telegramReconcileMs?: number | null;
+  /** Whether Telegram secret sync ran on the blocking path. */
+  telegramSecretSyncBlocking?: boolean;
+  /** Wall-clock ms spent in synchronous Telegram secret sync, if any. */
+  telegramSecretSyncMs?: number | null;
 };
 
 /**
@@ -805,10 +827,21 @@ function isRestorePhaseMetrics(value: unknown): value is RestorePhaseMetrics {
     typeof v.forcePairMs === "number" &&
     typeof v.firewallSyncMs === "number" &&
     typeof v.localReadyMs === "number" &&
+    (v.postLocalReadyBlockingMs === undefined || typeof v.postLocalReadyBlockingMs === "number") &&
     typeof v.publicReadyMs === "number" &&
     typeof v.totalMs === "number" &&
     typeof v.skippedStaticAssetSync === "boolean" &&
     (v.cronRestoreOutcome === undefined || isCronRestoreOutcome(v.cronRestoreOutcome)) &&
+    (v.telegramExpected === undefined || typeof v.telegramExpected === "boolean") &&
+    (v.telegramConfigPresent === undefined || typeof v.telegramConfigPresent === "boolean") &&
+    (v.telegramListenerReady === undefined || typeof v.telegramListenerReady === "boolean") &&
+    (v.telegramListenerStatus === undefined || v.telegramListenerStatus === null || typeof v.telegramListenerStatus === "number") &&
+    (v.telegramListenerWaitMs === undefined || v.telegramListenerWaitMs === null || typeof v.telegramListenerWaitMs === "number") &&
+    (v.telegramListenerError === undefined || v.telegramListenerError === null || typeof v.telegramListenerError === "string") &&
+    (v.telegramReconcileBlocking === undefined || typeof v.telegramReconcileBlocking === "boolean") &&
+    (v.telegramReconcileMs === undefined || v.telegramReconcileMs === null || typeof v.telegramReconcileMs === "number") &&
+    (v.telegramSecretSyncBlocking === undefined || typeof v.telegramSecretSyncBlocking === "boolean") &&
+    (v.telegramSecretSyncMs === undefined || v.telegramSecretSyncMs === null || typeof v.telegramSecretSyncMs === "number") &&
     (v.assetSha256 === null || typeof v.assetSha256 === "string") &&
     typeof v.vcpus === "number" &&
     typeof v.recordedAt === "number"
