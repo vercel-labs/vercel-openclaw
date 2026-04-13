@@ -18,6 +18,7 @@ export type RetryingForwardResult = {
   attempts: number;
   totalMs: number;
   retries: Array<{ attempt: number; reason: string; status?: number; error?: string }>;
+  attemptsDetail?: ForwardAttemptDetail[];
 };
 
 export type DrainChannelWorkflowDependencies = {
@@ -33,6 +34,7 @@ export type DrainChannelWorkflowDependencies = {
   forwardToNativeHandler: typeof forwardToNativeHandler;
   forwardToNativeHandlerWithRetry: typeof forwardToNativeHandlerWithRetry;
   waitForTelegramNativeHandler: typeof waitForTelegramNativeHandler;
+  probeTelegramNativeHandlerLocally: typeof probeTelegramNativeHandlerLocally;
   buildExistingBootHandle: typeof buildExistingBootHandle;
   RetryableError: typeof import("workflow").RetryableError;
   FatalError: typeof import("workflow").FatalError;
@@ -94,6 +96,7 @@ export async function processChannelStep(
     forwardToNativeHandler,
     forwardToNativeHandlerWithRetry,
     waitForTelegramNativeHandler: waitForTgHandler,
+    probeTelegramNativeHandlerLocally,
     buildExistingBootHandle,
   } = resolvedDependencies;
 
@@ -170,15 +173,46 @@ export async function processChannelStep(
     // isn't swallowed by the base server's generic 200 handler.
     if (channel === "telegram") {
       const { OPENCLAW_TELEGRAM_WEBHOOK_PORT } = await import("@/server/openclaw/config");
+      const webhookSecret = readyMeta.channels?.telegram?.webhookSecret ?? null;
       const probeResult = await waitForTgHandler(
         getSandboxDomain,
         OPENCLAW_TELEGRAM_WEBHOOK_PORT,
-        readyMeta.channels?.telegram?.webhookSecret ?? null,
+        webhookSecret,
       );
+      const localProbeResult = readyMeta.sandboxId
+        ? await probeTelegramNativeHandlerLocally(
+            readyMeta.sandboxId,
+            OPENCLAW_TELEGRAM_WEBHOOK_PORT,
+            webhookSecret,
+          )
+        : null;
+      diag.telegramProbeReady = probeResult.ready;
       diag.telegramProbeAttempts = probeResult.attempts;
       diag.telegramProbeWaitMs = probeResult.waitMs;
       diag.telegramProbeLastStatus = probeResult.lastStatus;
-      console.log(`[DIAG] Telegram native handler probe done: attempts=${probeResult.attempts} waitMs=${probeResult.waitMs} lastStatus=${probeResult.lastStatus}`);
+      diag.telegramProbePublicUrl = probeResult.publicUrl ?? null;
+      diag.telegramProbeTimeline = probeResult.timeline ?? null;
+      diag.telegramLocalProbeStatus = localProbeResult?.status ?? null;
+      diag.telegramLocalProbeReady = localProbeResult?.ready ?? null;
+      diag.telegramLocalProbeError = localProbeResult?.error ?? null;
+      diag.telegramLocalProbeDurationMs = localProbeResult?.durationMs ?? null;
+      diag.telegramLocalProbeBodyLength = localProbeResult?.bodyLength ?? null;
+      diag.telegramLocalProbeBodyHead = localProbeResult?.bodyHead ?? null;
+      diag.telegramLocalProbeHeaders = localProbeResult?.headers ?? null;
+      console.log(`[DIAG] Telegram native handler probe done: attempts=${probeResult.attempts} waitMs=${probeResult.waitMs} lastStatus=${probeResult.lastStatus} localStatus=${localProbeResult?.status ?? "n/a"} localError=${localProbeResult?.error ?? "none"}`);
+
+      if (probeResult.ready !== true && localProbeResult?.ready === true) {
+        logWarn("channels.telegram_probe_surface_mismatch", {
+          channel,
+          requestId,
+          sandboxId: readyMeta.sandboxId,
+          publicLastStatus: probeResult.lastStatus,
+          publicAttempts: probeResult.attempts,
+          publicWaitMs: probeResult.waitMs,
+          localStatus: localProbeResult.status,
+          localReady: localProbeResult.ready,
+        });
+      }
 
       retryingResult = await forwardToNativeHandlerWithRetry(
         channel as ChannelName,
@@ -203,6 +237,7 @@ export async function processChannelStep(
     diag.forwardAttempts = retryingResult?.attempts ?? null;
     diag.forwardRetries = retryingResult?.retries ?? null;
     diag.forwardTotalMs = retryingResult?.totalMs ?? null;
+    diag.forwardAttemptTimeline = retryingResult?.attemptsDetail ?? null;
     console.log(`[DIAG] Phase 2 DONE: ok=${forwardResult.ok} status=${forwardResult.status} attempts=${retryingResult?.attempts ?? 1} retries=${JSON.stringify(retryingResult?.retries ?? [])} durationMs=${diag.forwardDurationMs}`);
 
     logInfo("channels.workflow_native_forward_result", {
@@ -238,8 +273,19 @@ export async function processChannelStep(
         skippedStaticAssetSync: restore?.skippedStaticAssetSync ?? null,
         skippedDynamicConfigSync: restore?.skippedDynamicConfigSync ?? null,
         dynamicConfigReason: restore?.dynamicConfigReason ?? null,
+        telegramProbeReady: diag.telegramProbeReady ?? null,
+        telegramProbeLastStatus: diag.telegramProbeLastStatus ?? null,
+        telegramProbePublicUrl: diag.telegramProbePublicUrl ?? null,
+        telegramLocalProbeStatus: diag.telegramLocalProbeStatus ?? null,
+        telegramLocalProbeReady: diag.telegramLocalProbeReady ?? null,
+        telegramLocalProbeError: diag.telegramLocalProbeError ?? null,
+        telegramLocalProbeDurationMs: diag.telegramLocalProbeDurationMs ?? null,
+        telegramLocalProbeBodyLength: diag.telegramLocalProbeBodyLength ?? null,
+        telegramLocalProbeBodyHead: diag.telegramLocalProbeBodyHead ?? null,
+        telegramLocalProbeHeaders: diag.telegramLocalProbeHeaders ?? null,
         retryingForwardAttempts: retryingResult?.attempts ?? null,
         retryingForwardTotalMs: retryingResult?.totalMs ?? null,
+        retryingForwardAttemptTimeline: retryingResult?.attemptsDetail ?? null,
         hotSpareHit: restore?.hotSpareHit ?? null,
         hotSparePromotionMs: restore?.hotSparePromotionMs ?? null,
         hotSpareRejectReason: restore?.hotSpareRejectReason ?? null,
@@ -293,7 +339,64 @@ export type TelegramProbeResult = {
   attempts: number;
   waitMs: number;
   lastStatus: number | null;
+  publicUrl?: string | null;
+  timeline?: TelegramProbeAttempt[];
 };
+
+export type TelegramProbeAttempt = {
+  attempt: number;
+  elapsedMs: number;
+  durationMs?: number | null;
+  status: number | null;
+  bodyLength?: number | null;
+  bodyHead?: string | null;
+  headers?: DiagnosticHeaders | null;
+  error?: string | null;
+};
+
+export type TelegramLocalProbeResult = {
+  status: number | null;
+  ready: boolean;
+  durationMs?: number | null;
+  bodyLength?: number | null;
+  bodyHead?: string | null;
+  headers?: DiagnosticHeaders | null;
+  error: string | null;
+};
+
+export type DiagnosticHeaders = {
+  server?: string | null;
+  contentType?: string | null;
+  contentLength?: string | null;
+  xPoweredBy?: string | null;
+  via?: string | null;
+  cacheControl?: string | null;
+};
+
+export type ForwardAttemptDetail = {
+  attempt: number;
+  startedAtMs: number;
+  elapsedMs: number;
+  durationMs: number | null;
+  status: number | null;
+  ok: boolean | null;
+  bodyLength: number | null;
+  bodyHead: string | null;
+  headers: DiagnosticHeaders | null;
+  classification: string;
+  error?: string | null;
+};
+
+function pickDiagnosticHeaders(headers: Headers): DiagnosticHeaders {
+  return {
+    server: headers.get("server"),
+    contentType: headers.get("content-type"),
+    contentLength: headers.get("content-length"),
+    xPoweredBy: headers.get("x-powered-by"),
+    via: headers.get("via"),
+    cacheControl: headers.get("cache-control"),
+  };
+}
 
 /**
  * Poll the Telegram native handler on port 8787 until the webhook route
@@ -314,10 +417,14 @@ async function waitForTelegramNativeHandler(
   const startedAt = Date.now();
   const deadline = startedAt + TELEGRAM_PROBE_TIMEOUT_MS;
   let lastStatus: number | null = null;
+  let lastPublicUrl: string | null = null;
+  const timeline: TelegramProbeAttempt[] = [];
 
   for (let attempt = 1; attempt <= TELEGRAM_PROBE_MAX_ATTEMPTS && Date.now() < deadline; attempt++) {
     try {
       const sandboxUrl = await getSandboxDomain(port);
+      lastPublicUrl = sandboxUrl;
+      const attemptStartedAt = Date.now();
       // Send a POST with an invalid secret — if the Telegram handler is
       // registered it returns 401 (secret mismatch).  The base server
       // returns 404 (path not found) or 200 (generic catch-all).
@@ -330,17 +437,44 @@ async function waitForTelegramNativeHandler(
         body: JSON.stringify({ probe: true }),
         signal: AbortSignal.timeout(3_000),
       });
+      const probeBody = await resp.text().catch(() => "");
       lastStatus = resp.status;
+      timeline.push({
+        attempt,
+        elapsedMs: Date.now() - startedAt,
+        durationMs: Date.now() - attemptStartedAt,
+        status: resp.status,
+        bodyLength: probeBody.length,
+        bodyHead: probeBody.slice(0, 200),
+        headers: pickDiagnosticHeaders(resp.headers),
+      });
 
       // 401 = Telegram handler is registered and rejecting our invalid secret.
       // This means the real forward with the correct secret will be accepted.
       if (resp.status === 401) {
         console.log(`[DIAG] telegram_probe: ready at attempt=${attempt} status=401 waitMs=${Date.now() - startedAt}`);
-        return { ready: true, attempts: attempt, waitMs: Date.now() - startedAt, lastStatus: 401 };
+        return {
+          ready: true,
+          attempts: attempt,
+          waitMs: Date.now() - startedAt,
+          lastStatus: 401,
+          publicUrl: lastPublicUrl,
+          timeline,
+        };
       }
 
       console.log(`[DIAG] telegram_probe: attempt=${attempt} status=${resp.status} (not ready)`);
     } catch (err) {
+      timeline.push({
+        attempt,
+        elapsedMs: Date.now() - startedAt,
+        durationMs: null,
+        status: null,
+        bodyLength: null,
+        bodyHead: null,
+        headers: null,
+        error: err instanceof Error ? err.message : String(err),
+      });
       console.log(`[DIAG] telegram_probe: attempt=${attempt} error=${err instanceof Error ? err.message : String(err)}`);
     }
 
@@ -351,7 +485,113 @@ async function waitForTelegramNativeHandler(
 
   console.log(`[DIAG] telegram_probe: TIMEOUT after ${Date.now() - startedAt}ms lastStatus=${lastStatus}`);
   // Timed out — proceed anyway and let the retrying forward handle it.
-  return { ready: false, attempts: TELEGRAM_PROBE_MAX_ATTEMPTS, waitMs: Date.now() - startedAt, lastStatus };
+  return {
+    ready: false,
+    attempts: TELEGRAM_PROBE_MAX_ATTEMPTS,
+    waitMs: Date.now() - startedAt,
+    lastStatus,
+    publicUrl: lastPublicUrl,
+    timeline,
+  };
+}
+
+async function probeTelegramNativeHandlerLocally(
+  sandboxId: string,
+  port: number,
+  webhookSecret: string | null,
+): Promise<TelegramLocalProbeResult> {
+  try {
+    const [{ getSandboxController }, { OPENCLAW_TELEGRAM_INTERNAL_WEBHOOK_PATH }] = await Promise.all([
+      import("@/server/sandbox/controller"),
+      import("@/server/openclaw/config"),
+    ]);
+    const sandbox = await getSandboxController().get({ sandboxId });
+    const script = `
+const startedAt = Date.now();
+const [port, path, useSecret] = process.argv.slice(1);
+const url = \`http://127.0.0.1:\${port}\${path}\`;
+const headers = { "content-type": "application/json" };
+if (useSecret === "1") headers["x-telegram-bot-api-secret-token"] = "probe-invalid-secret";
+function pick(headers) {
+  return {
+    server: headers.get("server"),
+    contentType: headers.get("content-type"),
+    contentLength: headers.get("content-length"),
+    xPoweredBy: headers.get("x-powered-by"),
+    via: headers.get("via"),
+    cacheControl: headers.get("cache-control"),
+  };
+}
+fetch(url, {
+  method: "POST",
+  headers,
+  body: JSON.stringify({ probe: true }),
+  signal: AbortSignal.timeout(3000),
+}).then(async (response) => {
+  const text = await response.text().catch(() => "");
+  process.stdout.write(JSON.stringify({
+    status: response.status,
+    durationMs: Date.now() - startedAt,
+    bodyLength: text.length,
+    bodyHead: text.slice(0, 200),
+    headers: pick(response.headers),
+    error: null,
+  }));
+}).catch((error) => {
+  process.stdout.write(JSON.stringify({
+    status: 0,
+    durationMs: Date.now() - startedAt,
+    bodyLength: 0,
+    bodyHead: "",
+    headers: null,
+    error: error instanceof Error ? error.message : String(error),
+  }));
+});
+`.trim();
+    const result = await sandbox.runCommand("node", [
+      "-e",
+      script,
+      String(port),
+      OPENCLAW_TELEGRAM_INTERNAL_WEBHOOK_PATH,
+      webhookSecret ? "1" : "0",
+    ], {
+      signal: AbortSignal.timeout(5_000),
+    });
+    const stdout = (await result.output("stdout")).trim();
+    let parsed: {
+      status?: number;
+      durationMs?: number;
+      bodyLength?: number;
+      bodyHead?: string;
+      headers?: DiagnosticHeaders | null;
+      error?: string | null;
+    } | null = null;
+    try {
+      parsed = JSON.parse(stdout) as typeof parsed;
+    } catch {
+      parsed = null;
+    }
+    const status = typeof parsed?.status === "number" ? parsed.status : null;
+    return {
+      status,
+      ready: status === 401,
+      durationMs: parsed?.durationMs ?? null,
+      bodyLength: parsed?.bodyLength ?? null,
+      bodyHead: parsed?.bodyHead ?? null,
+      headers: parsed?.headers ?? null,
+      error: parsed?.error ?? null,
+    };
+  } catch (error) {
+    return {
+      status: null,
+      ready: false,
+      durationMs: null,
+      bodyLength: null,
+      bodyHead: null,
+      headers: null,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
 }
 
 /**
@@ -382,7 +622,7 @@ async function forwardToNativeHandler(
   payload: unknown,
   meta: import("@/shared/types").SingleMeta,
   getSandboxDomain: (port?: number) => Promise<string>,
-): Promise<{ ok: boolean; status: number; durationMs: number; bodyLength: number }> {
+): Promise<{ ok: boolean; status: number; durationMs: number; bodyLength: number; bodyHead: string; headers: DiagnosticHeaders | null }> {
   const { OPENCLAW_TELEGRAM_WEBHOOK_PORT } = await import("@/server/openclaw/config");
 
   let forwardUrl: string;
@@ -433,7 +673,9 @@ async function forwardToNativeHandler(
   } catch { /* best effort */ }
 
   const bodyLength = responseBody?.length ?? 0;
-  console.log(`[DIAG] native_forward_response status=${response.status} ok=${response.ok} durationMs=${durationMs} bodyLength=${bodyLength} body=${(responseBody ?? "").slice(0, 300)}`);
+  const bodyHead = (responseBody ?? "").slice(0, 300);
+  const headersSnapshot = pickDiagnosticHeaders(response.headers);
+  console.log(`[DIAG] native_forward_response status=${response.status} ok=${response.ok} durationMs=${durationMs} bodyLength=${bodyLength} body=${bodyHead} headers=${JSON.stringify(headersSnapshot)}`);
 
   if (!response.ok) {
     logWarn("channels.native_forward_error_response", {
@@ -442,10 +684,11 @@ async function forwardToNativeHandler(
       forwardUrl,
       sandboxId: meta.sandboxId,
       responseBody: responseBody?.slice(0, 500) ?? null,
+      responseHeaders: headersSnapshot,
     });
   }
 
-  return { ok: response.ok, status: response.status, durationMs, bodyLength };
+  return { ok: response.ok, status: response.status, durationMs, bodyLength, bodyHead, headers: headersSnapshot };
 }
 
 const RETRYING_FORWARD_MAX_ATTEMPTS = 20;
@@ -477,8 +720,10 @@ async function forwardToNativeHandlerWithRetry(
   const startedAt = Date.now();
   const deadline = startedAt + RETRYING_FORWARD_TIMEOUT_MS;
   const retries: Array<{ attempt: number; reason: string; status?: number; error?: string }> = [];
+  const attemptsDetail: ForwardAttemptDetail[] = [];
 
   for (let attempt = 1; attempt <= RETRYING_FORWARD_MAX_ATTEMPTS && Date.now() < deadline; attempt++) {
+    const attemptStartedAt = Date.now();
     try {
       const result = await forwardToNativeHandler(channel, payload, meta, getSandboxDomain);
 
@@ -496,10 +741,29 @@ async function forwardToNativeHandlerWithRetry(
         && result.status === 200
         && result.durationMs < 100
         && result.bodyLength === 0;
+      const classification = swallowed
+        ? "swallowed-by-base-server"
+        : result.status >= 502
+          ? "proxy-error"
+          : result.status === 401 || result.status === 404
+            ? "handler-not-ready"
+            : result.ok
+              ? "accepted"
+              : "handler-error";
+      attemptsDetail.push({
+        attempt,
+        startedAtMs: attemptStartedAt,
+        elapsedMs: Date.now() - startedAt,
+        durationMs: result.durationMs,
+        status: result.status,
+        ok: result.ok,
+        bodyLength: result.bodyLength,
+        bodyHead: result.bodyHead,
+        headers: result.headers,
+        classification,
+      });
       if (result.status >= 502 || result.status === 401 || result.status === 404 || swallowed) {
-        const reason = swallowed ? "swallowed-by-base-server"
-          : result.status >= 502 ? "proxy-error"
-          : "handler-not-ready";
+        const reason = classification;
         const entry = { attempt, reason, status: result.status };
         retries.push(entry);
         logInfo("channels.native_forward_retry", {
@@ -509,6 +773,9 @@ async function forwardToNativeHandlerWithRetry(
           reason,
           durationMs: result.durationMs,
           bodyLength: result.bodyLength,
+          bodyHead: result.bodyHead,
+          responseHeaders: result.headers,
+          retryElapsedMs: Date.now() - startedAt,
         });
         if (attempt < RETRYING_FORWARD_MAX_ATTEMPTS && Date.now() < deadline) {
           await new Promise((r) => setTimeout(r, RETRYING_FORWARD_RETRY_INTERVAL_MS));
@@ -526,6 +793,7 @@ async function forwardToNativeHandlerWithRetry(
         attempts: attempt,
         totalMs,
         retryCount: retries.length,
+        attemptsDetail,
       });
       return {
         ok: result.ok,
@@ -533,17 +801,32 @@ async function forwardToNativeHandlerWithRetry(
         attempts: attempt,
         totalMs,
         retries,
+        attemptsDetail,
       };
     } catch (error) {
       // Connection refused, DNS failure, timeout — handler not reachable.
       const errorMsg = error instanceof Error ? error.message : String(error);
       const entry = { attempt, reason: "fetch-exception" as const, error: errorMsg };
       retries.push(entry);
+      attemptsDetail.push({
+        attempt,
+        startedAtMs: attemptStartedAt,
+        elapsedMs: Date.now() - startedAt,
+        durationMs: null,
+        status: null,
+        ok: null,
+        bodyLength: null,
+        bodyHead: null,
+        headers: null,
+        classification: "fetch-exception",
+        error: errorMsg,
+      });
       logInfo("channels.native_forward_retry", {
         channel,
         attempt,
         reason: "fetch-exception",
         error: errorMsg,
+        retryElapsedMs: Date.now() - startedAt,
       });
       if (attempt < RETRYING_FORWARD_MAX_ATTEMPTS && Date.now() < deadline) {
         await new Promise((r) => setTimeout(r, RETRYING_FORWARD_RETRY_INTERVAL_MS));
@@ -558,6 +841,7 @@ async function forwardToNativeHandlerWithRetry(
     attempts: RETRYING_FORWARD_MAX_ATTEMPTS,
     totalMs,
     retryCount: retries.length,
+    attemptsDetail,
   });
   return {
     ok: false,
@@ -565,6 +849,7 @@ async function forwardToNativeHandlerWithRetry(
     attempts: RETRYING_FORWARD_MAX_ATTEMPTS,
     totalMs,
     retries,
+    attemptsDetail,
   };
 }
 
@@ -775,6 +1060,7 @@ async function loadDrainChannelWorkflowDependencies(): Promise<DrainChannelWorkf
     forwardToNativeHandler,
     forwardToNativeHandlerWithRetry,
     waitForTelegramNativeHandler,
+    probeTelegramNativeHandlerLocally,
     buildExistingBootHandle,
     RetryableError,
     FatalError,

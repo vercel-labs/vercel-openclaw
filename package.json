@@ -11,6 +11,8 @@
     "test": "node scripts/test.mjs",
     "test:watch": "node scripts/test.mjs --watch",
     "smoke:remote": "tsx src/server/smoke/remote-smoke.ts",
+    "test:telegram-wake": "node scripts/test-telegram-wake.mjs",
+    "test:telegram-wake-local": "node scripts/test-telegram-wake-local.mjs",
     "verify": "node scripts/verify.mjs",
     "verify:package-manager": "node scripts/verify-package-manager.mjs",
     "check:verify-contract": "node scripts/check-verifier-contract.mjs",

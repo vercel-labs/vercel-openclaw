@@ -74,6 +74,13 @@ function createWorkflowDependencies(
       attempts: 1,
       waitMs: 0,
       lastStatus: 401,
+      publicUrl: "https://sandbox.example.test",
+      timeline: [{ attempt: 1, elapsedMs: 0, status: 401 }],
+    }),
+    probeTelegramNativeHandlerLocally: async () => ({
+      status: 401,
+      ready: true,
+      error: null,
     }),
     buildExistingBootHandle: async () => undefined,
     RetryableError: TestRetryableError as never,
@@ -396,6 +403,12 @@ test("processChannelStep emits channels.telegram_wake_summary for Telegram reque
   assert.equal(data.skippedStaticAssetSync, true);
   assert.equal(data.skippedDynamicConfigSync, true);
   assert.equal(data.dynamicConfigReason, "hash-match");
+  assert.equal(data.telegramProbeReady, true);
+  assert.equal(data.telegramProbeLastStatus, 401);
+  assert.equal(data.telegramProbePublicUrl, "https://sandbox.example.test");
+  assert.equal(data.telegramLocalProbeStatus, 401);
+  assert.equal(data.telegramLocalProbeReady, true);
+  assert.equal(data.telegramLocalProbeError, null);
   assert.equal(data.retryingForwardAttempts, 1);
   assert.equal(data.hotSpareHit, false);
   assert.equal(data.hotSparePromotionMs, 0);
@@ -579,7 +592,14 @@ test("processChannelStep waits for Telegram native handler before forwarding", a
     }),
     waitForTelegramNativeHandler: async () => {
       probeCallCount += 1;
-      return { ready: true, attempts: 5, waitMs: 2500, lastStatus: 401 };
+      return {
+        ready: true,
+        attempts: 5,
+        waitMs: 2500,
+        lastStatus: 401,
+        publicUrl: "https://tg.test",
+        timeline: [{ attempt: 5, elapsedMs: 2500, status: 401 }],
+      };
     },
     forwardToNativeHandlerWithRetry: async (): Promise<RetryingForwardResult> => {
       forwardCalledAfterProbe = probeCallCount > 0;
@@ -599,7 +619,14 @@ test("processChannelStep does NOT probe for non-Telegram channels", async () => 
   const dependencies = createWorkflowDependencies({
     waitForTelegramNativeHandler: async () => {
       probeCallCount += 1;
-      return { ready: true, attempts: 1, waitMs: 0, lastStatus: 401 };
+      return {
+        ready: true,
+        attempts: 1,
+        waitMs: 0,
+        lastStatus: 401,
+        publicUrl: "https://tg.test",
+        timeline: [{ attempt: 1, elapsedMs: 0, status: 401 }],
+      };
     },
   });
 
@@ -629,7 +656,14 @@ test("processChannelStep still forwards when Telegram probe times out", async ()
     }),
     waitForTelegramNativeHandler: async () => {
       // Probe timed out — handler never became ready
-      return { ready: false, attempts: 20, waitMs: 15000, lastStatus: 404 };
+      return {
+        ready: false,
+        attempts: 20,
+        waitMs: 15000,
+        lastStatus: 404,
+        publicUrl: "https://tg.test",
+        timeline: [{ attempt: 20, elapsedMs: 15000, status: 404 }],
+      };
     },
     forwardToNativeHandlerWithRetry: async (): Promise<RetryingForwardResult> => {
       forwardCalled = true;

@@ -27,6 +27,26 @@ export const telegramWebhookWorkflowRuntime = {
   start: workflowApi.start,
 };
 
+type DiagnosticHeaders = {
+  server?: string | null;
+  contentType?: string | null;
+  contentLength?: string | null;
+  xPoweredBy?: string | null;
+  via?: string | null;
+  cacheControl?: string | null;
+};
+
+function pickDiagnosticHeaders(headers: Headers): DiagnosticHeaders {
+  return {
+    server: headers.get("server"),
+    contentType: headers.get("content-type"),
+    contentLength: headers.get("content-length"),
+    xPoweredBy: headers.get("x-powered-by"),
+    via: headers.get("via"),
+    cacheControl: headers.get("cache-control"),
+  };
+}
+
 function extractUpdateId(payload: unknown): string | null {
   if (!payload || typeof payload !== "object") {
     return null;
@@ -93,6 +113,7 @@ export async function POST(request: Request): Promise<Response> {
   let dedupLock: TelegramWebhookDedupLock | null = null;
   try {
     const updateId = extractUpdateId(payload);
+    const chatId = extractTelegramChatId(payload);
     if (updateId) {
       const dedupKey = channelDedupKey("telegram", updateId);
       const dedupToken = await getStore().acquireLock(dedupKey, 24 * 60 * 60);
@@ -116,7 +137,19 @@ export async function POST(request: Request): Promise<Response> {
       status: meta.status,
     });
 
-    logInfo("channels.telegram_webhook_accepted", withOperationContext(op));
+    logInfo("channels.telegram_webhook_accepted", withOperationContext(op, {
+      chatId,
+      receivedAtMs,
+      receivedToAcceptedMs: Date.now() - receivedAtMs,
+      metaStatus: meta.status,
+      sandboxId: meta.sandboxId,
+      snapshotId: meta.snapshotId,
+      hasPort3000Url: Boolean(meta.portUrls?.["3000"]),
+      hasPort8787Url: Boolean(meta.portUrls?.[String(OPENCLAW_TELEGRAM_WEBHOOK_PORT)]),
+      payloadKeys: payload && typeof payload === "object"
+        ? Object.keys(payload as Record<string, unknown>).slice(0, 12)
+        : [],
+    }));
 
     // --- Fast path: forward to OpenClaw's native Telegram handler ---
     // When the sandbox is running, delegate entirely to the native handler on
@@ -137,6 +170,7 @@ export async function POST(request: Request): Promise<Response> {
       try {
         const sandboxWebhookUrl = await getSandboxDomain(OPENCLAW_TELEGRAM_WEBHOOK_PORT);
         const forwardUrl = `${sandboxWebhookUrl}/telegram-webhook`;
+        const fastPathStartedAt = Date.now();
         const forwardResponse = await fetch(forwardUrl, {
           method: "POST",
           headers: {
@@ -146,18 +180,42 @@ export async function POST(request: Request): Promise<Response> {
           body: JSON.stringify(payload),
         });
         const forwardBody = await forwardResponse.text().catch(() => "");
+        const forwardHeaders = pickDiagnosticHeaders(forwardResponse.headers);
+        const fastPathDurationMs = Date.now() - fastPathStartedAt;
+        const suspiciousEmpty200 =
+          forwardResponse.status === 200 &&
+          fastPathDurationMs < 150 &&
+          forwardBody.length === 0;
         if (forwardResponse.ok) {
           logInfo("channels.telegram_fast_path_ok", withOperationContext(op, {
             sandboxId: effectiveMeta.sandboxId,
+            forwardUrl,
             status: forwardResponse.status,
+            durationMs: fastPathDurationMs,
             bodyLength: forwardBody.length,
             bodyHead: forwardBody.slice(0, 200),
+            responseHeaders: forwardHeaders,
+            suspiciousEmpty200,
           }));
+          if (suspiciousEmpty200) {
+            logWarn("channels.telegram_fast_path_suspect_empty_200", withOperationContext(op, {
+              sandboxId: effectiveMeta.sandboxId,
+              forwardUrl,
+              status: forwardResponse.status,
+              durationMs: fastPathDurationMs,
+              bodyLength: forwardBody.length,
+              responseHeaders: forwardHeaders,
+            }));
+          }
         } else {
           logWarn("channels.telegram_fast_path_non_ok", withOperationContext(op, {
             status: forwardResponse.status,
             sandboxId: effectiveMeta.sandboxId,
+            forwardUrl,
+            durationMs: fastPathDurationMs,
+            bodyLength: forwardBody.length,
             bodyHead: forwardBody.slice(0, 200),
+            responseHeaders: forwardHeaders,
           }));
         }
         return Response.json({ ok: true });
@@ -170,7 +228,14 @@ export async function POST(request: Request): Promise<Response> {
           sandboxId: effectiveMeta.sandboxId,
           action: "reconcile_and_wake",
         }));
+        const staleMeta = effectiveMeta;
         effectiveMeta = await reconcileStaleRunningStatus();
+        logInfo("channels.telegram_fast_path_reconciled", withOperationContext(op, {
+          previousStatus: staleMeta.status,
+          previousSandboxId: staleMeta.sandboxId,
+          reconciledStatus: effectiveMeta.status,
+          reconciledSandboxId: effectiveMeta.sandboxId,
+        }));
       }
     }
 
@@ -178,24 +243,39 @@ export async function POST(request: Request): Promise<Response> {
     // so the user gets immediate feedback. The message ID is passed to the
     // workflow so the step can edit/delete it during processing.
     let bootMessageId: number | null = null;
-    const chatId = extractTelegramChatId(payload);
     if (effectiveMeta.status !== "running" && chatId) {
       try {
         const result = await sendMessage(config.botToken, Number(chatId), "🦞 Waking up\u2026 one moment.");
         bootMessageId = result.message_id;
-        logInfo("channels.telegram_boot_message_sent", withOperationContext(op, { chatId, bootMessageId }));
+        logInfo("channels.telegram_boot_message_sent", withOperationContext(op, {
+          chatId,
+          bootMessageId,
+          receivedToBootMessageMs: Date.now() - receivedAtMs,
+        }));
       } catch (err) {
         logWarn("channels.telegram_boot_message_failed", withOperationContext(op, {
           chatId,
           error: err instanceof Error ? err.message : String(err),
+          receivedToBootMessageAttemptMs: Date.now() - receivedAtMs,
         }));
       }
     }
 
     try {
       const origin = getPublicOrigin(request);
+      logInfo("channels.telegram_workflow_starting", withOperationContext(op, {
+        effectiveStatus: effectiveMeta.status,
+        effectiveSandboxId: effectiveMeta.sandboxId,
+        bootMessageId,
+        handoffDelayMs: Date.now() - receivedAtMs,
+      }));
       await telegramWebhookWorkflowRuntime.start(drainChannelWorkflow, ["telegram", payload, origin, requestId ?? null, bootMessageId, receivedAtMs]);
-      logInfo("channels.telegram_workflow_started", withOperationContext(op));
+      logInfo("channels.telegram_workflow_started", withOperationContext(op, {
+        effectiveStatus: effectiveMeta.status,
+        effectiveSandboxId: effectiveMeta.sandboxId,
+        bootMessageId,
+        handoffDelayMs: Date.now() - receivedAtMs,
+      }));
     } catch (error) {
       const dedupRelease = await releaseTelegramWebhookDedupLockForRetry(dedupLock);
       logWarn("channels.telegram_workflow_start_failed", withOperationContext(op, {

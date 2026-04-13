@@ -32,7 +32,11 @@ The file `.env.agent` in the repo root contains non-secret configuration for rem
 | Variable | Purpose |
 |----------|---------|
 | `OPENCLAW_BASE_URL` | The deployed app URL (e.g. `https://vercel-openclaw.labs.vercel.dev`) |
+| `OPENCLAW_DEPLOYMENT_ID` | The exact deployment ID currently under investigation |
+| `OPENCLAW_PROJECT_ID` | The Vercel project ID for `vercel-labs/vercel-openclaw` |
+| `OPENCLAW_SCOPE` | The Vercel scope/team slug (`vercel-labs`) |
 | `ADMIN_SECRET` | The admin secret for bearer token auth |
+| `VERCEL_AUTOMATION_BYPASS_SECRET` | Vercel deployment protection bypass secret |
 
 Usage: source the file or read the values before running remote scripts:
 
@@ -46,6 +50,220 @@ npm run smoke:remote -- --base-url "$OPENCLAW_BASE_URL" --destructive
 ```
 
 **Important:** `.env.agent` should only contain values safe for AI agents to read. Never put Upstash tokens, OIDC secrets, session secrets, or channel signing keys here — those belong in `.env.local`.
+
+## Running Instance Investigation
+
+Use this playbook when the task is to inspect the live running sandbox, verify that the correct deployment is being queried, or explain slow Telegram wake/reply behavior.
+
+### Rules of engagement
+
+- Treat `https://vercel-openclaw.labs.vercel.dev` as the canonical production alias.
+- Always stay scoped to `vercel-labs`.
+- Prefer explicit deployment and project identifiers from `.env.agent` over the local `.vercel/project.json` link.
+- The local `.vercel/project.json` may point at a different project; do not trust it for production debugging.
+
+### Current known-good production identifiers
+
+- Scope/team: `vercel-labs`
+- Project: `vercel-openclaw`
+- Project ID: `prj_RMaYazjosJflLoZ94GrsSeVdA4Yr`
+- Canonical alias: `https://vercel-openclaw.labs.vercel.dev`
+- Current production deployment during this investigation:
+  `dpl_9kXgMgoBKozhX6bCNdULKYJmRMb9`
+
+### Deployment targeting: verify first
+
+Always prove which deployment the alias currently resolves to before drawing conclusions:
+
+```bash
+vercel inspect "$OPENCLAW_BASE_URL" --scope "$OPENCLAW_SCOPE"
+```
+
+Expected during this investigation:
+
+- deployment id `dpl_9kXgMgoBKozhX6bCNdULKYJmRMb9`
+- alias includes `https://vercel-openclaw.labs.vercel.dev`
+
+### Protected deployment access
+
+`vercel curl` against this deployment requires the protection bypass secret, and `/api/status` also requires app auth:
+
+```bash
+vercel curl /api/health \
+  --deployment "$OPENCLAW_DEPLOYMENT_ID" \
+  --scope "$OPENCLAW_SCOPE" \
+  --protection-bypass "$VERCEL_AUTOMATION_BYPASS_SECRET"
+
+vercel curl /api/status \
+  --deployment "$OPENCLAW_DEPLOYMENT_ID" \
+  --scope "$OPENCLAW_SCOPE" \
+  --protection-bypass "$VERCEL_AUTOMATION_BYPASS_SECRET" \
+  -- --header "Authorization: Bearer $ADMIN_SECRET"
+```
+
+Notes:
+
+- `/api/health` does **not** require app auth, only deployment bypass.
+- `/api/status` requires both deployment bypass and bearer auth.
+- If you omit the bypass secret, `vercel curl` returns the Vercel Authentication HTML page.
+- If you omit the bearer auth for `/api/status`, the app returns `{"error":"UNAUTHORIZED","message":"Authentication required."}`.
+
+### What `/api/status` tells you
+
+This is the source of truth for the app's view of the running instance.
+
+During this investigation, `/api/status` returned:
+
+- `status: "running"`
+- `sandboxId: "oc-prj-rmayazjosjflloz94grssevda4yr"`
+- `snapshotId: null`
+- `openclawVersion: "OpenClaw 2026.4.11 (769908e)"`
+- `restorePreparedReason: "snapshot-missing"`
+
+Interpretation:
+
+- The app is on a fresh running sandbox state, not an active snapshot restore.
+- `snapshotId: null` after `Reset Sandbox -> Create Fresh Sandbox` is expected.
+- The deployment has the current code and current metadata.
+
+### Sandbox naming vs CLI listing
+
+This repo uses a persistent sandbox **name** derived from the instance/project id:
+
+```ts
+const sandboxName = `oc-${current.id.replace(/[^a-z0-9-]/gi, "-").toLowerCase()}`;
+```
+
+See:
+
+- `src/server/sandbox/lifecycle.ts`
+- `src/server/env.ts`
+- `src/server/sandbox/controller.ts`
+
+Important:
+
+- The app stores and reports sandbox identifiers as the persistent sandbox **name** (for example `oc-prj-rmayazjosjflloz94grssevda4yr`).
+- The Sandbox CLI `ls` table may show `sbx_*` identifiers instead.
+- Do **not** assume the app-reported `sandboxId` will look like the `sbx_*` values shown by `npx sandbox ls`.
+- In this codebase, `controller.ts` wraps the SDK so `sandboxId` maps to `sandbox.name`, and `get()` resolves by `name`.
+
+### Sandbox CLI commands
+
+Use the real project id explicitly:
+
+```bash
+npx sandbox ls --all --scope "$OPENCLAW_SCOPE" --project "$OPENCLAW_PROJECT_ID"
+npx sandbox snapshots list --scope "$OPENCLAW_SCOPE" --project "$OPENCLAW_PROJECT_ID"
+```
+
+During this investigation, the CLI inventory showed:
+
+- stopped sandbox `sbx_XXUSKPHfHQi9INydOSzUdC1gLg9h` from ~1 day ago
+- snapshot `snap_c655pK7fMZsdAayHdX9xESDIvmP5`
+
+That older snapshot was a real Vercel Sandbox snapshot object, but it was **not** the same identifier as the app's persistent sandbox name.
+
+### Telegram wake investigation
+
+When investigating Telegram wake-from-sleep latency, use the app's diagnostic endpoint first:
+
+```bash
+vercel curl /api/admin/channel-forward-diag \
+  --deployment "$OPENCLAW_DEPLOYMENT_ID" \
+  --scope "$OPENCLAW_SCOPE" \
+  --protection-bypass "$VERCEL_AUTOMATION_BYPASS_SECRET" \
+  -- --header "Authorization: Bearer $ADMIN_SECRET"
+```
+
+This returns the most recent workflow diagnostic written by `drain-channel-workflow.ts`.
+
+The most useful fields are:
+
+- `receivedAtMs`
+- `workflowStartedAt`
+- `bootDurationMs`
+- `sandboxReadyAt`
+- `telegramProbeAttempts`
+- `telegramProbeWaitMs`
+- `telegramProbeLastStatus`
+- `forwardDurationMs`
+- `forwardAttempts`
+- `forwardRetries`
+- `forwardTotalMs`
+- `totalDurationMs`
+
+### What we learned about Telegram slow replies
+
+The most recent Telegram wake diagnostic showed:
+
+- boot/restore to ready: about `19.65s`
+- Telegram probe wait: about `10.04s`
+- forward duration: about `27.28s`
+- retrying forward total: about `17.23s`
+- total end-to-end: about `47.19s`
+
+Most important finding:
+
+- The dominant delay after sandbox restore was **post-restore Telegram handler readiness**, not the restore copy/label fix.
+- The workflow retried multiple times with reason `swallowed-by-base-server`.
+- The Telegram probe ended with `lastStatus: 200`, which indicates the base server was answering before the Telegram native handler route was actually ready.
+
+In other words:
+
+- sandbox became "running"
+- gateway was up
+- but `/telegram-webhook` on port `8787` was still not truly ready
+- several forwards were swallowed before one finally landed
+
+### Logs endpoint: when to use it
+
+The admin logs endpoint is still useful, but it is not guaranteed to retain the Telegram event you care about. Use it for immediate debugging, not as the only source of truth:
+
+```bash
+vercel curl '/api/admin/logs?channel=telegram' \
+  --deployment "$OPENCLAW_DEPLOYMENT_ID" \
+  --scope "$OPENCLAW_SCOPE" \
+  --protection-bypass "$VERCEL_AUTOMATION_BYPASS_SECRET" \
+  -- --header "Authorization: Bearer $ADMIN_SECRET"
+```
+
+Useful searches:
+
+- `channels.telegram_webhook_accepted`
+- `channels.telegram_boot_message_sent`
+- `channels.workflow_sandbox_ready`
+- `channels.workflow_native_forward_result`
+- `channels.telegram_wake_summary`
+- `sandbox.create.persistent_resume`
+- `sandbox.create.persistent_resume.complete`
+- `sandbox.restore.metrics`
+
+If `logs` comes back empty but the wake just happened, check `/api/admin/channel-forward-diag` instead; that endpoint is often more reliable for the latest Telegram wake.
+
+### Verifying the restore-copy patch specifically
+
+The restore-copy patch changed wake flows so snapshot/persistent resume paths surface restore-oriented state instead of briefly showing create-oriented copy.
+
+Relevant files:
+
+- `src/server/sandbox/lifecycle.ts`
+- `src/server/sandbox/lifecycle.test.ts`
+- `src/server/channels/core/boot-messages.test.ts`
+
+Current patch behavior:
+
+- restore scheduling now surfaces `restoring`
+- progress uses `resuming-sandbox`
+- copy should read restore-oriented text
+- only if resume falls back to real create should it switch to create wording
+
+To verify the patch in production:
+
+1. Stop the running sandbox so the next message must wake it.
+2. Trigger Telegram.
+3. Capture `/api/admin/channel-forward-diag` and `/api/admin/logs`.
+4. Confirm the lifecycle/progress path is restore-oriented.
+5. If the reply is still slow, check whether the delay is restore itself or the Telegram native handler registration lag on port `8787`.
 
 ---
 
@@ -69,6 +287,11 @@ npm run test:watch                                          # watch mode
 node scripts/check-deploy-readiness.mjs --base-url "$OPENCLAW_BASE_URL" --admin-secret "$ADMIN_SECRET"
 node scripts/check-deploy-readiness.mjs --base-url "$OPENCLAW_BASE_URL" --admin-secret "$ADMIN_SECRET" --mode destructive
 npm run smoke:remote -- --base-url "$OPENCLAW_BASE_URL" --destructive --timeout 180
+node scripts/test-telegram-wake.mjs --base-url "$OPENCLAW_BASE_URL" --admin-secret "$ADMIN_SECRET"
+
+# Local public-webhook reproduction with vgrok
+# Uses a sanitized .env.local, unique OPENCLAW_INSTANCE_ID, next dev, vgrok, and the same Telegram wake script via the public tunnel
+npm run test:telegram-wake-local -- --timeout 180
 
 # Ad-hoc endpoint checks
 vercel curl /api/health --deployment "$OPENCLAW_BASE_URL"
@@ -160,6 +383,33 @@ npm run smoke:remote -- \
 
 **Auth flags:**
 - `--protection-bypass` — reads from flag or `VERCEL_AUTOMATION_BYPASS_SECRET` env var
+
+## Local Telegram Wake Testing via `vgrok`
+
+Use this when you want the most realistic local reproduction of Telegram wake-from-sleep behavior without pointing Telegram at production.
+
+What the local harness does:
+
+1. Backs up `.env.local`
+2. Removes Vercel deployment markers like `VERCEL_ENV` and `VERCEL_URL` so local Next.js does not enter the deployed-Vercel codepath
+3. Preserves sandbox credentials like `VERCEL_OIDC_TOKEN` so the app can still talk to `@vercel/sandbox`
+4. Sets a unique `OPENCLAW_INSTANCE_ID` so the local run does not reuse the production persistent sandbox name
+5. Starts `next dev`
+6. Starts `vgrok`
+7. Runs the same `scripts/test-telegram-wake.mjs` script through the public `vgrok` URL
+8. Restores `.env.local` afterward
+
+Command:
+
+```bash
+npm run test:telegram-wake-local -- --timeout 180
+```
+
+Important notes:
+
+- The local harness intentionally sends admin requests through the `vgrok` URL, not `localhost`. That lets `buildPublicUrl()` derive the public host from the incoming request, so `NEXT_PUBLIC_APP_URL` is not required for the test.
+- If Telegram is not configured, `scripts/test-telegram-wake.mjs` will auto-configure smoke test channel credentials through `PUT /api/admin/channel-secrets` and remove them afterward.
+- The local run still needs a usable sandbox credential. In practice that means preserving `VERCEL_OIDC_TOKEN` in `.env.local` or setting `AI_GATEWAY_API_KEY`.
 - `--auth-cookie` — reads from flag or `SMOKE_AUTH_COOKIE` env var
 - **Never commit or hardcode secrets in docs, code samples, or tests**
 

@@ -8,6 +8,11 @@
  * message is processed, then reads the channel-forward-diag for a
  * timing breakdown.
  *
+ * If Telegram is not already configured, the script can auto-configure
+ * smoke test channel credentials via PUT /api/admin/channel-secrets and
+ * remove them afterward. This keeps local/public tunnel testing realistic
+ * without requiring a real Telegram bot.
+ *
  * Usage:
  *   node scripts/test-telegram-wake.mjs --base-url https://my-app.vercel.app --admin-secret <secret>
  *   node scripts/test-telegram-wake.mjs --base-url https://my-app.vercel.app --admin-secret <secret> --timeout 180
@@ -186,6 +191,37 @@ function buildTelegramPayload() {
   });
 }
 
+async function configureTestChannels() {
+  log("phase: configuring smoke test channels...");
+  const res = await fetchJson("/api/admin/channel-secrets", {
+    method: "PUT",
+    mutation: true,
+    body: "{}",
+  });
+  if (!res.ok) {
+    throw new Error(
+      `configure test channels failed: HTTP ${res.status} ${JSON.stringify(res.body)}`,
+    );
+  }
+  log("smoke test channels configured");
+  return res.body;
+}
+
+async function cleanupTestChannels() {
+  log("phase: cleaning up smoke test channels...");
+  const res = await fetchJson("/api/admin/channel-secrets", {
+    method: "DELETE",
+    mutation: true,
+    body: "{}",
+  });
+  if (!res.ok) {
+    throw new Error(
+      `cleanup test channels failed: HTTP ${res.status} ${JSON.stringify(res.body)}`,
+    );
+  }
+  log("smoke test channels removed");
+}
+
 // ---------------------------------------------------------------------------
 // Phases
 // ---------------------------------------------------------------------------
@@ -206,7 +242,7 @@ async function ensureRunning() {
   return res.body;
 }
 
-async function verifyTelegramConfigured() {
+async function ensureTelegramConfigured() {
   log("phase: verifying Telegram is configured...");
   const res = await fetchJson("/api/channels/summary");
   if (!res.ok) {
@@ -215,11 +251,28 @@ async function verifyTelegramConfigured() {
     );
   }
   const tg = res.body?.telegram;
-  if (!tg?.configured) {
-    throw new Error("Telegram is not configured — connect it in the admin panel first");
+  if (tg?.configured) {
+    log(`Telegram: configured=${tg.configured} status=${tg.status}`);
+    return { configuredByUs: false, summary: res.body };
   }
-  log(`Telegram: configured=${tg.configured} status=${tg.status}`);
-  return res.body;
+
+  log("Telegram is not configured; falling back to smoke test channel config");
+  await configureTestChannels();
+
+  const retry = await fetchJson("/api/channels/summary");
+  if (!retry.ok) {
+    throw new Error(
+      `channel summary retry failed: HTTP ${retry.status} ${JSON.stringify(retry.body)}`,
+    );
+  }
+
+  const retryTelegram = retry.body?.telegram;
+  if (!retryTelegram?.configured) {
+    throw new Error("Telegram smoke test channel setup did not produce a configured Telegram channel");
+  }
+
+  log(`Telegram: configured=${retryTelegram.configured} status=${retryTelegram.status}`);
+  return { configuredByUs: true, summary: retry.body };
 }
 
 async function stopSandbox() {
@@ -288,6 +341,7 @@ async function waitForRunning() {
   const t0 = Date.now();
   const deadline = t0 + timeoutMs;
   let delay = 3_000;
+  let lastDiag = null;
   while (Date.now() < deadline) {
     await sleep(delay);
     try {
@@ -302,8 +356,44 @@ async function waitForRunning() {
     } catch {
       // ignore transient errors
     }
+
+    // Local next dev + workflow execution can leave /api/status on stale
+    // in-memory metadata even after the workflow has finished.  When that
+    // happens, treat a completed channel-forward diagnostic as the source
+    // of truth that the wake path succeeded.
+    try {
+      const diagRes = await fetchJson("/api/admin/channel-forward-diag");
+      if (diagRes.ok && diagRes.body && !diagRes.body.error) {
+        lastDiag = diagRes.body;
+        if (
+          diagRes.body.outcome === "success" ||
+          diagRes.body.forwardOk === true
+        ) {
+          log(
+            `wake confirmed by diagnostic after ${Math.round(
+              (Date.now() - t0) / 1000,
+            )}s`,
+          );
+          return {
+            wakeMs: Date.now() - t0,
+            viaDiagnostic: true,
+            diag: diagRes.body,
+          };
+        }
+      }
+    } catch {
+      // ignore diag polling errors
+    }
+
     delay = Math.min(delay * 1.3, 10_000);
   }
+
+  if (lastDiag?.outcome || lastDiag?.forwardOk != null) {
+    throw new Error(
+      `sandbox status never became running within ${timeoutSec}s; last diagnostic was ${JSON.stringify(lastDiag)}`,
+    );
+  }
+
   throw new Error(
     `sandbox did not wake up within ${timeoutSec}s — message may be lost`,
   );
@@ -413,8 +503,9 @@ async function main() {
     // 1. Pre-check: sandbox must be running
     await ensureRunning();
 
-    // 2. Verify Telegram is configured (uses existing credentials)
-    await verifyTelegramConfigured();
+    // 2. Verify Telegram is configured, or auto-configure smoke credentials
+    const configState = await ensureTelegramConfigured();
+    configuredByUs = configState.configuredByUs;
 
     // 3. Stop the sandbox
     await stopSandbox();
@@ -499,7 +590,17 @@ async function main() {
     console.error(JSON.stringify(result, null, jsonOnly ? 0 : 2));
     return 1;
   } finally {
-    // No cleanup needed — we use existing channel config, not test credentials
+    if (configuredByUs && !skipCleanup) {
+      try {
+        await cleanupTestChannels();
+      } catch (cleanupError) {
+        if (!jsonOnly) {
+          process.stderr.write(
+            `[telegram-wake] cleanup warning: ${cleanupError.message}\n`,
+          );
+        }
+      }
+    }
   }
 }
 
