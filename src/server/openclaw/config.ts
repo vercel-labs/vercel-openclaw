@@ -415,6 +415,12 @@ export function buildGatewayConfig(
       webhookPort: OPENCLAW_TELEGRAM_WEBHOOK_PORT,
       webhookHost: OPENCLAW_TELEGRAM_WEBHOOK_HOST,
       webhookPath: OPENCLAW_TELEGRAM_INTERNAL_WEBHOOK_PATH,
+      // Disable exec approval handler to prevent a 19-second blocking
+      // WebSocket connect during channel startup.  The approval bootstrap
+      // (new in v2026.4.11) creates a gateway client that hangs when the
+      // sandbox network isn't ready.  Approvals are not used in this
+      // deployment — channel messages go through the webhook workflow.
+      execApprovals: { enabled: false },
     };
     if (origin) {
       const webhookUrl = new URL(TELEGRAM_PUBLIC_WEBHOOK_PATH, `${origin}/`);
@@ -444,6 +450,8 @@ export function buildGatewayConfig(
       groupPolicy: "open",
       allowFrom: ["*"],
       webhookPath: "/slack/events",
+      // Disable exec approval handler — same reason as Telegram above.
+      execApprovals: { enabled: false },
     };
     config.channels = channels;
   }
