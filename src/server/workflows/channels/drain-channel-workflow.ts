@@ -17,6 +17,7 @@ export type RetryingForwardResult = {
   status: number;
   attempts: number;
   totalMs: number;
+  transport?: "public" | "local" | null;
   retries: Array<{ attempt: number; reason: string; status?: number; error?: string }>;
   attemptsDetail?: ForwardAttemptDetail[];
 };
@@ -287,7 +288,8 @@ export async function processChannelStep(
         payload,
         readyMeta,
         getSandboxDomain,
-        localProbeResult?.ready === true ? null : forwardTelegramToNativeHandlerLocally,
+        forwardTelegramToNativeHandlerLocally,
+        localProbeResult?.ready === true,
       );
       forwardResult = { ok: retryingResult.ok, status: retryingResult.status };
     } else {
@@ -306,6 +308,8 @@ export async function processChannelStep(
     diag.forwardAttempts = retryingResult?.attempts ?? null;
     diag.forwardRetries = retryingResult?.retries ?? null;
     diag.forwardTotalMs = retryingResult?.totalMs ?? null;
+    diag.forwardTransport =
+      retryingResult?.transport ?? (channel === "telegram" ? "public" : null);
     diag.forwardAttemptTimeline = retryingResult?.attemptsDetail ?? null;
     console.log(`[DIAG] Phase 2 DONE: ok=${forwardResult.ok} status=${forwardResult.status} attempts=${retryingResult?.attempts ?? 1} retries=${JSON.stringify(retryingResult?.retries ?? [])} durationMs=${diag.forwardDurationMs}`);
     await persistDiagSnapshot("native-forward-complete", {
@@ -315,6 +319,7 @@ export async function processChannelStep(
       forwardAttempts: diag.forwardAttempts,
       forwardRetries: diag.forwardRetries,
       forwardTotalMs: diag.forwardTotalMs,
+      forwardTransport: diag.forwardTransport,
       forwardAttemptTimeline: diag.forwardAttemptTimeline,
     });
 
@@ -324,6 +329,7 @@ export async function processChannelStep(
       sandboxId: readyMeta.sandboxId,
       ok: forwardResult.ok,
       status: forwardResult.status,
+      transport: retryingResult?.transport ?? (channel === "telegram" ? "public" : null),
       retryingForwardAttempts: retryingResult?.attempts ?? null,
       retryingForwardTotalMs: retryingResult?.totalMs ?? null,
       retryingForwardRetries: retryingResult?.retries?.length ?? null,
@@ -368,6 +374,7 @@ export async function processChannelStep(
         telegramLocalProbeHeaders: diag.telegramLocalProbeHeaders ?? null,
         retryingForwardAttempts: retryingResult?.attempts ?? null,
         retryingForwardTotalMs: retryingResult?.totalMs ?? null,
+        retryingForwardTransport: retryingResult?.transport ?? null,
         retryingForwardAttemptTimeline: retryingResult?.attemptsDetail ?? null,
         telegramReconcileBlocking: restore?.telegramReconcileBlocking ?? null,
         telegramReconcileMs: restore?.telegramReconcileMs ?? null,
@@ -497,6 +504,7 @@ export type ForwardAttemptDetail = {
   bodyLength: number | null;
   bodyHead: string | null;
   headers: DiagnosticHeaders | null;
+  transport: "public" | "local";
   classification: string;
   error?: string | null;
 };
@@ -928,6 +936,7 @@ async function forwardToNativeHandlerWithRetry(
     headers: DiagnosticHeaders | null;
     error?: string | null;
   }>) | null,
+  preferLocalTelegramForward = false,
 ): Promise<RetryingForwardResult> {
   const startedAt = Date.now();
   const deadline = startedAt + RETRYING_FORWARD_TIMEOUT_MS;
@@ -937,9 +946,15 @@ async function forwardToNativeHandlerWithRetry(
   for (let attempt = 1; attempt <= RETRYING_FORWARD_MAX_ATTEMPTS && Date.now() < deadline; attempt++) {
     const attemptStartedAt = Date.now();
     try {
-      const result = channel === "telegram" && meta.sandboxId && forwardTelegramToNativeHandlerLocally
+      const useLocalForward =
+        channel === "telegram"
+        && meta.sandboxId != null
+        && forwardTelegramToNativeHandlerLocally != null
+        && preferLocalTelegramForward;
+      const transport: "public" | "local" = useLocalForward ? "local" : "public";
+      const result = useLocalForward
         ? await forwardTelegramToNativeHandlerLocally(
-            meta.sandboxId,
+            meta.sandboxId as string,
             payload,
             meta.channels.telegram?.webhookSecret ?? null,
           )
@@ -982,6 +997,7 @@ async function forwardToNativeHandlerWithRetry(
         bodyLength: result.bodyLength,
         bodyHead: result.bodyHead,
         headers: result.headers,
+        transport,
         classification,
       });
       if (result.status >= 502 || result.status === 401 || result.status === 404 || swallowed) {
@@ -996,6 +1012,7 @@ async function forwardToNativeHandlerWithRetry(
           durationMs: result.durationMs,
           bodyLength: result.bodyLength,
           bodyHead: result.bodyHead,
+          transport,
           responseHeaders: result.headers,
           retryElapsedMs: Date.now() - startedAt,
         });
@@ -1014,6 +1031,7 @@ async function forwardToNativeHandlerWithRetry(
         status: result.status,
         attempts: attempt,
         totalMs,
+        transport,
         retryCount: retries.length,
         attemptsDetail,
       });
@@ -1022,6 +1040,7 @@ async function forwardToNativeHandlerWithRetry(
         status: result.status,
         attempts: attempt,
         totalMs,
+        transport,
         retries,
         attemptsDetail,
       };
@@ -1040,6 +1059,7 @@ async function forwardToNativeHandlerWithRetry(
         bodyLength: null,
         bodyHead: null,
         headers: null,
+        transport: "public",
         classification: "fetch-exception",
         error: errorMsg,
       });
@@ -1070,6 +1090,7 @@ async function forwardToNativeHandlerWithRetry(
     status: 504,
     attempts: RETRYING_FORWARD_MAX_ATTEMPTS,
     totalMs,
+    transport: null,
     retries,
     attemptsDetail,
   };

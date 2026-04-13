@@ -61,12 +61,29 @@ function createWorkflowDependencies(
         channels: { telegram: null, slack: null, discord: null, whatsapp: null },
       }),
     getSandboxDomain: async () => "https://sandbox.example.test",
-    forwardToNativeHandler: async () => ({ ok: true, status: 200 }),
+    forwardToNativeHandler: async () => ({
+      ok: true,
+      status: 200,
+      durationMs: 0,
+      bodyLength: 0,
+      bodyHead: "",
+      headers: null,
+    }),
+    forwardTelegramToNativeHandlerLocally: async () => ({
+      ok: true,
+      status: 200,
+      durationMs: 0,
+      bodyLength: 0,
+      bodyHead: "",
+      headers: null,
+      error: null,
+    }),
     forwardToNativeHandlerWithRetry: async (): Promise<RetryingForwardResult> => ({
       ok: true,
       status: 200,
       attempts: 1,
       totalMs: 50,
+      transport: "public",
       retries: [],
     }),
     waitForTelegramNativeHandler: async (): Promise<TelegramProbeResult> => ({
@@ -108,7 +125,7 @@ test("processChannelStep skips ensureSandboxReady when boot returns running", as
     },
     forwardToNativeHandlerWithRetry: async (_channel: unknown, _payload: unknown, meta: SingleMeta): Promise<RetryingForwardResult> => {
       forwardedSandboxId = meta.sandboxId ?? null;
-      return { ok: true, status: 200, attempts: 1, totalMs: 50, retries: [] };
+      return { ok: true, status: 200, attempts: 1, totalMs: 50, transport: "public", retries: [] };
     },
   });
 
@@ -139,7 +156,7 @@ test("processChannelStep falls back to ensureSandboxReady when boot returns non-
     },
     forwardToNativeHandlerWithRetry: async (_channel: unknown, _payload: unknown, meta: SingleMeta): Promise<RetryingForwardResult> => {
       forwardedSandboxId = meta.sandboxId ?? null;
-      return { ok: true, status: 200, attempts: 1, totalMs: 50, retries: [] };
+      return { ok: true, status: 200, attempts: 1, totalMs: 50, transport: "public", retries: [] };
     },
   });
 
@@ -173,6 +190,7 @@ test("processChannelStep converts native forward 502 into RetryableError (Telegr
       status: 502,
       attempts: 6,
       totalMs: 6000,
+      transport: "public",
       retries: [{ attempt: 1, reason: "proxy-error", status: 502 }],
     }),
   });
@@ -194,6 +212,7 @@ test("processChannelStep keeps native forward 404 fatal (Telegram retrying path)
       status: 404,
       attempts: 1,
       totalMs: 50,
+      transport: "public",
       retries: [],
     }),
   });
@@ -214,11 +233,11 @@ test("processChannelStep uses retrying forward for Telegram, direct forward for 
   const telegramDeps = createWorkflowDependencies({
     forwardToNativeHandlerWithRetry: async (): Promise<RetryingForwardResult> => {
       retryingCalled = true;
-      return { ok: true, status: 200, attempts: 1, totalMs: 50, retries: [] };
+      return { ok: true, status: 200, attempts: 1, totalMs: 50, transport: "public", retries: [] };
     },
     forwardToNativeHandler: async () => {
       directCalled = true;
-      return { ok: true, status: 200 };
+      return { ok: true, status: 200, durationMs: 0, bodyLength: 0, bodyHead: "", headers: null };
     },
   });
 
@@ -232,11 +251,11 @@ test("processChannelStep uses retrying forward for Telegram, direct forward for 
   const slackDeps = createWorkflowDependencies({
     forwardToNativeHandlerWithRetry: async (): Promise<RetryingForwardResult> => {
       retryingCalled = true;
-      return { ok: true, status: 200, attempts: 1, totalMs: 50, retries: [] };
+      return { ok: true, status: 200, attempts: 1, totalMs: 50, transport: "public", retries: [] };
     },
     forwardToNativeHandler: async () => {
       directCalled = true;
-      return { ok: true, status: 200 };
+      return { ok: true, status: 200, durationMs: 0, bodyLength: 0, bodyHead: "", headers: null };
     },
   });
 
@@ -252,6 +271,7 @@ test("processChannelStep converts retrying forward 504 (exhausted) into Retryabl
       status: 504,
       attempts: 6,
       totalMs: 30000,
+      transport: null,
       retries: [
         { attempt: 1, reason: "proxy-error", status: 503 },
         { attempt: 2, reason: "fetch-exception", error: "connect ECONNREFUSED" },
@@ -279,6 +299,7 @@ test("processChannelStep treats retrying forward 500 as retryable at workflow le
       status: 500,
       attempts: 1,
       totalMs: 100,
+      transport: "public",
       retries: [],
     }),
   });
@@ -515,7 +536,7 @@ test("processChannelStep forward captures Telegram webhook secret and correct po
       capturedPayload = payload;
       capturedMeta = meta;
       capturedGetSandboxDomain = getSandboxDomain;
-      return { ok: true, status: 200, attempts: 1, totalMs: 50, retries: [] };
+      return { ok: true, status: 200, attempts: 1, totalMs: 50, transport: "public", retries: [] };
     },
   });
 
@@ -554,7 +575,7 @@ test("processChannelStep forward passes meta with portUrls from boot result", as
       meta: SingleMeta,
     ): Promise<RetryingForwardResult> => {
       forwardedPortUrls = (meta.portUrls as Record<string, string>) ?? null;
-      return { ok: true, status: 200, attempts: 1, totalMs: 50, retries: [] };
+      return { ok: true, status: 200, attempts: 1, totalMs: 50, transport: "public", retries: [] };
     },
   });
 
@@ -610,7 +631,7 @@ test("processChannelStep uses local Telegram native handler readiness before for
     },
     forwardToNativeHandlerWithRetry: async (): Promise<RetryingForwardResult> => {
       forwardCalledAfterLocalProbe = localProbeCallCount > 0;
-      return { ok: true, status: 200, attempts: 1, totalMs: 50, retries: [] };
+      return { ok: true, status: 200, attempts: 1, totalMs: 50, transport: "local", retries: [] };
     },
   });
 
@@ -680,7 +701,7 @@ test("processChannelStep falls back to public Telegram probe when local handler 
     },
     forwardToNativeHandlerWithRetry: async (): Promise<RetryingForwardResult> => {
       forwardCalled = true;
-      return { ok: true, status: 200, attempts: 1, totalMs: 50, retries: [] };
+      return { ok: true, status: 200, attempts: 1, totalMs: 50, transport: "public", retries: [] };
     },
   });
 
@@ -726,7 +747,7 @@ test("processChannelStep still forwards when both Telegram probes time out", asy
     },
     forwardToNativeHandlerWithRetry: async (): Promise<RetryingForwardResult> => {
       forwardCalled = true;
-      return { ok: true, status: 200, attempts: 1, totalMs: 50, retries: [] };
+      return { ok: true, status: 200, attempts: 1, totalMs: 50, transport: "public", retries: [] };
     },
   });
 
