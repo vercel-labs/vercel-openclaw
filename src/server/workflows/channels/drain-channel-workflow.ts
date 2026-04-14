@@ -1,6 +1,7 @@
 import {
   hasWhatsAppBusinessCredentials,
   type ChannelName,
+  type TelegramChannelConfig,
 } from "@/shared/channels";
 import type { BootMessageHandle } from "@/server/channels/core/types";
 import type { QueuedChannelJob } from "@/server/channels/driver";
@@ -10,6 +11,7 @@ import { deleteMessage as deleteWhatsAppMessage } from "@/server/channels/whatsa
 import { logInfo, logWarn } from "@/server/log";
 import { getInitializedMeta } from "@/server/store/store";
 import { getStore } from "@/server/store/store";
+import { mutateMeta } from "@/server/store/store";
 import { channelForwardDiagnosticKey } from "@/server/store/keyspace";
 
 export type RetryingForwardResult = {
@@ -50,6 +52,11 @@ type DrainChannelErrorDependencies = Pick<
 export type ProcessChannelStepOptions = {
   receivedAtMs?: number | null;
   dependencies?: DrainChannelWorkflowDependencies;
+  workflowHandoff?: ChannelWorkflowHandoff | null;
+};
+
+export type ChannelWorkflowHandoff = {
+  fallbackTelegramConfig?: TelegramChannelConfig | null;
 };
 
 export async function drainChannelWorkflow(
@@ -59,10 +66,14 @@ export async function drainChannelWorkflow(
   requestId: string | null,
   bootMessageId?: number | string | null,
   receivedAtMs?: number | null,
+  workflowHandoff?: ChannelWorkflowHandoff | null,
 ): Promise<void> {
   "use workflow";
 
-  await processChannelStep(channel, payload, origin, requestId, bootMessageId ?? null, { receivedAtMs: receivedAtMs ?? null });
+  await processChannelStep(channel, payload, origin, requestId, bootMessageId ?? null, {
+    receivedAtMs: receivedAtMs ?? null,
+    workflowHandoff: workflowHandoff ?? null,
+  });
 }
 
 export async function processChannelStep(
@@ -77,6 +88,10 @@ export async function processChannelStep(
 
   const receivedAtMs = options?.receivedAtMs ?? null;
   const workflowStartedAt = Date.now();
+  const fallbackTelegramConfig =
+    channel === "telegram"
+      ? options?.workflowHandoff?.fallbackTelegramConfig ?? null
+      : null;
   // Diagnostic trace — every phase appends here, written to store at the end.
   const diag: Record<string, unknown> = {
     channel,
@@ -134,6 +149,11 @@ export async function processChannelStep(
     }
   }
 
+  await restoreTelegramConfigFromWorkflowHandoff({
+    requestId,
+    fallbackTelegramConfig,
+  });
+
   const existingBootHandle = await buildExistingBootHandle(channel, payload, bootMessageId);
   diag.hasExistingBootHandle = Boolean(existingBootHandle);
 
@@ -170,30 +190,35 @@ export async function processChannelStep(
           reason: `channel:${channel}`,
           timeoutMs: WORKFLOW_SANDBOX_READY_TIMEOUT_MS,
         });
+    const currentMeta = await getInitializedMeta();
+    const effectiveReadyMeta = {
+      ...readyMeta,
+      channels: readyMeta.channels ?? currentMeta.channels,
+    };
 
     const sandboxReadyAt = Date.now();
-    diag.readyMetaStatus = readyMeta.status;
-    diag.readyMetaSandboxId = readyMeta.sandboxId;
-    diag.readyMetaPortUrlKeys = readyMeta.portUrls ? Object.keys(readyMeta.portUrls) : null;
-    diag.readyMetaPortUrls = readyMeta.portUrls;
-    diag.readyMetaHasWebhookSecret = Boolean(readyMeta.channels?.telegram?.webhookSecret);
+    diag.readyMetaStatus = effectiveReadyMeta.status;
+    diag.readyMetaSandboxId = effectiveReadyMeta.sandboxId;
+    diag.readyMetaPortUrlKeys = effectiveReadyMeta.portUrls ? Object.keys(effectiveReadyMeta.portUrls) : null;
+    diag.readyMetaPortUrls = effectiveReadyMeta.portUrls;
+    diag.readyMetaHasWebhookSecret = Boolean(effectiveReadyMeta.channels?.telegram?.webhookSecret);
     diag.usedBootMetaDirectly = bootResult.meta.status === "running";
     diag.sandboxReadyAt = sandboxReadyAt;
-    console.log(`[DIAG] Sandbox ready: status=${readyMeta.status} sandboxId=${readyMeta.sandboxId} portUrls=${JSON.stringify(readyMeta.portUrls)} hasWebhookSecret=${diag.readyMetaHasWebhookSecret} usedBootMeta=${diag.usedBootMetaDirectly}`);
+    console.log(`[DIAG] Sandbox ready: status=${effectiveReadyMeta.status} sandboxId=${effectiveReadyMeta.sandboxId} portUrls=${JSON.stringify(effectiveReadyMeta.portUrls)} hasWebhookSecret=${diag.readyMetaHasWebhookSecret} usedBootMeta=${diag.usedBootMetaDirectly}`);
     await persistDiagSnapshot("sandbox-ready", {
       readyMetaStatus: diag.readyMetaStatus,
       readyMetaSandboxId: diag.readyMetaSandboxId,
       sandboxReadyAt,
       workflowToSandboxReadyMs: sandboxReadyAt - workflowStartedAt,
-      restoreMetrics: readyMeta.lastRestoreMetrics ?? null,
+      restoreMetrics: effectiveReadyMeta.lastRestoreMetrics ?? null,
     });
 
     logInfo("channels.workflow_sandbox_ready", {
       channel,
       requestId,
       bootResultStatus: bootResult.meta.status,
-      sandboxId: readyMeta.sandboxId,
-      portUrlKeys: readyMeta.portUrls ? Object.keys(readyMeta.portUrls) : null,
+      sandboxId: effectiveReadyMeta.sandboxId,
+      portUrlKeys: effectiveReadyMeta.portUrls ? Object.keys(effectiveReadyMeta.portUrls) : null,
     });
 
     // --- Phase 2: Forward raw payload to native handler ---
@@ -209,29 +234,29 @@ export async function processChannelStep(
     // gate, and keep the public probe only for diagnostics.
     if (channel === "telegram") {
       const { OPENCLAW_TELEGRAM_WEBHOOK_PORT } = await import("@/server/openclaw/config");
-      const webhookSecret = readyMeta.channels?.telegram?.webhookSecret ?? null;
-      let localProbeResult = readyMeta.sandboxId
+      const webhookSecret = effectiveReadyMeta.channels?.telegram?.webhookSecret ?? null;
+      let localProbeResult = effectiveReadyMeta.sandboxId
         ? await probeTelegramNativeHandlerLocally(
-            readyMeta.sandboxId,
+            effectiveReadyMeta.sandboxId,
             OPENCLAW_TELEGRAM_WEBHOOK_PORT,
             webhookSecret,
           )
         : null;
       const localProbeStartedAt = Date.now();
       while (
-        readyMeta.sandboxId
+        effectiveReadyMeta.sandboxId
         && localProbeResult?.ready !== true
         && Date.now() - localProbeStartedAt < TELEGRAM_PROBE_TIMEOUT_MS
       ) {
         await new Promise((r) => setTimeout(r, TELEGRAM_PROBE_INTERVAL_MS));
         localProbeResult = await probeTelegramNativeHandlerLocally(
-          readyMeta.sandboxId,
+          effectiveReadyMeta.sandboxId,
           OPENCLAW_TELEGRAM_WEBHOOK_PORT,
           webhookSecret,
         );
       }
       const probeResult =
-        readyMeta.sandboxId && localProbeResult?.ready === true
+        effectiveReadyMeta.sandboxId && localProbeResult?.ready === true
           ? null
           : await waitForTgHandler(
               getSandboxDomain,
@@ -250,12 +275,13 @@ export async function processChannelStep(
       diag.telegramLocalProbeStatus = localProbeResult?.status ?? null;
       diag.telegramLocalProbeReady = localProbeResult?.ready ?? null;
       diag.telegramLocalProbeError = localProbeResult?.error ?? null;
+      diag.telegramLocalProbeDetail = localProbeResult?.detail ?? null;
       diag.telegramLocalProbeDurationMs = localProbeResult?.durationMs ?? null;
       diag.telegramLocalProbeBodyLength = localProbeResult?.bodyLength ?? null;
       diag.telegramLocalProbeBodyHead = localProbeResult?.bodyHead ?? null;
       diag.telegramLocalProbeHeaders = localProbeResult?.headers ?? null;
       console.log(
-        `[DIAG] Telegram native handler probe done: publicReady=${probeResult?.ready ?? "skipped"} attempts=${probeResult?.attempts ?? 0} waitMs=${probeResult?.waitMs ?? 0} lastStatus=${probeResult?.lastStatus ?? "n/a"} localStatus=${localProbeResult?.status ?? "n/a"} localError=${localProbeResult?.error ?? "none"}`,
+        `[DIAG] Telegram native handler probe done: publicReady=${probeResult?.ready ?? "skipped"} attempts=${probeResult?.attempts ?? 0} waitMs=${probeResult?.waitMs ?? 0} lastStatus=${probeResult?.lastStatus ?? "n/a"} localStatus=${localProbeResult?.status ?? "n/a"} localError=${localProbeResult?.error ?? "none"} localDetail=${localProbeResult?.detail ?? "none"}`,
       );
       await persistDiagSnapshot("telegram-probe-complete", {
         telegramProbeReady: diag.telegramProbeReady ?? null,
@@ -266,6 +292,7 @@ export async function processChannelStep(
         telegramLocalProbeStatus: diag.telegramLocalProbeStatus ?? null,
         telegramLocalProbeReady: diag.telegramLocalProbeReady ?? null,
         telegramLocalProbeError: diag.telegramLocalProbeError ?? null,
+        telegramLocalProbeDetail: diag.telegramLocalProbeDetail ?? null,
         telegramLocalProbeDurationMs: diag.telegramLocalProbeDurationMs ?? null,
       });
 
@@ -273,30 +300,31 @@ export async function processChannelStep(
         logWarn("channels.telegram_probe_local_mismatch", {
           channel,
           requestId,
-          sandboxId: readyMeta.sandboxId,
+          sandboxId: effectiveReadyMeta.sandboxId,
           publicLastStatus: probeResult.lastStatus,
           publicAttempts: probeResult.attempts,
           publicWaitMs: probeResult.waitMs,
           localStatus: localProbeResult?.status ?? null,
           localReady: localProbeResult?.ready ?? null,
           localError: localProbeResult?.error ?? null,
+          localDetail: localProbeResult?.detail ?? null,
         });
       }
 
       retryingResult = await forwardToNativeHandlerWithRetry(
         channel as ChannelName,
         payload,
-        readyMeta,
+        effectiveReadyMeta,
         getSandboxDomain,
         forwardTelegramToNativeHandlerLocally,
-        localProbeResult?.ready === true,
+        Boolean(effectiveReadyMeta.sandboxId),
       );
       forwardResult = { ok: retryingResult.ok, status: retryingResult.status };
     } else {
       forwardResult = await forwardToNativeHandler(
         channel as ChannelName,
         payload,
-        readyMeta,
+        effectiveReadyMeta,
         getSandboxDomain,
       );
     }
@@ -326,7 +354,7 @@ export async function processChannelStep(
     logInfo("channels.workflow_native_forward_result", {
       channel,
       requestId,
-      sandboxId: readyMeta.sandboxId,
+      sandboxId: effectiveReadyMeta.sandboxId,
       ok: forwardResult.ok,
       status: forwardResult.status,
       transport: retryingResult?.transport ?? (channel === "telegram" ? "public" : null),
@@ -337,11 +365,11 @@ export async function processChannelStep(
 
     // Emit one end-to-end Telegram wake summary per request.
     if (channel === "telegram") {
-      const restore = readyMeta.lastRestoreMetrics;
+      const restore = effectiveReadyMeta.lastRestoreMetrics;
       logInfo("channels.telegram_wake_summary", {
         channel,
         requestId,
-        sandboxId: readyMeta.sandboxId,
+        sandboxId: effectiveReadyMeta.sandboxId,
         bootResultStatus: bootResult.meta.status,
         webhookToWorkflowMs: typeof receivedAtMs === "number" ? Math.max(0, workflowStartedAt - receivedAtMs) : null,
         workflowToSandboxReadyMs: sandboxReadyAt - workflowStartedAt,
@@ -368,6 +396,7 @@ export async function processChannelStep(
         telegramLocalProbeStatus: diag.telegramLocalProbeStatus ?? null,
         telegramLocalProbeReady: diag.telegramLocalProbeReady ?? null,
         telegramLocalProbeError: diag.telegramLocalProbeError ?? null,
+        telegramLocalProbeDetail: diag.telegramLocalProbeDetail ?? null,
         telegramLocalProbeDurationMs: diag.telegramLocalProbeDurationMs ?? null,
         telegramLocalProbeBodyLength: diag.telegramLocalProbeBodyLength ?? null,
         telegramLocalProbeBodyHead: diag.telegramLocalProbeBodyHead ?? null,
@@ -422,6 +451,32 @@ export async function processChannelStep(
   }
 }
 
+async function restoreTelegramConfigFromWorkflowHandoff(input: {
+  requestId: string | null;
+  fallbackTelegramConfig: TelegramChannelConfig | null;
+}): Promise<void> {
+  if (!input.fallbackTelegramConfig) {
+    return;
+  }
+
+  const current = await getInitializedMeta();
+  if (current.channels.telegram) {
+    return;
+  }
+
+  await mutateMeta((meta) => {
+    if (!meta.channels.telegram) {
+      meta.channels.telegram = structuredClone(input.fallbackTelegramConfig);
+    }
+  });
+
+  logInfo("channels.telegram_workflow_handoff_restored_config", {
+    requestId: input.requestId,
+    configuredAt: input.fallbackTelegramConfig.configuredAt,
+    botUsername: input.fallbackTelegramConfig.botUsername,
+  });
+}
+
 const NATIVE_HANDLER_TIMEOUT_ERROR = "native_handler_timeout";
 
 const TELEGRAM_PROBE_MAX_ATTEMPTS = 20;
@@ -456,6 +511,7 @@ export type TelegramLocalProbeResult = {
   bodyHead?: string | null;
   headers?: DiagnosticHeaders | null;
   error: string | null;
+  detail?: string | null;
 };
 
 export type DiagnosticHeaders = {
@@ -474,6 +530,7 @@ type TelegramLocalProbeJson = {
   bodyHead?: string;
   headers?: DiagnosticHeaders | null;
   error?: string | null;
+  detail?: string | null;
 };
 
 type TelegramForwardProbeJson = {
@@ -484,6 +541,7 @@ type TelegramForwardProbeJson = {
   bodyHead?: string;
   headers?: DiagnosticHeaders | null;
   error?: string | null;
+  detail?: string | null;
 };
 
 function parseWorkflowJson<T>(stdout: string): T | null {
@@ -667,6 +725,9 @@ fetch(url, {
     bodyHead: "",
     headers: null,
     error: error instanceof Error ? error.message : String(error),
+    detail: error instanceof Error && "cause" in error
+      ? String((error as Error & { cause?: unknown }).cause ?? "")
+      : null,
   }));
 });
 `.trim();
@@ -690,6 +751,7 @@ fetch(url, {
       bodyHead: parsed?.bodyHead ?? null,
       headers: parsed?.headers ?? null,
       error: parsed?.error ?? null,
+      detail: parsed?.detail ?? null,
     };
   } catch (error) {
     return {
@@ -700,6 +762,10 @@ fetch(url, {
       bodyHead: null,
       headers: null,
       error: error instanceof Error ? error.message : String(error),
+      detail:
+        error instanceof Error && "cause" in error
+          ? String((error as Error & { cause?: unknown }).cause ?? "")
+          : null,
     };
   }
 }
@@ -716,6 +782,7 @@ async function forwardTelegramToNativeHandlerLocally(
   bodyHead: string;
   headers: DiagnosticHeaders | null;
   error?: string | null;
+  detail?: string | null;
 }> {
   try {
     const [{ getSandboxController }, { OPENCLAW_TELEGRAM_INTERNAL_WEBHOOK_PATH, OPENCLAW_TELEGRAM_WEBHOOK_PORT }] = await Promise.all([
@@ -764,6 +831,9 @@ fetch(url, {
     bodyHead: "",
     headers: null,
     error: error instanceof Error ? error.message : String(error),
+    detail: error instanceof Error && "cause" in error
+      ? String((error as Error & { cause?: unknown }).cause ?? "")
+      : null,
   }));
 });
 `.trim();
@@ -787,6 +857,7 @@ fetch(url, {
       bodyHead: parsed?.bodyHead ?? "",
       headers: parsed?.headers ?? null,
       error: parsed?.error ?? null,
+      detail: parsed?.detail ?? null,
     };
   } catch (error) {
     return {
@@ -797,6 +868,10 @@ fetch(url, {
       bodyHead: "",
       headers: null,
       error: error instanceof Error ? error.message : String(error),
+      detail:
+        error instanceof Error && "cause" in error
+          ? String((error as Error & { cause?: unknown }).cause ?? "")
+          : null,
     };
   }
 }

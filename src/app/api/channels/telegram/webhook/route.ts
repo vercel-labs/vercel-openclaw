@@ -323,7 +323,15 @@ export async function POST(request: Request): Promise<Response> {
         bootMessageId,
         handoffDelayMs: Date.now() - receivedAtMs,
       }));
-      await telegramWebhookWorkflowRuntime.start(drainChannelWorkflow, ["telegram", payload, origin, requestId ?? null, bootMessageId, receivedAtMs]);
+      await telegramWebhookWorkflowRuntime.start(drainChannelWorkflow, [
+        "telegram",
+        payload,
+        origin,
+        requestId ?? null,
+        bootMessageId,
+        receivedAtMs,
+        { fallbackTelegramConfig: config },
+      ]);
       logInfo("channels.telegram_workflow_started", withOperationContext(op, {
         effectiveStatus: effectiveMeta.status,
         effectiveSandboxId: effectiveMeta.sandboxId,

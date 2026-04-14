@@ -3,10 +3,13 @@ import test from "node:test";
 
 import type { SingleMeta, RestorePhaseMetrics } from "@/shared/types";
 import { getServerLogs, _resetLogBuffer } from "@/server/log";
+import { _resetStoreForTesting, getInitializedMeta } from "@/server/store/store";
+import { setTelegramChannelConfig } from "@/server/channels/state";
 import {
   processChannelStep,
   toWorkflowProcessingError,
   type DrainChannelWorkflowDependencies,
+  type ChannelWorkflowHandoff,
   type RetryingForwardResult,
   type TelegramProbeResult,
 } from "@/server/workflows/channels/drain-channel-workflow";
@@ -38,6 +41,16 @@ class TestFatalError extends Error {
 
 function asMeta(meta: Partial<SingleMeta>): SingleMeta {
   return meta as SingleMeta;
+}
+
+function createFallbackTelegramConfig() {
+  return {
+    botToken: "123456:handoff-token",
+    webhookSecret: "handoff-secret",
+    webhookUrl: "https://example.test/api/channels/telegram/webhook",
+    botUsername: "handoff_bot",
+    configuredAt: 1_777_000_000_000,
+  };
 }
 
 function createWorkflowDependencies(
@@ -106,6 +119,10 @@ function createWorkflowDependencies(
   };
 }
 
+test.beforeEach(async () => {
+  _resetStoreForTesting();
+});
+
 test("processChannelStep skips ensureSandboxReady when boot returns running", async () => {
   let ensureCalls = 0;
   let forwardedSandboxId: string | null = null;
@@ -164,6 +181,97 @@ test("processChannelStep falls back to ensureSandboxReady when boot returns non-
 
   assert.equal(ensureCalls, 1);
   assert.equal(forwardedSandboxId, "sbx-restored");
+});
+
+test("processChannelStep restores Telegram config from workflow handoff when store is empty", async () => {
+  const fallbackTelegramConfig = createFallbackTelegramConfig();
+  let bootHandleSawConfig = false;
+  let forwardedWebhookSecret: string | null = null;
+
+  const dependencies = createWorkflowDependencies({
+    buildExistingBootHandle: async () => {
+      const meta = await getInitializedMeta();
+      bootHandleSawConfig = meta.channels.telegram?.webhookSecret === fallbackTelegramConfig.webhookSecret;
+      return undefined;
+    },
+    runWithBootMessages: async () => ({
+      meta: asMeta({ status: "running", sandboxId: "sbx-handoff" }),
+      bootMessageSent: false,
+    }),
+    forwardToNativeHandlerWithRetry: async (_channel: unknown, _payload: unknown, meta: SingleMeta): Promise<RetryingForwardResult> => {
+      forwardedWebhookSecret = meta.channels.telegram?.webhookSecret ?? null;
+      return { ok: true, status: 200, attempts: 1, totalMs: 50, transport: "public", retries: [] };
+    },
+  });
+
+  await processChannelStep(
+    "telegram",
+    { update_id: 1, message: { chat: { id: 123 } } },
+    "test",
+    "req-handoff",
+    null,
+    {
+      dependencies,
+      workflowHandoff: {
+        fallbackTelegramConfig,
+      } satisfies ChannelWorkflowHandoff,
+    },
+  );
+
+  const meta = await getInitializedMeta();
+  assert.ok(bootHandleSawConfig, "boot handle should see restored Telegram config");
+  assert.equal(meta.channels.telegram?.webhookSecret, fallbackTelegramConfig.webhookSecret);
+  assert.equal(forwardedWebhookSecret, fallbackTelegramConfig.webhookSecret);
+});
+
+test("processChannelStep preserves existing Telegram config over workflow handoff fallback", async () => {
+  const existingConfig = {
+    ...createFallbackTelegramConfig(),
+    webhookSecret: "existing-secret",
+    botUsername: "existing_bot",
+  };
+  const fallbackTelegramConfig = createFallbackTelegramConfig();
+  let forwardedWebhookSecret: string | null = null;
+
+  await setTelegramChannelConfig(existingConfig);
+
+  const dependencies = createWorkflowDependencies({
+    runWithBootMessages: async () => ({
+      meta: asMeta({
+        status: "running",
+        sandboxId: "sbx-existing",
+        channels: {
+          telegram: existingConfig as never,
+          slack: null,
+          discord: null,
+          whatsapp: null,
+        },
+      }),
+      bootMessageSent: false,
+    }),
+    forwardToNativeHandlerWithRetry: async (_channel: unknown, _payload: unknown, meta: SingleMeta): Promise<RetryingForwardResult> => {
+      forwardedWebhookSecret = meta.channels.telegram?.webhookSecret ?? null;
+      return { ok: true, status: 200, attempts: 1, totalMs: 50, transport: "public", retries: [] };
+    },
+  });
+
+  await processChannelStep(
+    "telegram",
+    { update_id: 2, message: { chat: { id: 456 } } },
+    "test",
+    "req-existing",
+    null,
+    {
+      dependencies,
+      workflowHandoff: {
+        fallbackTelegramConfig,
+      } satisfies ChannelWorkflowHandoff,
+    },
+  );
+
+  const meta = await getInitializedMeta();
+  assert.equal(meta.channels.telegram?.webhookSecret, existingConfig.webhookSecret);
+  assert.equal(forwardedWebhookSecret, existingConfig.webhookSecret);
 });
 
 test("processChannelStep converts retrying forward fetch exception into RetryableError", async () => {
@@ -842,8 +950,11 @@ test("processChannelStep accepts local Telegram empty 200 without retrying", asy
   assert.ok(summary, "telegram wake summary should be emitted");
   assert.equal(summary.data?.retryingForwardAttempts, 1);
   assert.equal(summary.data?.retryingForwardTransport, "local");
+  const attemptTimeline = summary.data?.retryingForwardAttemptTimeline as
+    | Array<{ classification?: string }>
+    | undefined;
   assert.equal(
-    summary.data?.retryingForwardAttemptTimeline?.[0]?.classification,
+    attemptTimeline?.[0]?.classification,
     "accepted",
   );
 });
