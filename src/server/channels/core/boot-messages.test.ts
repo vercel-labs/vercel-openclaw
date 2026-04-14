@@ -343,3 +343,67 @@ test("boot-messages: updates message on status transition", async () => {
     }
   });
 });
+
+test("boot-messages: telegram does not short-circuit on port 3000 gateway readiness", async () => {
+  await withEnv(TEST_ENV, async () => {
+    const fakeController = new FakeSandboxController();
+    _setSandboxControllerForTesting(fakeController);
+
+    await mutateMeta((meta) => {
+      meta.status = "stopped";
+      meta.snapshotId = "snap-1";
+    });
+
+    const { adapter, log } = createTrackingAdapter();
+
+    const originalFetch = globalThis.fetch;
+    let fetchCalls = 0;
+    globalThis.fetch = (async () => {
+      fetchCalls += 1;
+      return new Response("openclaw-app", { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      const resultPromise = runWithBootMessages({
+        channel: "telegram",
+        adapter,
+        message: createMessage(),
+        origin: "https://app.test",
+        reason: "test",
+        timeoutMs: 10_000,
+        pollIntervalMs: 50,
+      });
+
+      await new Promise((r) => setTimeout(r, 150));
+      await mutateMeta((meta) => {
+        meta.status = "booting";
+        meta.sandboxId = "sbx-telegram";
+      });
+
+      await new Promise((r) => setTimeout(r, 200));
+
+      let settled = false;
+      void resultPromise.then(() => {
+        settled = true;
+      });
+
+      assert.equal(
+        settled,
+        false,
+        "telegram boot flow must keep waiting even when port 3000 probe succeeds",
+      );
+      assert.equal(fetchCalls, 0, "telegram boot flow must not call probeGatewayReady");
+
+      await mutateMeta((meta) => {
+        meta.status = "running";
+      });
+
+      const result = await resultPromise;
+
+      assert.equal(result.bootMessageSent, true);
+      assert.ok(log.some((e) => e.action === "send"), "should have sent boot message");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});

@@ -136,8 +136,13 @@ export async function runWithBootMessages<
         );
       }
 
-      // Also try gateway probe for statuses that might already be running
+      // Also try gateway probe for statuses that might already be running.
+      // Do NOT do this for Telegram: port 3000 can become healthy while the
+      // native Telegram listener on 127.0.0.1:8787 is still unbound. Returning
+      // early here causes the workflow to treat the sandbox as ready and then
+      // hit ECONNREFUSED on the local Telegram forward path.
       if (
+        channel !== "telegram" &&
         meta.sandboxId &&
         ["setup", "booting"].includes(meta.status)
       ) {
