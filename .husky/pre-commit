@@ -1,0 +1,9 @@
+#!/usr/bin/env sh
+# Mirror the typecheck Vercel runs during `next build`. Tests are excluded
+# via tsconfig.build.json so pre-existing test-file type errors don't block
+# unrelated commits, but any production-code regression is caught here.
+#
+# Bypass with `git commit --no-verify` only when explicitly approved.
+
+echo "→ pre-commit: tsc --noEmit -p tsconfig.build.json"
+npx --no-install tsc --noEmit -p tsconfig.build.json

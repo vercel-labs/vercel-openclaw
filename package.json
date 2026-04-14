@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "eslint src",
     "typecheck": "tsc --noEmit",
+    "typecheck:build": "tsc --noEmit -p tsconfig.build.json",
     "test": "node scripts/test.mjs",
     "test:watch": "node scripts/test.mjs --watch",
     "smoke:remote": "tsx src/server/smoke/remote-smoke.ts",
@@ -23,7 +24,8 @@
     "test:preflight": "node --import tsx --test src/server/deploy-preflight.test.ts",
     "test:deploy-requirements": "node --import tsx --test src/server/deploy-requirements.test.ts",
     "test:lifecycle": "node --import tsx --test src/server/sandbox/lifecycle.test.ts",
-    "verify:observability-pass": "npm run test:launch-verify && npm run test:preflight && npm run test:deploy-requirements && npm run test:lifecycle"
+    "verify:observability-pass": "npm run test:launch-verify && npm run test:preflight && npm run test:deploy-requirements && npm run test:lifecycle",
+    "prepare": "husky"
   },
   "dependencies": {
     "@upstash/redis": "^1.35.6",
@@ -53,6 +55,7 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.1.6",
+    "husky": "^9.1.7",
     "tsx": "^4.20.6",
     "typescript": "^5"
   }

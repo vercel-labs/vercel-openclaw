@@ -68,7 +68,7 @@ type TelegramRestoreContractAssessment = {
 };
 
 function assessTelegramRestoreContract(
-  meta: SingleMeta,
+  meta: import("@/shared/types").SingleMeta,
 ): TelegramRestoreContractAssessment {
   const restore = meta.lastRestoreMetrics;
   if (!restore) {
