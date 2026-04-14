@@ -3777,6 +3777,7 @@ test("successful restore records telegram listener readiness from fast-restore s
 
     globalThis.fetch = async () =>
       new Response('<div id="openclaw-app"></div>', { status: 200 });
+    _resetLogBuffer();
 
     try {
       const { meta } = await triggerRestore(fake, { tokenOverride: "test-key" });
@@ -3796,6 +3797,23 @@ test("successful restore records telegram listener readiness from fast-restore s
         (meta.lastRestoreMetrics.postLocalReadyBlockingMs ?? -1) >= 0,
         "postLocalReadyBlockingMs should be recorded",
       );
+
+      const logs = getServerLogs();
+      const completionLog = [...logs].reverse().find(
+        (entry) =>
+          entry.message === "sandbox.create.persistent_resume.complete"
+          && entry.data?.sandboxId === meta.sandboxId,
+      );
+      assert.ok(completionLog, "persistent resume completion should be logged");
+      assert.equal(completionLog.data?.sandboxId, meta.sandboxId);
+      assert.equal(typeof completionLog.data?.localReadyMs, "number");
+      assert.equal(completionLog.data?.telegramExpected, true);
+      assert.equal(completionLog.data?.telegramConfigPresent, true);
+      assert.equal(completionLog.data?.telegramListenerReady, true);
+      assert.equal(completionLog.data?.telegramListenerStatus, 401);
+      assert.equal(completionLog.data?.telegramListenerWaitMs, 1800);
+      assert.equal(completionLog.data?.telegramListenerError, null);
+      assert.equal(completionLog.data?.startupScriptMs, meta.lastRestoreMetrics.startupScriptMs);
     } finally {
       globalThis.fetch = originalFetch;
     }

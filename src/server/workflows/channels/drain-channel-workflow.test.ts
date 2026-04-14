@@ -119,8 +119,47 @@ function createWorkflowDependencies(
   };
 }
 
+const WORKFLOW_TEST_ENV_KEYS = [
+  "NODE_ENV",
+  "VERCEL",
+  "VERCEL_ENV",
+  "VERCEL_URL",
+  "VERCEL_PROJECT_PRODUCTION_URL",
+  "UPSTASH_REDIS_REST_URL",
+  "UPSTASH_REDIS_REST_TOKEN",
+  "KV_REST_API_URL",
+  "KV_REST_API_TOKEN",
+] as const;
+
+let workflowTestEnvOriginals: Record<string, string | undefined> = {};
+
 test.beforeEach(async () => {
+  workflowTestEnvOriginals = {};
+  for (const key of WORKFLOW_TEST_ENV_KEYS) {
+    workflowTestEnvOriginals[key] = process.env[key];
+  }
+  process.env.NODE_ENV = "test";
+  delete process.env.VERCEL;
+  delete process.env.VERCEL_ENV;
+  delete process.env.VERCEL_URL;
+  delete process.env.VERCEL_PROJECT_PRODUCTION_URL;
+  delete process.env.UPSTASH_REDIS_REST_URL;
+  delete process.env.UPSTASH_REDIS_REST_TOKEN;
+  delete process.env.KV_REST_API_URL;
+  delete process.env.KV_REST_API_TOKEN;
   _resetStoreForTesting();
+  _resetLogBuffer();
+});
+
+test.afterEach(async () => {
+  for (const key of WORKFLOW_TEST_ENV_KEYS) {
+    const value = workflowTestEnvOriginals[key];
+    if (value === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = value;
+    }
+  }
 });
 
 test("processChannelStep skips ensureSandboxReady when boot returns running", async () => {
@@ -489,11 +528,16 @@ test("processChannelStep emits channels.telegram_wake_summary for Telegram reque
     assetSyncMs: 0,
     startupScriptMs: 600,
     localReadyMs: 400,
+    postLocalReadyBlockingMs: 1600,
     publicReadyMs: 100,
     bootOverlapMs: 50,
     skippedStaticAssetSync: true,
     skippedDynamicConfigSync: true,
     dynamicConfigReason: "hash-match",
+    telegramReconcileBlocking: true,
+    telegramReconcileMs: 700,
+    telegramSecretSyncBlocking: true,
+    telegramSecretSyncMs: 350,
     hotSpareHit: false,
     hotSparePromotionMs: 0,
     hotSpareRejectReason: "feature-disabled",
@@ -529,9 +573,15 @@ test("processChannelStep emits channels.telegram_wake_summary for Telegram reque
   assert.ok((data.endToEndMs as number) >= 0);
   assert.equal(data.restoreTotalMs, 2000);
   assert.equal(data.startupScriptMs, 600);
+  assert.equal(data.localReadyMs, 400);
+  assert.equal(data.postLocalReadyBlockingMs, 1600);
   assert.equal(data.skippedStaticAssetSync, true);
   assert.equal(data.skippedDynamicConfigSync, true);
   assert.equal(data.dynamicConfigReason, "hash-match");
+  assert.equal(data.telegramReconcileBlocking, true);
+  assert.equal(data.telegramReconcileMs, 700);
+  assert.equal(data.telegramSecretSyncBlocking, true);
+  assert.equal(data.telegramSecretSyncMs, 350);
   assert.equal(data.telegramProbeReady, true);
   assert.equal(data.telegramProbeLastStatus, null);
   assert.equal(data.telegramProbePublicUrl, null);
@@ -543,6 +593,89 @@ test("processChannelStep emits channels.telegram_wake_summary for Telegram reque
   assert.equal(data.hotSpareHit, false);
   assert.equal(data.hotSparePromotionMs, 0);
   assert.equal(data.hotSpareRejectReason, "feature-disabled");
+});
+
+test("processChannelStep logs Telegram probe mismatch when public probe becomes ready after local stall", async () => {
+  _resetLogBuffer();
+
+  const dependencies = createWorkflowDependencies({
+    runWithBootMessages: async () => ({
+      meta: asMeta({
+        status: "running",
+        sandboxId: "sbx-mismatch",
+        portUrls: { "3000": "https://gw.test", "8787": "https://tg.test" },
+        channels: {
+          telegram: { botToken: "tok", webhookSecret: "secret" } as never,
+          slack: null,
+          discord: null,
+          whatsapp: null,
+        },
+        lastRestoreMetrics: {
+          totalMs: 17_400,
+          localReadyMs: 2_000,
+          postLocalReadyBlockingMs: 15_400,
+          telegramReconcileBlocking: true,
+          telegramReconcileMs: 600,
+          telegramSecretSyncBlocking: true,
+          telegramSecretSyncMs: 250,
+        } as RestorePhaseMetrics,
+      }),
+      bootMessageSent: true,
+    }),
+    probeTelegramNativeHandlerLocally: async () => ({
+      status: 404,
+      ready: false,
+      error: "connect ECONNREFUSED",
+      detail: "handler-not-bound",
+      durationMs: 35,
+      bodyLength: 0,
+      bodyHead: "",
+      headers: null,
+    }),
+    waitForTelegramNativeHandler: async () => ({
+      ready: true,
+      attempts: 20,
+      waitMs: 15_000,
+      lastStatus: 401,
+      publicUrl: "https://tg.test",
+      timeline: [{ attempt: 20, elapsedMs: 15_000, status: 401 }],
+    }),
+    forwardToNativeHandlerWithRetry: async () => ({
+      ok: true,
+      status: 200,
+      attempts: 2,
+      totalMs: 120,
+      transport: "public",
+      retries: [{ attempt: 1, reason: "proxy-error", status: 502 }],
+    }),
+  });
+
+  await processChannelStep("telegram", { update_id: 99 }, "test", "req-mismatch", null, {
+    dependencies,
+  });
+
+  const logs = getServerLogs();
+  const mismatchLog = logs.find((entry) => entry.message === "channels.telegram_probe_local_mismatch");
+  assert.ok(mismatchLog, "mismatch log should be emitted when public probe succeeds after local stall");
+  assert.equal(mismatchLog.data?.sandboxId, "sbx-mismatch");
+  assert.equal(mismatchLog.data?.publicWaitMs, 15_000);
+  assert.equal(mismatchLog.data?.localStatus, 404);
+  assert.equal(mismatchLog.data?.localReady, false);
+  assert.equal(mismatchLog.data?.localError, "connect ECONNREFUSED");
+  assert.equal(mismatchLog.data?.localDetail, "handler-not-bound");
+
+  const summaryLog = logs.find((entry) => entry.message === "channels.telegram_wake_summary");
+  assert.ok(summaryLog, "telegram wake summary should be emitted");
+  assert.equal(summaryLog.data?.telegramProbeReady, true);
+  assert.equal(summaryLog.data?.telegramProbeLastStatus, 401);
+  assert.equal(summaryLog.data?.telegramProbeSkippedReason, null);
+  assert.equal(summaryLog.data?.telegramLocalProbeStatus, 404);
+  assert.equal(summaryLog.data?.telegramLocalProbeReady, false);
+  assert.equal(summaryLog.data?.telegramLocalProbeError, "connect ECONNREFUSED");
+  assert.equal(summaryLog.data?.telegramLocalProbeDetail, "handler-not-bound");
+  assert.equal(summaryLog.data?.postLocalReadyBlockingMs, 15_400);
+  assert.equal(summaryLog.data?.telegramReconcileBlocking, true);
+  assert.equal(summaryLog.data?.telegramSecretSyncBlocking, true);
 });
 
 test("processChannelStep does NOT emit telegram_wake_summary for Slack requests", async () => {
