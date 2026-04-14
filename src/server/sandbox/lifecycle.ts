@@ -3543,12 +3543,15 @@ async function _restoreSandboxFromSnapshot(
       });
     }
 
-    // Gateway is locally healthy and firewall is confirmed (or not enforcing)
-    // — mark as running so callers that poll metadata see the correct state.
+    // Record token metadata from the credential used during restore — this is
+    // independent of whether Telegram reconcile succeeds, so write it early.
+    // The status flip is deferred until after reconcile + secret sync so that
+    // webhook fast-paths gated on `status === "running"` never see a
+    // half-ready Telegram handler.  See the earlier regression where callers
+    // beat reconcile to the running status and forwarded onto a handler that
+    // was still binding.
     await mutateMeta((meta) => {
-      meta.status = "running";
       meta.lastError = null;
-      // Record token metadata from the credential used during restore.
       if (credential) {
         meta.lastTokenRefreshAt = Date.now();
         meta.lastTokenSource = credential.source;
@@ -3626,6 +3629,14 @@ async function _restoreSandboxFromSnapshot(
         });
       }
     }
+
+    // Telegram reconcile and secret-sync have finished — only now is the
+    // sandbox truly ready to receive forwarded Telegram updates on 8787.
+    // Flip status to "running" so callers polling metadata (including the
+    // Telegram webhook fast-path) see a consistent ready state.
+    await mutateMeta((meta) => {
+      meta.status = "running";
+    });
 
     // Background static asset sync — not on the hot path.  The gateway
     // already booted with the snapshot's cached scripts/skills.  This

@@ -315,13 +315,29 @@ export async function processChannelStep(
     if (channel === "telegram") {
       const { OPENCLAW_TELEGRAM_WEBHOOK_PORT } = await import("@/server/openclaw/config");
       const webhookSecret = effectiveReadyMeta.channels?.telegram?.webhookSecret ?? null;
-      let localProbeResult = effectiveReadyMeta.sandboxId
-        ? await probeTelegramNativeHandlerLocally(
-            effectiveReadyMeta.sandboxId,
-            OPENCLAW_TELEGRAM_WEBHOOK_PORT,
-            webhookSecret,
-          )
-        : null;
+      // Fast-restore already verified a local 401 on 127.0.0.1:8787 before
+      // returning (config.ts:~927).  When that metric is present and fresh we
+      // trust it and skip the redundant probe loop — each probe iteration pays
+      // a 300-1500ms @vercel/sandbox runCommand roundtrip, and the public probe
+      // loop burns up to 15s on Vercel's edge catch-all 200s even after the
+      // handler is actually ready.
+      const restoreListenerReady =
+        effectiveReadyMeta.lastRestoreMetrics?.telegramListenerReady === true;
+      let localProbeResult: TelegramLocalProbeResult | null = restoreListenerReady
+        ? {
+            status: 401,
+            ready: true,
+            durationMs: 0,
+            error: null,
+            detail: "trusted-from-last-restore-metrics",
+          }
+        : effectiveReadyMeta.sandboxId
+          ? await probeTelegramNativeHandlerLocally(
+              effectiveReadyMeta.sandboxId,
+              OPENCLAW_TELEGRAM_WEBHOOK_PORT,
+              webhookSecret,
+            )
+          : null;
       const localProbeStartedAt = Date.now();
       while (
         effectiveReadyMeta.sandboxId

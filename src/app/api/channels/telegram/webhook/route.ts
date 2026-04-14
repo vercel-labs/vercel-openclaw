@@ -194,7 +194,15 @@ export async function POST(request: Request): Promise<Response> {
     // failure) is it safe to fall through: the native handler never received
     // the payload, so the workflow can retry without duplication.
     let effectiveMeta = meta;
-    if (effectiveMeta.status === "running" && effectiveMeta.sandboxId) {
+    // Gate the fast-path on BOTH status=running AND proof the Telegram handler
+    // on port 8787 actually bound during the last restore.  Without this check,
+    // the webhook races ahead while lifecycle.ts is still re-registering the
+    // Telegram webhook and syncing the secret, causing early forwards to land
+    // on a half-ready handler.  telegramListenerReady is set by the fast-restore
+    // script (config.ts:~927) after it proves a local 401 on the 8787 route.
+    const telegramListenerReady =
+      effectiveMeta.lastRestoreMetrics?.telegramListenerReady === true;
+    if (effectiveMeta.status === "running" && effectiveMeta.sandboxId && telegramListenerReady) {
       try {
         const sandboxWebhookUrl = await getSandboxDomain(OPENCLAW_TELEGRAM_WEBHOOK_PORT);
         const forwardUrl = `${sandboxWebhookUrl}/telegram-webhook`;
