@@ -823,8 +823,9 @@ function preRegisterResumeHandle(fake: FakeSandboxController): FakeSandboxHandle
 }
 
 /**
- * Helper: triggers restoreSandboxFromSnapshot by calling ensureSandboxRunning
- * with a stopped+snapshotId meta, captures the scheduled callback, and runs it.
+ * Helper: exercises the persistent-resume restore path via
+ * `ensureSandboxRunning` with a stopped+snapshotId meta, captures the
+ * scheduled callback, and runs it.
  *
  * v2: Pre-registers a "resumed" handle so the lifecycle's get() call succeeds
  * and the fast-restore path is taken (matching real persistent sandbox behavior).
