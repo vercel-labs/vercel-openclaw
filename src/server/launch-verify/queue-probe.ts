@@ -11,6 +11,18 @@ import { getInitializedMeta, getStore } from "@/server/store/store";
 const RESULT_TTL_SECONDS = 15 * 60;
 const RESULT_POLL_MS = 1_000;
 
+export type LaunchVerifyQueueStage =
+  | "queue-delivery"
+  | "sandbox-ready"
+  | "chat-completion";
+
+export type LaunchVerifyQueueTimings = {
+  queueDelayMs: number;
+  sandboxReadyMs?: number;
+  completionMs?: number;
+  totalMs: number;
+};
+
 type BaseProbe = {
   probeId: string;
   origin: string;
@@ -35,6 +47,8 @@ export type LaunchVerifyQueueResult = {
   messageId?: string | null;
   replyText?: string;
   error?: string;
+  stage?: LaunchVerifyQueueStage;
+  timings?: LaunchVerifyQueueTimings;
 };
 
 function resultKey(probeId: string): string {
@@ -51,6 +65,52 @@ type ProbeInput =
       sandboxReadyTimeoutMs?: number;
       requestTimeoutMs?: number;
     };
+
+function formatDurationMs(value: number): string {
+  return `${Math.max(0, Math.round(value))}ms`;
+}
+
+function formatTimingSummary(timings: LaunchVerifyQueueTimings): string {
+  const parts = [`queue delay ${formatDurationMs(timings.queueDelayMs)}`];
+  if (timings.sandboxReadyMs != null) {
+    parts.push(`sandbox ready ${formatDurationMs(timings.sandboxReadyMs)}`);
+  }
+  if (timings.completionMs != null) {
+    parts.push(`completion ${formatDurationMs(timings.completionMs)}`);
+  }
+  parts.push(`total ${formatDurationMs(timings.totalMs)}`);
+  return parts.join(", ");
+}
+
+function formatQueueStage(stage: LaunchVerifyQueueStage): string {
+  switch (stage) {
+    case "queue-delivery":
+      return "queue delivery";
+    case "sandbox-ready":
+      return "sandbox wake/restore";
+    case "chat-completion":
+      return "chat completion";
+  }
+}
+
+export function buildLaunchVerifyQueueSuccessMessage(
+  timings: LaunchVerifyQueueTimings,
+): string {
+  return `Queue callback completed sandbox wake and chat round-trip (${formatTimingSummary(timings)}).`;
+}
+
+export function buildLaunchVerifyQueueAckMessage(
+  timings: LaunchVerifyQueueTimings,
+): string {
+  return `Queue callback executed successfully (${formatTimingSummary(timings)}).`;
+}
+
+export function buildLaunchVerifyQueueFailureMessage(input: {
+  stage: LaunchVerifyQueueStage;
+  timings: LaunchVerifyQueueTimings;
+}): string {
+  return `Queue callback failed during ${formatQueueStage(input.stage)} (${formatTimingSummary(input.timings)}).`;
+}
 
 export async function publishLaunchVerifyQueueProbe(
   probe: ProbeInput,
@@ -105,7 +165,9 @@ export async function waitForLaunchVerifyQueueResult(
     timeoutMs,
     initialDelayMs: RESULT_POLL_MS,
     timeoutError: () =>
-      new Error(`Timed out waiting for launch-verify queue probe ${probeId}.`),
+      new Error(
+        `Timed out waiting for launch-verify queue probe ${probeId}; queue delivery or callback execution may be stalled.`,
+      ),
     step: async () => {
       const result =
         await getStore().getValue<LaunchVerifyQueueResult>(resultKey(probeId));
@@ -118,6 +180,8 @@ export async function waitForLaunchVerifyQueueResult(
       logInfo("launch_verify.queue_result_received", {
         probeId,
         ok: result.ok,
+        stage: result.stage ?? null,
+        timings: result.timings ?? null,
       });
 
       return { done: true, result };

@@ -33,10 +33,9 @@ import {
 } from "@/server/sandbox/restore-oracle";
 import { getInitializedMeta, mutateMeta } from "@/server/store/store";
 import {
-  publishLaunchVerifyQueueProbe,
-  runLaunchVerifyCompletion,
-  waitForLaunchVerifyQueueResult,
+  type LaunchVerifyQueueResult,
 } from "@/server/launch-verify/queue-probe";
+import * as launchVerifyQueueProbe from "@/server/launch-verify/queue-probe";
 import {
   readChannelReadiness,
   writeChannelReadiness,
@@ -59,6 +58,21 @@ import {
 
 const ENSURE_POLL_MS = 2_000;
 const ENSURE_TIMEOUT_MS = 120_000;
+
+type LaunchVerifyQueueProbeAdapter = Pick<
+  typeof launchVerifyQueueProbe,
+  "publishLaunchVerifyQueueProbe" | "waitForLaunchVerifyQueueResult"
+>;
+
+let launchVerifyQueueProbeAdapter: LaunchVerifyQueueProbeAdapter =
+  launchVerifyQueueProbe;
+
+export function __setLaunchVerifyQueueProbeAdapterForTests(
+  adapter: LaunchVerifyQueueProbeAdapter | null,
+): void {
+  if (process.env.NODE_ENV !== "test") return;
+  launchVerifyQueueProbeAdapter = adapter ?? launchVerifyQueueProbe;
+}
 
 type PhaseExecutionValue =
   | string
@@ -264,6 +278,14 @@ function buildSandboxHealth(input: {
       ? "error"
       : (input.configReconcile?.reason ?? "skipped"),
   };
+}
+
+function buildQueueProbeFailureMessage(
+  result: LaunchVerifyQueueResult,
+  fallback: string,
+): string {
+  const suffix = result.error ? ` ${result.error}` : "";
+  return `${result.message}${suffix}`.trim() || fallback;
 }
 
 // ---------------------------------------------------------------------------
@@ -587,14 +609,19 @@ function buildStreamingResponse(
 
       emitRunning("queuePing");
       const queuePingPhase = await runPhase("queuePing", async () => {
-        const { probeId, messageId } = await publishLaunchVerifyQueueProbe({
+        const { probeId, messageId } = await launchVerifyQueueProbeAdapter.publishLaunchVerifyQueueProbe({
           kind: "ack", origin,
         });
-        const result = await waitForLaunchVerifyQueueResult(probeId, 60_000);
+        const result = await launchVerifyQueueProbeAdapter.waitForLaunchVerifyQueueResult(
+          probeId,
+          60_000,
+        );
         if (!result.ok) {
-          throw new Error(result.error ?? "Queue delivery probe failed.");
+          throw new Error(
+            buildQueueProbeFailureMessage(result, "Queue delivery probe failed."),
+          );
         }
-        return `Vercel Queue delivered callback ${messageId ?? "unknown"}.`;
+        return `${result.message} Callback message ID: ${messageId ?? "unknown"}.`;
       });
       phases.push(queuePingPhase);
       emitPhase(queuePingPhase, true);
@@ -630,7 +657,7 @@ function buildStreamingResponse(
         const chatPhase = await runPhase("chatCompletions", async () => {
           const gatewayUrl = await getSandboxDomain();
           const meta = await getInitializedMeta();
-          const replyText = await runLaunchVerifyCompletion({
+          const replyText = await launchVerifyQueueProbe.runLaunchVerifyCompletion({
             gatewayUrl, gatewayToken: meta.gatewayToken,
             prompt: "Reply with exactly: launch-verify-ok",
             expectedText: "launch-verify-ok",
@@ -650,16 +677,21 @@ function buildStreamingResponse(
         emitRunning("wakeFromSleep");
         const wakePhase = await runPhase("wakeFromSleep", async () => {
           await stopSandbox();
-          const { probeId } = await publishLaunchVerifyQueueProbe({
+          const { probeId } = await launchVerifyQueueProbeAdapter.publishLaunchVerifyQueueProbe({
             kind: "chat", origin,
             prompt: "Reply with exactly: wake-from-sleep-ok",
             expectedText: "wake-from-sleep-ok",
             sandboxReadyTimeoutMs: 120_000,
             requestTimeoutMs: 90_000,
           });
-          const result = await waitForLaunchVerifyQueueResult(probeId, 180_000);
+          const result = await launchVerifyQueueProbeAdapter.waitForLaunchVerifyQueueResult(
+            probeId,
+            180_000,
+          );
           if (!result.ok) {
-            throw new Error(result.error ?? "Wake-from-sleep probe failed.");
+            throw new Error(
+              buildQueueProbeFailureMessage(result, "Wake-from-sleep probe failed."),
+            );
           }
           return result.message;
         });
@@ -785,14 +817,19 @@ async function buildJsonResponse(
 
   const origin = getPublicOrigin(request);
   const queuePingPhase = await runPhase("queuePing", async () => {
-    const { probeId, messageId } = await publishLaunchVerifyQueueProbe({
+    const { probeId, messageId } = await launchVerifyQueueProbeAdapter.publishLaunchVerifyQueueProbe({
       kind: "ack", origin,
     });
-    const result = await waitForLaunchVerifyQueueResult(probeId, 60_000);
+    const result = await launchVerifyQueueProbeAdapter.waitForLaunchVerifyQueueResult(
+      probeId,
+      60_000,
+    );
     if (!result.ok) {
-      throw new Error(result.error ?? "Queue delivery probe failed.");
+      throw new Error(
+        buildQueueProbeFailureMessage(result, "Queue delivery probe failed."),
+      );
     }
-    return `Vercel Queue delivered callback ${messageId ?? "unknown"}.`;
+    return `${result.message} Callback message ID: ${messageId ?? "unknown"}.`;
   });
   phases.push(queuePingPhase);
 
@@ -823,7 +860,7 @@ async function buildJsonResponse(
     const chatPhase = await runPhase("chatCompletions", async () => {
       const gatewayUrl = await getSandboxDomain();
       const meta = await getInitializedMeta();
-      const replyText = await runLaunchVerifyCompletion({
+      const replyText = await launchVerifyQueueProbe.runLaunchVerifyCompletion({
         gatewayUrl, gatewayToken: meta.gatewayToken,
         prompt: "Reply with exactly: launch-verify-ok",
         expectedText: "launch-verify-ok",
@@ -839,16 +876,21 @@ async function buildJsonResponse(
   if (mode === "destructive") {
     const wakePhase = await runPhase("wakeFromSleep", async () => {
       await stopSandbox();
-      const { probeId } = await publishLaunchVerifyQueueProbe({
+      const { probeId } = await launchVerifyQueueProbeAdapter.publishLaunchVerifyQueueProbe({
         kind: "chat", origin,
         prompt: "Reply with exactly: wake-from-sleep-ok",
         expectedText: "wake-from-sleep-ok",
         sandboxReadyTimeoutMs: 120_000,
         requestTimeoutMs: 90_000,
       });
-      const result = await waitForLaunchVerifyQueueResult(probeId, 180_000);
+      const result = await launchVerifyQueueProbeAdapter.waitForLaunchVerifyQueueResult(
+        probeId,
+        180_000,
+      );
       if (!result.ok) {
-        throw new Error(result.error ?? "Wake-from-sleep probe failed.");
+        throw new Error(
+          buildQueueProbeFailureMessage(result, "Wake-from-sleep probe failed."),
+        );
       }
       return result.message;
     });

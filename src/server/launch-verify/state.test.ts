@@ -7,6 +7,11 @@ import {
   writeChannelReadiness,
   _setChannelReadinessOverrideForTesting,
 } from "@/server/launch-verify/state";
+import {
+  buildLaunchVerifyQueueAckMessage,
+  buildLaunchVerifyQueueFailureMessage,
+  buildLaunchVerifyQueueSuccessMessage,
+} from "@/server/launch-verify/queue-probe";
 import { isChannelReady } from "@/shared/launch-verification";
 import type {
   LaunchVerificationPayload,
@@ -266,4 +271,47 @@ test("writeChannelReadiness marks ready=false for safe mode payload", async () =
 
   assert.equal(readiness.ready, false);
   assert.equal(readiness.mode, "safe");
+});
+
+test("buildLaunchVerifyQueueAckMessage includes queue timing baseline", () => {
+  const message = buildLaunchVerifyQueueAckMessage({
+    queueDelayMs: 24,
+    totalMs: 24,
+  });
+
+  assert.equal(
+    message,
+    "Queue callback executed successfully (queue delay 24ms, total 24ms).",
+  );
+});
+
+test("buildLaunchVerifyQueueSuccessMessage includes wake and completion timings", () => {
+  const message = buildLaunchVerifyQueueSuccessMessage({
+    queueDelayMs: 42,
+    sandboxReadyMs: 1800,
+    completionMs: 320,
+    totalMs: 2162,
+  });
+
+  assert.equal(
+    message,
+    "Queue callback completed sandbox wake and chat round-trip (queue delay 42ms, sandbox ready 1800ms, completion 320ms, total 2162ms).",
+  );
+});
+
+test("buildLaunchVerifyQueueFailureMessage identifies the failing stage", () => {
+  const message = buildLaunchVerifyQueueFailureMessage({
+    stage: "chat-completion",
+    timings: {
+      queueDelayMs: 50,
+      sandboxReadyMs: 1400,
+      completionMs: 90000,
+      totalMs: 91450,
+    },
+  });
+
+  assert.equal(
+    message,
+    "Queue callback failed during chat completion (queue delay 50ms, sandbox ready 1400ms, completion 90000ms, total 91450ms).",
+  );
 });

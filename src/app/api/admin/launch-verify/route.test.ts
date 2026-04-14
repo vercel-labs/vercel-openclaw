@@ -25,6 +25,10 @@ import {
 } from "@/server/openclaw/config";
 import { buildRestoreAssetManifest } from "@/server/openclaw/restore-assets";
 import type {
+  LaunchVerifyQueueProbe,
+  LaunchVerifyQueueResult,
+} from "@/server/launch-verify/queue-probe";
+import type {
   LaunchVerificationPayload,
   LaunchVerificationPhaseId,
   LaunchVerificationRuntime,
@@ -32,6 +36,24 @@ import type {
   ChannelReadiness,
   RestoreTargetAttestation,
 } from "@/shared/launch-verification";
+
+type LaunchVerifyRouteTestAdapter = {
+  publishLaunchVerifyQueueProbe: (
+    probe: LaunchVerifyQueueProbe,
+  ) => Promise<{ probeId: string; messageId: string | null }>;
+  waitForLaunchVerifyQueueResult: (
+    probeId: string,
+    timeoutMs?: number,
+  ) => Promise<LaunchVerifyQueueResult>;
+};
+
+type LaunchVerifyRouteWithTestAdapter = ReturnType<
+  typeof getAdminLaunchVerifyRoute
+> & {
+  __setLaunchVerifyQueueProbeAdapterForTests?: (
+    adapter: LaunchVerifyRouteTestAdapter | null,
+  ) => void;
+};
 
 /**
  * Helper: make preflight fail fast on the auth-config check.
@@ -1410,6 +1432,92 @@ test("launch-verify POST: destructive response runtime includes restoreAttestati
     // restorePlan shape
     assert.ok(runtime.restorePlan, "restorePlan must not be null");
     assert.ok(Array.isArray(runtime.restorePlan.actions));
+  });
+});
+
+test("launch-verify POST: destructive wake failure preserves queue stage details", async () => {
+  await withHarness(async (h) => {
+    process.env.NEXT_PUBLIC_APP_URL = "https://test.example";
+    await h.driveToRunning();
+
+    h.fakeFetch.on("POST", /v1\/chat\/completions/, () => {
+      return Response.json({
+        choices: [{ message: { content: "launch-verify-ok" } }],
+      });
+    });
+
+    const route = getAdminLaunchVerifyRoute();
+    route.__setLaunchVerifyQueueProbeAdapterForTests?.({
+      async publishLaunchVerifyQueueProbe(probe) {
+        return {
+          probeId: probe.kind === "ack" ? "ack-probe" : "wake-probe",
+          messageId: probe.kind === "ack" ? "ack-message" : "wake-message",
+        };
+      },
+      async waitForLaunchVerifyQueueResult(probeId) {
+        if (probeId === "ack-probe") {
+          return {
+            probeId,
+            ok: true,
+            completedAt: Date.now(),
+            messageId: "ack-message",
+            stage: "queue-delivery",
+            timings: {
+              queueDelayMs: 25,
+              totalMs: 25,
+            },
+            message: "Queue callback executed successfully (queue delay 25ms, total 25ms).",
+          };
+        }
+
+        return {
+          probeId,
+          ok: false,
+          completedAt: Date.now(),
+          messageId: "wake-message",
+          stage: "chat-completion",
+          timings: {
+            queueDelayMs: 50,
+            sandboxReadyMs: 1400,
+            completionMs: 90000,
+            totalMs: 91450,
+          },
+          message:
+            "Queue callback failed during chat completion (queue delay 50ms, sandbox ready 1400ms, completion 90000ms, total 91450ms).",
+          error: "Expected \"wake-from-sleep-ok\" but got \"still-waking\"",
+        };
+      },
+    });
+
+    let result: Awaited<ReturnType<typeof callRoute>>;
+    try {
+      const req = buildAuthPostRequest(
+        "/api/admin/launch-verify",
+        JSON.stringify({ mode: "destructive" }),
+      );
+      result = await callRoute(route.POST, req);
+      await drainAfterCallbacks();
+    } finally {
+      route.__setLaunchVerifyQueueProbeAdapterForTests?.(null);
+    }
+
+    const body = result.json as LaunchVerificationPayload;
+    const queuePingPhase = body.phases.find((phase) => phase.id === "queuePing");
+    const wakePhase = body.phases.find((phase) => phase.id === "wakeFromSleep");
+
+    assert.ok(queuePingPhase, "expected queuePing phase");
+    assert.equal(queuePingPhase.status, "pass");
+    assert.match(
+      queuePingPhase.message,
+      /Queue callback executed successfully \(queue delay 25ms, total 25ms\)\. Callback message ID: ack-message\./,
+    );
+
+    assert.ok(wakePhase, "expected wakeFromSleep phase");
+    assert.equal(wakePhase.status, "fail");
+    assert.match(
+      wakePhase.error ?? "",
+      /Queue callback failed during chat completion \(queue delay 50ms, sandbox ready 1400ms, completion 90000ms, total 91450ms\)\. Expected "wake-from-sleep-ok" but got "still-waking"/,
+    );
   });
 });
 
