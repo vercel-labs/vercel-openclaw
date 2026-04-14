@@ -294,6 +294,13 @@ class LifecycleLockUnavailableError extends Error {
   }
 }
 
+export class SandboxLifecycleLockContendedError extends ApiError {
+  constructor() {
+    super(409, "LIFECYCLE_LOCK_CONTENDED", "Sandbox lifecycle work is already in progress.");
+    this.name = "SandboxLifecycleLockContendedError";
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Structured result types for token refresh
 // ---------------------------------------------------------------------------
@@ -711,113 +718,120 @@ async function readCronNextWakeFromSandbox(
 
 export async function stopSandbox(): Promise<SingleMeta> {
   logInfo("sandbox.stop_requested");
-  return withLifecycleLock(async () => {
-    const meta = await getInitializedMeta();
-    if (meta.status === "stopped") {
-      logInfo("sandbox.already_stopped", { sandboxId: meta.sandboxId });
-      return meta;
-    }
-    if (!meta.sandboxId) {
-      throw new ApiError(
-        409,
-        "SANDBOX_NOT_RUNNING",
-        "Sandbox is not running and cannot be stopped.",
-      );
-    }
-
-    logInfo("sandbox.stopping", { sandboxId: meta.sandboxId });
-    try {
-      const sandbox = await getSandboxController().get({ sandboxId: meta.sandboxId });
-      await cleanupBeforeSnapshot(sandbox, meta.firewall.mode);
-      const cronWakeRead = await readCronNextWakeFromSandbox(sandbox);
-
-      logInfo("sandbox.status_transition", {
-        from: meta.status,
-        to: "stopped",
-        sandboxId: meta.sandboxId,
-        cronWakeRead,
-      });
-
-      if (cronWakeRead.status === "ok") {
-        await getStore().setValue(cronNextWakeKey(), cronWakeRead.nextWakeMs);
-        logInfo("sandbox.cron_wake_saved", { cronNextWakeMs: cronWakeRead.nextWakeMs });
-      } else if (cronWakeRead.status === "no-jobs") {
-        await getStore().deleteValue(cronNextWakeKey());
+  try {
+    return await withLifecycleLock(async () => {
+      const meta = await getInitializedMeta();
+      if (meta.status === "stopped") {
+        logInfo("sandbox.already_stopped", { sandboxId: meta.sandboxId });
+        return meta;
+      }
+      if (!meta.sandboxId) {
+        throw new ApiError(
+          409,
+          "SANDBOX_NOT_RUNNING",
+          "Sandbox is not running and cannot be stopped.",
+        );
       }
 
-      // Persist structured cron record as a safety net for resumes.
-      // The stop path is authoritative — if there are 0 jobs, the user
-      // intentionally deleted them.  Clear the store so a future resume
-      // does not resurrect old jobs.
-      const rawJobs = cronWakeRead.status !== "error" ? cronWakeRead.rawJobsJson : undefined;
-      if (rawJobs) {
-        const record = buildCronRecord(rawJobs, "stop");
-        if (record) {
-          await getStore().setValue(cronJobsKey(), record);
-          logInfo("sandbox.cron_jobs_persisted", {
-            source: "stop", jobCount: record.jobCount, sha256: record.sha256,
-          });
-        }
-      } else if (cronWakeRead.status === "no-jobs") {
-        await getStore().deleteValue(cronJobsKey());
-        logInfo("sandbox.cron_jobs_cleared", { reason: "no-jobs-on-stop" });
-      }
+      logInfo("sandbox.stopping", { sandboxId: meta.sandboxId });
+      try {
+        const sandbox = await getSandboxController().get({ sandboxId: meta.sandboxId });
+        await cleanupBeforeSnapshot(sandbox, meta.firewall.mode);
+        const cronWakeRead = await readCronNextWakeFromSandbox(sandbox);
 
-      // v2 persistent sandboxes auto-snapshot on stop — no manual snapshot() needed
-      await sandbox.stop({ blocking: true });
-
-      const stoppedMeta = await mutateMeta((next) => {
-        // Keep sandboxId — persistent sandbox persists across stop/resume
-        next.portUrls = null;
-        next.status = "stopped";
-        next.lastAccessedAt = Date.now();
-        next.lastError = null;
-      });
-
-      // Hot-spare: best-effort pre-create a candidate sandbox after stop.
-      // Gated — no-op when OPENCLAW_HOT_SPARE_ENABLED is not "true".
-      if (isHotSpareEnabled()) {
-        try {
-          const result = await preCreateHotSpare(stoppedMeta, {
-            create: (opts) => getSandboxController().create(opts),
-            getSandboxVcpus,
-            getSandboxSleepAfterMs,
-            sandboxPorts: SANDBOX_PORTS,
-          });
-          if (result.status !== "skipped") {
-            await mutateMeta((m) => applyPreCreateToMeta(m, result));
-          }
-        } catch (err) {
-          logWarn("hot_spare.post_stop_pre_create_failed", {
-            error: err instanceof Error ? err.message : String(err),
-          });
-        }
-      }
-
-      return stoppedMeta;
-    } catch (err) {
-      // The sandbox may have already been stopped by the platform (timeout
-      // expiry, etc.).  The Vercel API returns 404 or 410 in this case.
-      // With v2 persistent sandboxes, a gone sandbox means it was deleted.
-      // Mark as uninitialized so the next ensure creates a fresh one.
-      const message = err instanceof Error ? err.message : String(err);
-      const isGone = message.includes("404") || message.includes("410");
-      if (isGone) {
-        logWarn("sandbox.stop.sandbox_already_gone", {
+        logInfo("sandbox.status_transition", {
+          from: meta.status,
+          to: "stopped",
           sandboxId: meta.sandboxId,
-          error: message,
+          cronWakeRead,
         });
-        return mutateMeta((next) => {
-          next.sandboxId = null;
+
+        if (cronWakeRead.status === "ok") {
+          await getStore().setValue(cronNextWakeKey(), cronWakeRead.nextWakeMs);
+          logInfo("sandbox.cron_wake_saved", { cronNextWakeMs: cronWakeRead.nextWakeMs });
+        } else if (cronWakeRead.status === "no-jobs") {
+          await getStore().deleteValue(cronNextWakeKey());
+        }
+
+        // Persist structured cron record as a safety net for resumes.
+        // The stop path is authoritative — if there are 0 jobs, the user
+        // intentionally deleted them.  Clear the store so a future resume
+        // does not resurrect old jobs.
+        const rawJobs = cronWakeRead.status !== "error" ? cronWakeRead.rawJobsJson : undefined;
+        if (rawJobs) {
+          const record = buildCronRecord(rawJobs, "stop");
+          if (record) {
+            await getStore().setValue(cronJobsKey(), record);
+            logInfo("sandbox.cron_jobs_persisted", {
+              source: "stop", jobCount: record.jobCount, sha256: record.sha256,
+            });
+          }
+        } else if (cronWakeRead.status === "no-jobs") {
+          await getStore().deleteValue(cronJobsKey());
+          logInfo("sandbox.cron_jobs_cleared", { reason: "no-jobs-on-stop" });
+        }
+
+        // v2 persistent sandboxes auto-snapshot on stop — no manual snapshot() needed
+        await sandbox.stop({ blocking: true });
+
+        const stoppedMeta = await mutateMeta((next) => {
+          // Keep sandboxId — persistent sandbox persists across stop/resume
           next.portUrls = null;
-          next.status = "uninitialized";
+          next.status = "stopped";
           next.lastAccessedAt = Date.now();
           next.lastError = null;
         });
+
+        // Hot-spare: best-effort pre-create a candidate sandbox after stop.
+        // Gated — no-op when OPENCLAW_HOT_SPARE_ENABLED is not "true".
+        if (isHotSpareEnabled()) {
+          try {
+            const result = await preCreateHotSpare(stoppedMeta, {
+              create: (opts) => getSandboxController().create(opts),
+              getSandboxVcpus,
+              getSandboxSleepAfterMs,
+              sandboxPorts: SANDBOX_PORTS,
+            });
+            if (result.status !== "skipped") {
+              await mutateMeta((m) => applyPreCreateToMeta(m, result));
+            }
+          } catch (err) {
+            logWarn("hot_spare.post_stop_pre_create_failed", {
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
+        }
+
+        return stoppedMeta;
+      } catch (err) {
+        // The sandbox may have already been stopped by the platform (timeout
+        // expiry, etc.).  The Vercel API returns 404 or 410 in this case.
+        // With v2 persistent sandboxes, a gone sandbox means it was deleted.
+        // Mark as uninitialized so the next ensure creates a fresh one.
+        const message = err instanceof Error ? err.message : String(err);
+        const isGone = message.includes("404") || message.includes("410");
+        if (isGone) {
+          logWarn("sandbox.stop.sandbox_already_gone", {
+            sandboxId: meta.sandboxId,
+            error: message,
+          });
+          return mutateMeta((next) => {
+            next.sandboxId = null;
+            next.portUrls = null;
+            next.status = "uninitialized";
+            next.lastAccessedAt = Date.now();
+            next.lastError = null;
+          });
+        }
+        throw err;
       }
-      throw err;
+    });
+  } catch (error) {
+    if (error instanceof LifecycleLockUnavailableError) {
+      throw new SandboxLifecycleLockContendedError();
     }
-  });
+    throw error;
+  }
 }
 
 export async function snapshotSandbox(): Promise<SingleMeta> {
@@ -2416,6 +2430,12 @@ async function scheduleLifecycleWork(options: {
               ? withOperationContext(options.op, { lock: "lifecycle", contention: true })
               : { reason: options.reason };
             logInfo("sandbox.lifecycle_lock_contended", lockCtx);
+            await mutateMeta((meta) => {
+              if (meta.status === nextStatus) {
+                meta.status = meta.snapshotId ? "stopped" : "uninitialized";
+                meta.lastError = "Lifecycle lock contention prevented sandbox startup.";
+              }
+            });
             return;
           }
 

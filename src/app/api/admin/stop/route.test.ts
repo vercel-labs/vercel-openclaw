@@ -10,6 +10,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { lifecycleLockKey } from "@/server/store/keyspace";
+import { getStore } from "@/server/store/store";
 import { withHarness } from "@/test-utils/harness";
 import {
   callRoute,
@@ -66,5 +68,23 @@ test("admin/stop POST: stop from uninitialized returns 409 error", async () => {
     const result = await callAdminPost(route.POST, "/api/admin/stop");
 
     assert.equal(result.status, 409);
+  });
+});
+
+test("admin/stop POST: lifecycle lock contention returns 409 with explicit code", async () => {
+  await withHarness(async (h) => {
+    await h.driveToRunning();
+
+    const token = await getStore().acquireLock(lifecycleLockKey(), 60);
+    assert.ok(token, "expected to acquire lifecycle lock");
+
+    const route = getAdminStopRoute();
+    const result = await callAdminPost(route.POST, "/api/admin/stop");
+
+    assert.equal(result.status, 409);
+    assert.deepEqual(result.json, {
+      error: "LIFECYCLE_LOCK_CONTENDED",
+      message: "Sandbox lifecycle work is already in progress.",
+    });
   });
 });

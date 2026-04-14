@@ -34,6 +34,7 @@ import {
   getStore,
   mutateMeta,
 } from "@/server/store/store";
+import { lifecycleLockKey } from "@/server/store/keyspace";
 import { _setAiGatewayTokenOverrideForTesting } from "@/server/env";
 import { getServerLogs, _resetLogBuffer } from "@/server/log";
 import {
@@ -669,6 +670,33 @@ test("ensureSandboxRunning does NOT re-schedule when status=creating and updated
     assert.equal(result.state, "waiting");
     // Should NOT have re-scheduled since the operation is recent
     assert.equal(scheduledCallback, null, "Should not re-schedule when creating is recent");
+  });
+});
+
+test("scheduled lifecycle work clears busy state when lifecycle lock is contended", async () => {
+  const fake = new FakeSandboxController();
+  await withTestEnv(fake, async () => {
+    let scheduledCallback: (() => Promise<void> | void) | null = null;
+
+    const result = await ensureSandboxRunning({
+      origin: "https://test.example.com",
+      reason: "lifecycle-lock-contention-create",
+      schedule(cb) {
+        scheduledCallback = cb;
+      },
+    });
+
+    assert.equal(result.state, "waiting");
+    assert.ok(scheduledCallback, "Background work should have been scheduled");
+
+    const lifecycleToken = await getStore().acquireLock(lifecycleLockKey(), 60);
+    assert.ok(lifecycleToken, "Test should acquire the lifecycle lock");
+
+    await (scheduledCallback as () => Promise<void>)();
+
+    const meta = await getInitializedMeta();
+    assert.equal(meta.status, "uninitialized");
+    assert.equal(meta.lastError, "Lifecycle lock contention prevented sandbox startup.");
   });
 });
 
