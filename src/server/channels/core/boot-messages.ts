@@ -25,6 +25,14 @@ const STATUS_MESSAGES: Partial<Record<SingleMeta["status"], string>> = {
 const DEFAULT_POLL_INTERVAL_MS = 1_000;
 const BOOT_MESSAGE_CLEAR_DELAY_MS = 500;
 
+type TelegramRestoreReadinessAssessment = {
+  status: "verified" | "not-expected" | "unverified";
+  restoreMetricsRecordedAt: number | null;
+  telegramExpected: boolean | null;
+  telegramListenerReady: boolean | null;
+  telegramListenerWaitMs: number | null;
+};
+
 export type RunWithBootMessagesOptions<
   TMessage extends ExtractedChannelMessage,
 > = {
@@ -43,6 +51,37 @@ export type BootMessagesResult = {
   meta: SingleMeta;
   bootMessageSent: boolean;
 };
+
+function assessTelegramRestoreReadiness(
+  meta: SingleMeta,
+): TelegramRestoreReadinessAssessment {
+  const restore = meta.lastRestoreMetrics;
+  if (!restore) {
+    return {
+      status: "unverified",
+      restoreMetricsRecordedAt: null,
+      telegramExpected: null,
+      telegramListenerReady: null,
+      telegramListenerWaitMs: null,
+    };
+  }
+  if (restore.telegramExpected !== true) {
+    return {
+      status: "not-expected",
+      restoreMetricsRecordedAt: restore.recordedAt,
+      telegramExpected: restore.telegramExpected ?? false,
+      telegramListenerReady: restore.telegramListenerReady ?? null,
+      telegramListenerWaitMs: restore.telegramListenerWaitMs ?? null,
+    };
+  }
+  return {
+    status: restore.telegramListenerReady === true ? "verified" : "unverified",
+    restoreMetricsRecordedAt: restore.recordedAt,
+    telegramExpected: true,
+    telegramListenerReady: restore.telegramListenerReady ?? false,
+    telegramListenerWaitMs: restore.telegramListenerWaitMs ?? null,
+  };
+}
 
 /**
  * Wake the sandbox with phased boot status messages.
@@ -70,6 +109,25 @@ export async function runWithBootMessages<
   const initialMeta = await getInitializedMeta();
 
   if (initialMeta.status === "running" && initialMeta.sandboxId) {
+    if (channel === "telegram") {
+      const assessment = assessTelegramRestoreReadiness(initialMeta);
+      const logData = {
+        channel,
+        sandboxId: initialMeta.sandboxId,
+        restoreMetricsRecordedAt: assessment.restoreMetricsRecordedAt,
+        telegramExpected: assessment.telegramExpected,
+        telegramListenerReady: assessment.telegramListenerReady,
+        telegramListenerWaitMs: assessment.telegramListenerWaitMs,
+      };
+      if (assessment.status === "unverified") {
+        logWarn("channels.telegram_boot_running_unverified", logData);
+      } else {
+        logInfo("channels.telegram_boot_running_contract", {
+          ...logData,
+          contractStatus: assessment.status,
+        });
+      }
+    }
     // Sandbox already running — clean up any pre-sent boot message immediately
     if (existingBootHandle) {
       existingBootHandle.clear().catch((error) => {

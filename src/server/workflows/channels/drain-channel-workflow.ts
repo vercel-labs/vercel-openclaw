@@ -59,6 +59,45 @@ export type ChannelWorkflowHandoff = {
   fallbackTelegramConfig?: TelegramChannelConfig | null;
 };
 
+type TelegramRestoreContractAssessment = {
+  status: "verified" | "not-expected" | "unverified";
+  restoreMetricsRecordedAt: number | null;
+  telegramExpected: boolean | null;
+  telegramListenerReady: boolean | null;
+  telegramListenerWaitMs: number | null;
+};
+
+function assessTelegramRestoreContract(
+  meta: SingleMeta,
+): TelegramRestoreContractAssessment {
+  const restore = meta.lastRestoreMetrics;
+  if (!restore) {
+    return {
+      status: "unverified",
+      restoreMetricsRecordedAt: null,
+      telegramExpected: null,
+      telegramListenerReady: null,
+      telegramListenerWaitMs: null,
+    };
+  }
+  if (restore.telegramExpected !== true) {
+    return {
+      status: "not-expected",
+      restoreMetricsRecordedAt: restore.recordedAt,
+      telegramExpected: restore.telegramExpected ?? false,
+      telegramListenerReady: restore.telegramListenerReady ?? null,
+      telegramListenerWaitMs: restore.telegramListenerWaitMs ?? null,
+    };
+  }
+  return {
+    status: restore.telegramListenerReady === true ? "verified" : "unverified",
+    restoreMetricsRecordedAt: restore.recordedAt,
+    telegramExpected: true,
+    telegramListenerReady: restore.telegramListenerReady ?? false,
+    telegramListenerWaitMs: restore.telegramListenerWaitMs ?? null,
+  };
+}
+
 export async function drainChannelWorkflow(
   channel: string,
   payload: unknown,
@@ -195,6 +234,10 @@ export async function processChannelStep(
       ...readyMeta,
       channels: readyMeta.channels ?? currentMeta.channels,
     };
+    const telegramRestoreContract =
+      channel === "telegram"
+        ? assessTelegramRestoreContract(effectiveReadyMeta)
+        : null;
 
     const sandboxReadyAt = Date.now();
     diag.readyMetaStatus = effectiveReadyMeta.status;
@@ -203,6 +246,14 @@ export async function processChannelStep(
     diag.readyMetaPortUrls = effectiveReadyMeta.portUrls;
     diag.readyMetaHasWebhookSecret = Boolean(effectiveReadyMeta.channels?.telegram?.webhookSecret);
     diag.usedBootMetaDirectly = bootResult.meta.status === "running";
+    diag.telegramRestoreContractStatus = telegramRestoreContract?.status ?? null;
+    diag.telegramRestoreContractRecordedAt =
+      telegramRestoreContract?.restoreMetricsRecordedAt ?? null;
+    diag.telegramRestoreExpected = telegramRestoreContract?.telegramExpected ?? null;
+    diag.telegramRestoreListenerReady =
+      telegramRestoreContract?.telegramListenerReady ?? null;
+    diag.telegramRestoreListenerWaitMs =
+      telegramRestoreContract?.telegramListenerWaitMs ?? null;
     diag.sandboxReadyAt = sandboxReadyAt;
     console.log(`[DIAG] Sandbox ready: status=${effectiveReadyMeta.status} sandboxId=${effectiveReadyMeta.sandboxId} portUrls=${JSON.stringify(effectiveReadyMeta.portUrls)} hasWebhookSecret=${diag.readyMetaHasWebhookSecret} usedBootMeta=${diag.usedBootMetaDirectly}`);
     await persistDiagSnapshot("sandbox-ready", {
@@ -211,6 +262,11 @@ export async function processChannelStep(
       sandboxReadyAt,
       workflowToSandboxReadyMs: sandboxReadyAt - workflowStartedAt,
       restoreMetrics: effectiveReadyMeta.lastRestoreMetrics ?? null,
+      telegramRestoreContractStatus: diag.telegramRestoreContractStatus,
+      telegramRestoreContractRecordedAt: diag.telegramRestoreContractRecordedAt,
+      telegramRestoreExpected: diag.telegramRestoreExpected,
+      telegramRestoreListenerReady: diag.telegramRestoreListenerReady,
+      telegramRestoreListenerWaitMs: diag.telegramRestoreListenerWaitMs,
     });
 
     logInfo("channels.workflow_sandbox_ready", {
@@ -219,7 +275,31 @@ export async function processChannelStep(
       bootResultStatus: bootResult.meta.status,
       sandboxId: effectiveReadyMeta.sandboxId,
       portUrlKeys: effectiveReadyMeta.portUrls ? Object.keys(effectiveReadyMeta.portUrls) : null,
+      telegramRestoreContractStatus: telegramRestoreContract?.status ?? null,
+      telegramRestoreContractRecordedAt:
+        telegramRestoreContract?.restoreMetricsRecordedAt ?? null,
+      telegramRestoreExpected: telegramRestoreContract?.telegramExpected ?? null,
+      telegramRestoreListenerReady:
+        telegramRestoreContract?.telegramListenerReady ?? null,
+      telegramRestoreListenerWaitMs:
+        telegramRestoreContract?.telegramListenerWaitMs ?? null,
     });
+
+    if (
+      channel === "telegram"
+      && diag.usedBootMetaDirectly === true
+      && telegramRestoreContract?.status === "unverified"
+    ) {
+      logWarn("channels.telegram_restore_contract_unverified", {
+        channel,
+        requestId,
+        sandboxId: effectiveReadyMeta.sandboxId,
+        restoreMetricsRecordedAt: telegramRestoreContract.restoreMetricsRecordedAt,
+        telegramExpected: telegramRestoreContract.telegramExpected,
+        telegramListenerReady: telegramRestoreContract.telegramListenerReady,
+        telegramListenerWaitMs: telegramRestoreContract.telegramListenerWaitMs,
+      });
+    }
 
     // --- Phase 2: Forward raw payload to native handler ---
     let forwardResult: { ok: boolean; status: number };
@@ -387,6 +467,14 @@ export async function processChannelStep(
         skippedDynamicConfigSync: restore?.skippedDynamicConfigSync ?? null,
         dynamicConfigReason: restore?.dynamicConfigReason ?? null,
         telegramProbeReady: diag.telegramProbeReady ?? diag.telegramLocalProbeReady ?? null,
+        telegramRestoreContractStatus: telegramRestoreContract?.status ?? null,
+        telegramRestoreContractRecordedAt:
+          telegramRestoreContract?.restoreMetricsRecordedAt ?? null,
+        telegramRestoreExpected: telegramRestoreContract?.telegramExpected ?? null,
+        telegramRestoreListenerReady:
+          telegramRestoreContract?.telegramListenerReady ?? null,
+        telegramRestoreListenerWaitMs:
+          telegramRestoreContract?.telegramListenerWaitMs ?? null,
         telegramProbeLastStatus: diag.telegramProbeLastStatus ?? null,
         telegramProbePublicUrl: diag.telegramProbePublicUrl ?? null,
         telegramProbeSkippedReason:
