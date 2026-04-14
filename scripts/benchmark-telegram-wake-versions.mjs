@@ -57,6 +57,108 @@ function log(message) {
   process.stderr.write(`[benchmark-telegram-wake-versions] ${message}\n`);
 }
 
+function extractRequestSignals(summary) {
+  const requestOutcome = summary?.wake?.requestOutcome ?? null;
+  const workflowOutcome = summary?.wake?.workflowOutcome ?? summary?.workflow ?? null;
+  const acceptedLog = summary?.acceptedLog ?? summary?.wake?.acceptedLog ?? null;
+  const localDiag = summary?.localDiag?.body ?? summary?.localDiag ?? null;
+  const requestLogs = summary?.requestLogs?.body?.logs ?? summary?.requestLogs?.logs ?? [];
+
+  const acceptedSignal = acceptedLog
+    ? {
+        message: acceptedLog.message ?? null,
+        timestamp: acceptedLog.timestamp ?? null,
+        requestId: acceptedLog.data?.requestId ?? summary?.requestId ?? null,
+      }
+    : null;
+
+  const forwardResult = requestOutcome?.forwardResult ?? null;
+  const wakeSummary = requestOutcome?.wakeSummary ?? null;
+
+  return {
+    requestId: summary?.requestId ?? acceptedSignal?.requestId ?? null,
+    acceptedSignal,
+    forwardResult: forwardResult
+      ? {
+          status: forwardResult.data?.status ?? null,
+          ok: forwardResult.data?.ok ?? null,
+          message: forwardResult.message ?? null,
+        }
+      : null,
+    wakeSummary: wakeSummary
+      ? {
+          message: wakeSummary.message ?? null,
+          phase: wakeSummary.data?.phase ?? null,
+          outcome: wakeSummary.data?.outcome ?? null,
+          ready: wakeSummary.data?.ready ?? null,
+        }
+      : null,
+    localDiag: localDiag
+      ? {
+          outcome: localDiag.outcome ?? null,
+          forwardStatus: localDiag.forwardStatus ?? null,
+          readyStatus: localDiag.readyMetaStatus ?? null,
+          bootStatus: localDiag.bootResultStatus ?? null,
+        }
+      : null,
+    workflowOutcome: {
+      outcome: workflowOutcome?.outcome ?? null,
+      runId: workflowOutcome?.run?.runId ?? summary?.workflow?.run?.runId ?? null,
+      latestStepStatus:
+        workflowOutcome?.latestStep?.status ??
+        summary?.workflow?.steps?.[0]?.status ??
+        null,
+    },
+    requestLogCount: Array.isArray(requestLogs) ? requestLogs.length : 0,
+  };
+}
+
+function buildComparisonHints(results) {
+  const successful = results.filter((entry) => entry.passed);
+  const failed = results.filter((entry) => !entry.passed);
+
+  const fastestSuccess = successful
+    .slice()
+    .sort((a, b) => (a.elapsedMs ?? Number.POSITIVE_INFINITY) - (b.elapsedMs ?? Number.POSITIVE_INFINITY))[0] ?? null;
+  const firstFailure = failed[0] ?? null;
+
+  return {
+    fastestSuccessfulVersion: fastestSuccess?.version ?? null,
+    fastestSuccessfulElapsedMs: fastestSuccess?.elapsedMs ?? null,
+    firstFailingVersion: firstFailure?.version ?? null,
+    minimumReproLoop:
+      "Run test-telegram-wake-local.mjs once per candidate version with --openclaw-package-spec and compare accepted webhook, request-scoped telegram logs, workflow outcome, and local channel-forward diag from each artifacts directory.",
+    phaseIsolationOrder: [
+      "channels.telegram_webhook_accepted confirms webhook ingress and gives requestId",
+      "channels.workflow_native_forward_result separates native forward success vs 504 failure",
+      "channels.telegram_wake_summary indicates wake/readiness phase outcome when present",
+      "workflow-data runs/steps/events confirm whether drain-channel-workflow retried, failed, or completed",
+      "local channel-forward diag provides readyMetaStatus, bootResultStatus, and forwardStatus for the same run",
+    ],
+  };
+}
+
+function describeBenchmarkHarness() {
+  return {
+    measures: [
+      "cross-version local wake reproducibility",
+      "per-version pass/fail and elapsed wall time",
+      "request-scoped ingress, workflow, and forward-result differences via delegated local artifacts",
+    ],
+    captures: {
+      perVersionArtifacts: true,
+      nextLog: true,
+      vgrokLog: true,
+      localSummary: true,
+      workflowDataRunsStepsEvents: true,
+      requestScopedTelegramLogs: true,
+      localChannelForwardDiag: true,
+    },
+    recommendedUse:
+      "Fastest reliable version comparison loop because it reuses the local vgrok harness and preserves per-version artifacts without requiring extra instrumentation.",
+  };
+}
+
 async function runOne(version, index) {
   const packageSpec = `openclaw@${version}`;
   const safeVersion = version.replace(/[^a-zA-Z0-9._-]/g, "_");
@@ -138,6 +240,7 @@ const output = {
   type: "telegram-wake-version-sweep",
   generatedAt: new Date().toISOString(),
   artifactsRoot,
+  harness: describeBenchmarkHarness(),
   results: results.map((result) => ({
     version: result.version,
     packageSpec: result.packageSpec,
@@ -145,10 +248,14 @@ const output = {
     passed: result.summary?.passed === true,
     requestId: result.summary?.requestId ?? null,
     wakeError: result.summary?.wakeError ?? null,
+    elapsedMs: result.summary?.elapsedMs ?? null,
     workflowOutcome: result.summary?.wake?.workflowOutcome?.outcome ?? null,
+    signals: extractRequestSignals(result.summary),
     artifactsDir: result.artifactsDir,
   })),
 };
+
+output.comparison = buildComparisonHints(output.results);
 
 await fs.writeFile(
   path.join(artifactsRoot, "summary.json"),

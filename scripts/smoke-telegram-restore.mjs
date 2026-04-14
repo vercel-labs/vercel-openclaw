@@ -560,6 +560,47 @@ function selectWorkflowRun(runs, acceptedTimestamp) {
     .sort((a, b) => Math.abs(Date.parse(a.createdAt) - acceptedTimestamp) - Math.abs(Date.parse(b.createdAt) - acceptedTimestamp))[0];
 }
 
+function buildRestoreHarnessGuide(report) {
+  const acceptedRequestId = report.acceptedLog?.data?.requestId ?? null;
+  const requestEntries = Array.isArray(report.requestLogs?.logs) ? report.requestLogs.logs : [];
+  const forwardResult =
+    requestEntries.find((entry) => entry?.message === "channels.workflow_native_forward_result") ?? null;
+  const wakeSummary =
+    requestEntries.find((entry) => entry?.message === "channels.telegram_wake_summary") ?? null;
+  const diagBody = report.diag?.diag ?? report.diag?.body ?? report.diag ?? null;
+
+  return {
+    measures: [
+      "full restore path from reset to fresh sandbox to stopped sandbox wake",
+      "real-reply or synthetic Telegram ingress against a live aliased deployment",
+      "workflow run/step/event evidence matched to the accepted request",
+      "final channel-forward diagnostic for the matched request when available",
+    ],
+    captures: {
+      deploymentInspect: true,
+      statusTimeline: true,
+      acceptedWebhookLog: !!report.acceptedLog,
+      requestScopedTelegramLogs: requestEntries.length > 0,
+      workflowRunsStepsEvents: !!report.workflow?.run,
+      channelForwardDiag: Boolean(diagBody),
+      realTelegramPromptMetadata: Boolean(report.promptMessage),
+    },
+    keySignals: {
+      requestId: acceptedRequestId,
+      acceptedMessage: report.acceptedLog?.message ?? null,
+      forwardStatus: forwardResult?.data?.status ?? null,
+      forwardOk: forwardResult?.data?.ok ?? null,
+      wakePhase: wakeSummary?.data?.phase ?? null,
+      wakeOutcome: wakeSummary?.data?.outcome ?? null,
+      workflowRunId: report.workflow?.run?.runId ?? null,
+      diagOutcome: diagBody?.outcome ?? null,
+      diagForwardStatus: diagBody?.forwardStatus ?? null,
+    },
+    recommendedUse:
+      "Use after a version has already been narrowed down to isolate whether the failure is ingress, readiness, workflow, or native-forward behavior on a live deployment.",
+  };
+}
+
 async function waitForWorkflowRun(acceptedTimestamp, timeoutMsLocal) {
   log("phase: waiting for workflow run");
   const startedAt = Date.now();
@@ -686,6 +727,7 @@ async function main() {
   report.finalStatus = await readStatus();
   report.completedAt = new Date().toISOString();
   report.totalDurationMs = Date.now() - overallStartedAt;
+  report.harness = buildRestoreHarnessGuide(report);
 
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
 }

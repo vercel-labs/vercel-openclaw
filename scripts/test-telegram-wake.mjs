@@ -512,6 +512,36 @@ function formatTimingBreakdown(diag) {
   return lines.join("\n");
 }
 
+function describeDeployedHarness(diag, wakeResult) {
+  return {
+    measures: [
+      "single deployed wake-from-stopped attempt",
+      "stop-to-webhook dispatch latency",
+      "webhook-to-running wake latency",
+      "channel-forward diagnostic timing breakdown",
+    ],
+    captures: {
+      jsonResult: true,
+      webhookResponse: true,
+      channelForwardDiag: diag ? true : false,
+      acceptedWebhookLog: false,
+      requestScopedTelegramLogs: false,
+      workflowRunsStepsEvents: false,
+      localProcessLogs: false,
+    },
+    keySignals: {
+      diagOutcome: diag?.outcome ?? null,
+      forwardOk: diag?.forwardOk ?? null,
+      forwardStatus: diag?.forwardStatus ?? null,
+      bootStatus: diag?.bootResultStatus ?? null,
+      readyStatus: diag?.readyMetaStatus ?? null,
+      wakeConfirmedBy: wakeResult?.viaDiagnostic ? "channel-forward-diag" : "api/status",
+    },
+    recommendedUse:
+      "Fastest deployed yes/no repro for a single version when channel-forward-diag is sufficient and request-scoped logs are not required.",
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -570,6 +600,7 @@ async function main() {
       },
       webhook: webhookResult,
       diag: diag ?? null,
+      harness: describeDeployedHarness(diag, wakeResult),
       error: passed ? null : (diag?.error ?? "diag outcome was not success"),
     };
 
@@ -599,6 +630,7 @@ async function main() {
       generatedAt: new Date().toISOString(),
       baseUrl,
       timing: { totalMs },
+      harness: describeDeployedHarness(null, null),
       error: err.message,
     };
 
