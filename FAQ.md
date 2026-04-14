@@ -12,6 +12,8 @@ It means the release has been checked against the workflow that matters here: in
 
 Recent upstream releases have introduced regressions in this flow. Examples include [#63225](https://github.com/openclaw/openclaw/issues/63225), which forced a rollback due to a missing dependency, and [#63863](https://github.com/openclaw/openclaw/issues/63863), where resume after wake became slow enough to disrupt Telegram and other channels. Until a release is verified here, it remains unverified for this deployment.
 
+The pin moved from `openclaw@2026.4.11` to `openclaw@2026.4.12` alongside an app-layer fix for the Telegram wake stall. See the [post-mortem discussion](https://github.com/vercel-labs/vercel-openclaw/discussions/4) for the full root cause, timeline, and commits.
+
 ## How do I recover from a bad update?
 
 To inspect the current sandbox:

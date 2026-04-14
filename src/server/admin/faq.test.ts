@@ -28,7 +28,7 @@ describe("loadAdminFaq", () => {
     });
 
     assert.deepEqual(faq, {
-      markdown: "## OpenClaw is currently pinned to 2026.4.11. Why?",
+      markdown: "## OpenClaw is currently pinned to 2026.4.12. Why?",
       source: "remote",
       warning: null,
     });

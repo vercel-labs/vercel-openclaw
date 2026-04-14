@@ -41,7 +41,7 @@ Set `VERCEL_AUTH_MODE=sign-in-with-vercel` to use Vercel OAuth instead of `ADMIN
 
 | Variable | Purpose |
 | -------- | ------- |
-| `OPENCLAW_PACKAGE_SPEC` | Pin to an exact version like `openclaw@1.2.3` for deterministic sandbox resumes and comparable benchmarks. When unset, the runtime falls back to a pinned known-good version (currently `openclaw@2026.4.11`) and the deployment contract warns on Vercel. |
+| `OPENCLAW_PACKAGE_SPEC` | Pin to an exact version like `openclaw@1.2.3` for deterministic sandbox resumes and comparable benchmarks. When unset, the runtime falls back to a pinned known-good version (currently `openclaw@2026.4.12`) and the deployment contract warns on Vercel. |
 | `OPENCLAW_INSTANCE_ID` | Optional Redis key namespace. On Vercel deployments, automatically uses `VERCEL_PROJECT_ID` when unset, giving each project its own namespace. Falls back to `openclaw-single` in local/non-Vercel environments. Can be set explicitly to override auto-detection. Changing it later points the app at a new namespace; it does not migrate existing state. |
 | `OPENCLAW_SANDBOX_VCPUS` | vCPU count for sandbox create/resume (1, 2, 4, or 8; default: 1). Keep fixed during benchmarks. |
 | `OPENCLAW_SANDBOX_SLEEP_AFTER_MS` | How long the sandbox stays alive after last activity, in milliseconds (60000–2700000; default: 1800000 = 30 min). Heartbeat and touch-throttle intervals are derived proportionally. Existing running sandboxes cannot be shortened in place. If you increase this value, the next touch/heartbeat can top the sandbox timeout up to the new target. If you decrease it, the lower value becomes exact on the next create or restore. |

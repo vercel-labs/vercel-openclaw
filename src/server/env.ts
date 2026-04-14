@@ -295,7 +295,7 @@ export function requiresDurableStore(): boolean {
  * openclaw/openclaw#59081).  On Vercel deployments the fallback is also
  * logged as a warning because it may drift from the intended version.
  */
-const OPENCLAW_DEFAULT_PACKAGE_SPEC = "openclaw@2026.4.11";
+const OPENCLAW_DEFAULT_PACKAGE_SPEC = "openclaw@2026.4.12";
 
 export type OpenclawPackageSpecSource = "explicit" | "fallback";
 

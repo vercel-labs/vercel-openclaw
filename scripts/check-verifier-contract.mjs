@@ -82,7 +82,7 @@ for (const relPath of docFiles) {
 // OPENCLAW_PACKAGE_SPEC policy accuracy check
 // The deployment contract warns (not fails) on Vercel when the spec is
 // unset or unpinned. The runtime falls back to a pinned known-good version
-// (currently openclaw@2026.4.11). Docs must not contradict either of these facts.
+// (currently openclaw@2026.4.12). Docs must not contradict either of these facts.
 // ---------------------------------------------------------------------------
 
 const policyDocFiles = ["README.md", "CLAUDE.md", "CONTRIBUTING.md"];
