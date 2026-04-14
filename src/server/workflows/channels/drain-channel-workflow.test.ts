@@ -516,6 +516,121 @@ test("toWorkflowProcessingError returns FatalError for native_forward_failed 404
 });
 
 // ===========================================================================
+// Telegram probe skip gate: lastRestoreMetrics.telegramListenerReady
+// ===========================================================================
+
+test("processChannelStep skips probe loop when lastRestoreMetrics.telegramListenerReady === true", async () => {
+  _resetLogBuffer();
+
+  let localProbeCalls = 0;
+  let publicProbeCalls = 0;
+
+  const dependencies = createWorkflowDependencies({
+    runWithBootMessages: async () => ({
+      meta: asMeta({
+        status: "running",
+        sandboxId: "sbx-listener-ready",
+        portUrls: { "3000": "https://gw.test", "8787": "https://tg.test" },
+        channels: {
+          telegram: { botToken: "tok", webhookSecret: "secret" } as never,
+          slack: null,
+          discord: null,
+          whatsapp: null,
+        },
+        lastRestoreMetrics: {
+          totalMs: 1_000,
+          localReadyMs: 500,
+          telegramListenerReady: true,
+        } as RestorePhaseMetrics,
+      }),
+      bootMessageSent: false,
+    }),
+    probeTelegramNativeHandlerLocally: async () => {
+      localProbeCalls += 1;
+      return { status: 401, ready: true, error: null };
+    },
+    waitForTelegramNativeHandler: async (): Promise<TelegramProbeResult> => {
+      publicProbeCalls += 1;
+      return {
+        ready: true,
+        attempts: 1,
+        waitMs: 0,
+        lastStatus: 401,
+        publicUrl: "https://tg.test",
+        timeline: [{ attempt: 1, elapsedMs: 0, status: 401 }],
+      };
+    },
+  });
+
+  await processChannelStep("telegram", { update_id: 1 }, "test", "req-listener-ready", null, {
+    dependencies,
+  });
+
+  assert.equal(
+    localProbeCalls,
+    0,
+    "probeTelegramNativeHandlerLocally must NOT be called when telegramListenerReady === true",
+  );
+  assert.equal(
+    publicProbeCalls,
+    0,
+    "waitForTelegramNativeHandler must NOT be called when telegramListenerReady === true",
+  );
+
+  // The skip is surfaced on the emitted wake summary so upstream observability can
+  // distinguish a trusted-from-restore skip from a natural probe success.
+  const logs = getServerLogs();
+  const summary = logs.find((e) => e.message === "channels.telegram_wake_summary");
+  assert.ok(summary, "telegram_wake_summary must be emitted");
+  assert.equal(
+    summary!.data?.telegramProbeSkippedReason,
+    "local-handler-ready",
+    "summary should record skip-reason 'local-handler-ready' when trusted from restore metrics",
+  );
+});
+
+test("processChannelStep preserves probe behavior when telegramListenerReady !== true", async () => {
+  _resetLogBuffer();
+
+  let localProbeCalls = 0;
+
+  const dependencies = createWorkflowDependencies({
+    runWithBootMessages: async () => ({
+      meta: asMeta({
+        status: "running",
+        sandboxId: "sbx-listener-unproven",
+        portUrls: { "3000": "https://gw.test", "8787": "https://tg.test" },
+        channels: {
+          telegram: { botToken: "tok", webhookSecret: "secret" } as never,
+          slack: null,
+          discord: null,
+          whatsapp: null,
+        },
+        lastRestoreMetrics: {
+          totalMs: 1_000,
+          localReadyMs: 500,
+          telegramListenerReady: false,
+        } as RestorePhaseMetrics,
+      }),
+      bootMessageSent: false,
+    }),
+    probeTelegramNativeHandlerLocally: async () => {
+      localProbeCalls += 1;
+      return { status: 401, ready: true, error: null };
+    },
+  });
+
+  await processChannelStep("telegram", { update_id: 1 }, "test", "req-listener-unproven", null, {
+    dependencies,
+  });
+
+  assert.ok(
+    localProbeCalls >= 1,
+    "probeTelegramNativeHandlerLocally must run at least once when telegramListenerReady !== true",
+  );
+});
+
+// ===========================================================================
 // Telegram wake summary log
 // ===========================================================================
 

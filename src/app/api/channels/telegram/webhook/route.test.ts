@@ -146,6 +146,25 @@ test("Telegram webhook: fast path connection failure reconciles status and start
       meta.status = "running";
       meta.sandboxId = "sbx-stale-dead";
       meta.snapshotId = "snap-123";
+      // Fast-path requires telegramListenerReady=true to fire.  The test
+      // exercises the network-failure reconcile path, which only runs inside
+      // the fast-path's catch branch, so the gate must be satisfied here.
+      meta.lastRestoreMetrics = {
+        sandboxCreateMs: 0,
+        tokenWriteMs: 0,
+        assetSyncMs: 0,
+        startupScriptMs: 0,
+        forcePairMs: 0,
+        firewallSyncMs: 0,
+        localReadyMs: 0,
+        publicReadyMs: 0,
+        totalMs: 0,
+        skippedStaticAssetSync: false,
+        assetSha256: null,
+        vcpus: 1,
+        recordedAt: Date.now(),
+        telegramListenerReady: true,
+      };
     });
     // Pre-create the sandbox handle with "stopped" status so reconciliation
     // correctly transitions meta.status to "stopped"
@@ -180,6 +199,186 @@ test("Telegram webhook: fast path connection failure reconciles status and start
   });
 });
 
+// ===========================================================================
+// Fast-path gate: requires lastRestoreMetrics.telegramListenerReady === true
+// ===========================================================================
+
+test("Telegram webhook: fast path does NOT fire when telegramListenerReady is missing", async () => {
+  await withHarness(async (h) => {
+    await configureTelegram(h);
+    // status=running + sandbox + portUrls present but lastRestoreMetrics is missing.
+    await h.mutateMeta((meta) => {
+      meta.status = "running";
+      meta.sandboxId = "sbx-telegram-gate-missing";
+      meta.snapshotId = "snap-telegram-gate-missing";
+      meta.portUrls = {
+        "3000": "https://sbx-telegram-gate-missing-3000.fake.vercel.run",
+        "8787": "https://sbx-telegram-gate-missing-8787.fake.vercel.run",
+      };
+      meta.lastRestoreMetrics = null;
+    });
+
+    let fastPathForwardCount = 0;
+    h.fakeFetch.onPost(/telegram-webhook$/, () => {
+      fastPathForwardCount += 1;
+      return new Response("ok", { status: 200 });
+    });
+    // Boot message responder for the workflow fallthrough path.
+    h.fakeFetch.onPost(/api\.telegram\.org/, () =>
+      Response.json({ ok: true, result: { message_id: 1 } }),
+    );
+
+    const route = getTelegramWebhookRoute();
+    const startMock = mock.method(telegramWebhookWorkflowRuntime, "start", async () => {});
+    try {
+      const req = buildTelegramWebhook({ webhookSecret: TELEGRAM_WEBHOOK_SECRET });
+      const result = await callRoute(route.POST, req);
+      assert.equal(result.status, 200);
+      assert.equal(
+        fastPathForwardCount,
+        0,
+        "fast-path must NOT forward when lastRestoreMetrics is missing",
+      );
+      assert.equal(
+        startMock.mock.callCount(),
+        1,
+        "request must fall through to workflow path when listener readiness is unproven",
+      );
+      resetAfterCallbacks();
+    } finally {
+      startMock.mock.restore();
+    }
+  });
+});
+
+test("Telegram webhook: fast path does NOT fire when telegramListenerReady !== true", async () => {
+  await withHarness(async (h) => {
+    await configureTelegram(h);
+    // status=running but listener readiness was NOT proven during restore.
+    await h.mutateMeta((meta) => {
+      meta.status = "running";
+      meta.sandboxId = "sbx-telegram-gate-false";
+      meta.snapshotId = "snap-telegram-gate-false";
+      meta.portUrls = {
+        "3000": "https://sbx-telegram-gate-false-3000.fake.vercel.run",
+        "8787": "https://sbx-telegram-gate-false-8787.fake.vercel.run",
+      };
+      meta.lastRestoreMetrics = {
+        sandboxCreateMs: 0,
+        tokenWriteMs: 0,
+        assetSyncMs: 0,
+        startupScriptMs: 0,
+        forcePairMs: 0,
+        firewallSyncMs: 0,
+        localReadyMs: 0,
+        publicReadyMs: 0,
+        totalMs: 0,
+        skippedStaticAssetSync: false,
+        assetSha256: null,
+        vcpus: 1,
+        recordedAt: Date.now(),
+        telegramListenerReady: false,
+      };
+    });
+
+    let fastPathForwardCount = 0;
+    h.fakeFetch.onPost(/telegram-webhook$/, () => {
+      fastPathForwardCount += 1;
+      return new Response("ok", { status: 200 });
+    });
+    h.fakeFetch.onPost(/api\.telegram\.org/, () =>
+      Response.json({ ok: true, result: { message_id: 1 } }),
+    );
+
+    const route = getTelegramWebhookRoute();
+    const startMock = mock.method(telegramWebhookWorkflowRuntime, "start", async () => {});
+    try {
+      const req = buildTelegramWebhook({ webhookSecret: TELEGRAM_WEBHOOK_SECRET });
+      const result = await callRoute(route.POST, req);
+      assert.equal(result.status, 200);
+      assert.equal(
+        fastPathForwardCount,
+        0,
+        "fast-path must NOT forward when telegramListenerReady !== true",
+      );
+      assert.equal(
+        startMock.mock.callCount(),
+        1,
+        "request must fall through to workflow path when listener readiness is not true",
+      );
+      resetAfterCallbacks();
+    } finally {
+      startMock.mock.restore();
+    }
+  });
+});
+
+test("Telegram webhook: fast path fires when status=running AND telegramListenerReady=true", async () => {
+  await withHarness(async (h) => {
+    await configureTelegram(h);
+    await h.mutateMeta((meta) => {
+      meta.status = "running";
+      meta.sandboxId = "sbx-telegram-gate-ready";
+      meta.snapshotId = "snap-telegram-gate-ready";
+      meta.portUrls = {
+        "3000": "https://sbx-telegram-gate-ready-3000.fake.vercel.run",
+        "8787": "https://sbx-telegram-gate-ready-8787.fake.vercel.run",
+      };
+      meta.lastRestoreMetrics = {
+        sandboxCreateMs: 0,
+        tokenWriteMs: 0,
+        assetSyncMs: 0,
+        startupScriptMs: 0,
+        forcePairMs: 0,
+        firewallSyncMs: 0,
+        localReadyMs: 0,
+        publicReadyMs: 0,
+        totalMs: 0,
+        skippedStaticAssetSync: false,
+        assetSha256: null,
+        vcpus: 1,
+        recordedAt: Date.now(),
+        telegramListenerReady: true,
+      };
+    });
+
+    let capturedForwardUrl: string | null = null;
+    h.fakeFetch.onPost(/telegram-webhook$/, (url) => {
+      capturedForwardUrl = url;
+      return new Response("ok", { status: 200 });
+    });
+
+    const route = getTelegramWebhookRoute();
+    const startMock = mock.method(telegramWebhookWorkflowRuntime, "start", async () => {});
+    try {
+      const req = buildTelegramWebhook({ webhookSecret: TELEGRAM_WEBHOOK_SECRET });
+      const result = await callRoute(route.POST, req);
+      assert.equal(result.status, 200);
+      assert.deepEqual(result.json, { ok: true });
+      assert.ok(
+        capturedForwardUrl,
+        "fast-path should forward to the native handler on port 8787",
+      );
+      assert.ok(
+        capturedForwardUrl!.includes("8787"),
+        `forward should hit the 8787 surface (got ${capturedForwardUrl})`,
+      );
+      assert.ok(
+        capturedForwardUrl!.endsWith("/telegram-webhook"),
+        `forward should end with /telegram-webhook (got ${capturedForwardUrl})`,
+      );
+      assert.equal(
+        startMock.mock.callCount(),
+        0,
+        "workflow must NOT start when fast-path succeeds",
+      );
+      resetAfterCallbacks();
+    } finally {
+      startMock.mock.restore();
+    }
+  });
+});
+
 test("Telegram webhook: fast path non-ok response returns 200 without falling through to workflow", async () => {
   await withHarness(async (h) => {
     await configureTelegram(h);
@@ -190,6 +389,23 @@ test("Telegram webhook: fast path non-ok response returns 200 without falling th
       meta.portUrls = {
         "3000": "https://sbx-telegram-non-ok-3000.fake.vercel.run",
         "8787": "https://sbx-telegram-non-ok-8787.fake.vercel.run",
+      };
+      // Fast-path requires telegramListenerReady=true to fire.
+      meta.lastRestoreMetrics = {
+        sandboxCreateMs: 0,
+        tokenWriteMs: 0,
+        assetSyncMs: 0,
+        startupScriptMs: 0,
+        forcePairMs: 0,
+        firewallSyncMs: 0,
+        localReadyMs: 0,
+        publicReadyMs: 0,
+        totalMs: 0,
+        skippedStaticAssetSync: false,
+        assetSha256: null,
+        vcpus: 1,
+        recordedAt: Date.now(),
+        telegramListenerReady: true,
       };
     });
 

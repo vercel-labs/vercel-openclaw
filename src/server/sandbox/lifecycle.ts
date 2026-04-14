@@ -780,6 +780,15 @@ export async function stopSandbox(): Promise<SingleMeta> {
           next.status = "stopped";
           next.lastAccessedAt = Date.now();
           next.lastError = null;
+          // lastRestoreMetrics describes a previously-ready runtime.  Once
+          // stopped, that assertion no longer holds — callers gating on
+          // telegramListenerReady must not trust the prior cycle's proof.
+          if (next.lastRestoreMetrics) {
+            next.lastRestoreMetrics = {
+              ...next.lastRestoreMetrics,
+              telegramListenerReady: false,
+            };
+          }
         });
 
         // Hot-spare: best-effort pre-create a candidate sandbox after stop.
@@ -2987,6 +2996,21 @@ async function _restoreSandboxFromSnapshot(
       return createAndBootstrapSandboxWithinLifecycleLock(origin, { op });
     }
 
+    // Invalidate any previous cycle's telegramListenerReady before we begin
+    // rebinding the handler.  The atomic write at the end of restore will
+    // republish the fresh value alongside status="running".  Leaving the
+    // stale flag in place would let mid-restore readers observe
+    // (status=running-from-prior-cycle, telegramListenerReady=true-from-prior-cycle)
+    // and forward onto an actively-rebinding handler.
+    await mutateMeta((meta) => {
+      if (meta.lastRestoreMetrics) {
+        meta.lastRestoreMetrics = {
+          ...meta.lastRestoreMetrics,
+          telegramListenerReady: false,
+        };
+      }
+    });
+
     // Auth-required boot: on Vercel, require a usable AI Gateway credential.
     markPhase("oidc");
     const credential = await resolveAiGatewayCredentialOptional();
@@ -3630,13 +3654,11 @@ async function _restoreSandboxFromSnapshot(
       }
     }
 
-    // Telegram reconcile and secret-sync have finished — only now is the
-    // sandbox truly ready to receive forwarded Telegram updates on 8787.
-    // Flip status to "running" so callers polling metadata (including the
-    // Telegram webhook fast-path) see a consistent ready state.
-    await mutateMeta((meta) => {
-      meta.status = "running";
-    });
+    // Status flip is deferred to the atomic write with lastRestoreMetrics
+    // below, so any observer of status==="running" also sees the matching
+    // restore metrics (including telegramListenerReady) from the same
+    // cycle.  Splitting the writes created a 127-line race window where
+    // stale previous-cycle metrics could be read alongside fresh status.
 
     // Background static asset sync — not on the hot path.  The gateway
     // already booted with the snapshot's cached scripts/skills.  This
@@ -3762,6 +3784,12 @@ async function _restoreSandboxFromSnapshot(
     }
 
     await mutateMeta((meta) => {
+      // Atomic write: status and the metrics that describe the current
+      // cycle move together.  Gatekeepers of status==="running" (webhook
+      // fast-paths, drain workflow probe-skip) can now trust that
+      // meta.lastRestoreMetrics.telegramListenerReady belongs to this
+      // restore, not the previous one.
+      meta.status = "running";
       meta.lastRestoreMetrics = metrics;
       meta.restoreHistory = [metrics, ...(meta.restoreHistory ?? [])].slice(
         0,

@@ -321,8 +321,14 @@ export async function processChannelStep(
       // a 300-1500ms @vercel/sandbox runCommand roundtrip, and the public probe
       // loop burns up to 15s on Vercel's edge catch-all 200s even after the
       // handler is actually ready.
+      //
+      // Gate on status==="running" in addition to telegramListenerReady so
+      // that readyMeta captured before the atomic status+metrics flip in
+      // lifecycle.ts cannot cause us to trust stale previous-cycle metrics
+      // while the current restore is still rebinding the handler.
       const restoreListenerReady =
-        effectiveReadyMeta.lastRestoreMetrics?.telegramListenerReady === true;
+        effectiveReadyMeta.status === "running"
+        && effectiveReadyMeta.lastRestoreMetrics?.telegramListenerReady === true;
       let localProbeResult: TelegramLocalProbeResult | null = restoreListenerReady
         ? {
             status: 401,
