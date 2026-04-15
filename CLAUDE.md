@@ -133,7 +133,7 @@ Responsibilities:
 - expose `buildPublicUrl(path: string, request?: Request): string`
 - append `x-vercel-protection-bypass=<VERCEL_AUTOMATION_BYPASS_SECRET>` when the bypass secret is available (regardless of auth mode)
 
-Channel webhook URL construction lives in `src/server/channels/webhook-urls.ts`. The convenience wrappers in `src/server/channels/state.ts` (`buildSlackWebhookUrl`, `buildTelegramWebhookUrl`) delegate to `buildChannelWebhookUrl()` in that module. All channel delivery URLs use `buildPublicUrl` (bypass secret appended when available). The Slack app manifest uses `buildPublicDisplayUrl` (no bypass secret) because the bypass query parameter interferes with Slack's Event Subscriptions URL verification.
+Channel webhook URL construction lives in `src/server/channels/webhook-urls.ts`. The convenience wrappers in `src/server/channels/state.ts` (`buildSlackWebhookUrl`, `buildTelegramWebhookUrl`) delegate to `buildChannelWebhookUrl()` in that module. All channel delivery URLs use `buildPublicUrl` (bypass secret appended when available), including the Slack app manifest's `request_url`. Slack preserves the `x-vercel-protection-bypass` query parameter on its URL verification POST and on every subsequent webhook call, so it's required to pass through Vercel Deployment Protection. See [Vercel KB: Test a Slack bot with a Vercel preview deployment](https://vercel.com/kb/guide/test-slack-bot-with-vercel-preview-deployment).
 
 Admin-visible surfaces (preflight payload, status responses, UI) must use `buildPublicDisplayUrl()` instead of `buildPublicUrl()`. The display variant omits the `x-vercel-protection-bypass` query parameter so secrets are never leaked to the browser or API consumers.
 

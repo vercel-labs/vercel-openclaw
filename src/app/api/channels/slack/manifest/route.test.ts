@@ -54,7 +54,7 @@ test("Slack manifest: GET returns manifest and createAppUrl", async () => {
     assert.equal(body.manifest.display_information.name, "VClaw");
     assert.ok(body.manifest.oauth_config.scopes.bot.includes("chat:write"));
     assert.ok(body.manifest.settings.event_subscriptions.bot_events.includes("message.im"));
-    assert.ok(body.manifest.settings.event_subscriptions.request_url.endsWith("/api/channels/slack/webhook"));
+    assert.ok(body.manifest.settings.event_subscriptions.request_url.includes("/api/channels/slack/webhook"));
     assert.ok(body.createAppUrl.startsWith("https://api.slack.com/apps"));
   });
 });

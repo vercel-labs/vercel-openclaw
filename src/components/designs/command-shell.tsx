@@ -42,6 +42,90 @@ const ALL_SOURCES: LogSource[] = [
   "system",
 ];
 
+const RAIL_LOG_CAP = 500;
+const MAIN_LOG_CAP = 2000;
+
+function isSandboxTailId(id: string): boolean {
+  return id.startsWith("sbx-") || id.startsWith("log-plain-");
+}
+
+function isServerBufferId(id: string): boolean {
+  return id.startsWith("slog-");
+}
+
+function mergeLogs(prev: LogEntry[], incoming: LogEntry[], cap: number): LogEntry[] {
+  if (incoming.length === 0) return prev;
+  // Strip prior sandbox-tail entries; server replaces them every poll.
+  const hasSandboxInIncoming = incoming.some((e) => isSandboxTailId(e.id));
+  const base = hasSandboxInIncoming
+    ? prev.filter((e) => !isSandboxTailId(e.id))
+    : prev;
+  const seen = new Set(base.map((e) => e.id));
+  const newOnes = incoming.filter((e) => !seen.has(e.id));
+  if (newOnes.length === 0 && !hasSandboxInIncoming) return prev;
+  // Server returns newest-first. Preserve that ordering by prepending.
+  const merged = [...newOnes, ...base];
+  // Re-sort so sandbox entries fall in the right place by sourceOrder/timestamp.
+  merged.sort((a, b) => {
+    const at = a.sourceOrder ?? a.timestamp ?? 0;
+    const bt = b.sourceOrder ?? b.timestamp ?? 0;
+    return bt - at;
+  });
+  return merged.length > cap ? merged.slice(0, cap) : merged;
+}
+
+type JsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | JsonValue[]
+  | { [key: string]: JsonValue };
+
+function LogJsonTree({
+  value,
+  depth = 0,
+}: {
+  value: unknown;
+  depth?: number;
+}) {
+  if (value === null) return <span className="jt-null">null</span>;
+  if (value === undefined) return <span className="jt-null">undefined</span>;
+  const t = typeof value;
+  if (t === "string") return <span className="jt-str">&quot;{value as string}&quot;</span>;
+  if (t === "number" || t === "bigint") return <span className="jt-num">{String(value)}</span>;
+  if (t === "boolean") return <span className="jt-bool">{String(value)}</span>;
+  if (Array.isArray(value)) {
+    if (value.length === 0) return <span className="jt-empty">[]</span>;
+    return (
+      <div className="jt-block" style={{ marginLeft: depth === 0 ? 0 : 12 }}>
+        {(value as JsonValue[]).map((v, i) => (
+          <div className="jt-row" key={i}>
+            <span className="jt-key">[{i}]</span>
+            <LogJsonTree value={v} depth={depth + 1} />
+          </div>
+        ))}
+      </div>
+    );
+  }
+  if (t === "object") {
+    const obj = value as Record<string, unknown>;
+    const keys = Object.keys(obj);
+    if (keys.length === 0) return <span className="jt-empty">{"{}"}</span>;
+    return (
+      <div className="jt-block" style={{ marginLeft: depth === 0 ? 0 : 12 }}>
+        {keys.map((k) => (
+          <div className="jt-row" key={k}>
+            <span className="jt-key">{k}:</span>
+            <LogJsonTree value={obj[k]} depth={depth + 1} />
+          </div>
+        ))}
+      </div>
+    );
+  }
+  return <span className="jt-str">{String(value)}</span>;
+}
+
 const STATUS_TONE: Record<string, "success" | "warning" | "danger" | "muted" | "info"> = {
   running: "success",
   setup: "info",
@@ -136,6 +220,12 @@ export function CommandShell({ initialStatus }: Props) {
   });
   const [logSource, setLogSource] = useState<LogSource | "all">("all");
   const [logsLive, setLogsLive] = useState(true);
+  const [logsHoverPaused, setLogsHoverPaused] = useState(false);
+  const [expandedLogIds, setExpandedLogIds] = useState<Set<string>>(new Set());
+  const [copiedLogId, setCopiedLogId] = useState<string | null>(null);
+  const [copiedLogMode, setCopiedLogMode] = useState<"text" | "json" | null>(null);
+  const logsCursorRef = useRef<string | null>(null);
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Terminal (SSH)
   const [sshCmd, setSshCmd] = useState("");
@@ -172,14 +262,27 @@ export function CommandShell({ initialStatus }: Props) {
 
   const refreshLogs = useCallback(async () => {
     try {
-      const res = await fetch("/api/admin/logs", {
+      const cursor = logsCursorRef.current;
+      const url = cursor
+        ? `/api/admin/logs?sinceId=${encodeURIComponent(cursor)}`
+        : "/api/admin/logs";
+      const res = await fetch(url, {
         credentials: "same-origin",
         cache: "no-store",
         headers: { accept: "application/json" },
       });
       if (!res.ok) return;
-      const data = (await res.json()) as { logs: LogEntry[] };
-      setLogs(data.logs.slice(0, 40));
+      const data = (await res.json()) as {
+        logs: LogEntry[];
+        nextCursor?: string | null;
+      };
+      if (data.nextCursor) logsCursorRef.current = data.nextCursor;
+      if (!cursor) {
+        // First load — replace.
+        setLogs(data.logs.slice(0, MAIN_LOG_CAP));
+      } else {
+        setLogs((prev) => mergeLogs(prev, data.logs, MAIN_LOG_CAP));
+      }
     } catch {
       /* ignore */
     }
@@ -190,12 +293,58 @@ export function CommandShell({ initialStatus }: Props) {
     refreshStatus();
     refreshLogs();
     const sId = setInterval(refreshStatus, 5000);
-    const lId = logsLive ? setInterval(refreshLogs, 3000) : null;
+    const paused = !logsLive || logsHoverPaused;
+    const lId = paused ? null : setInterval(refreshLogs, 3000);
     return () => {
       clearInterval(sId);
       if (lId) clearInterval(lId);
     };
-  }, [status, refreshStatus, refreshLogs, logsLive]);
+  }, [status, refreshStatus, refreshLogs, logsLive, logsHoverPaused]);
+
+  // Keyboard: Escape collapses all expanded log rows in main view.
+  useEffect(() => {
+    if (view !== "logs") return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && expandedLogIds.size > 0) {
+        setExpandedLogIds(new Set());
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [view, expandedLogIds]);
+
+  const toggleExpanded = useCallback((id: string) => {
+    setExpandedLogIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const copyLogAs = useCallback(
+    (entry: LogEntry, mode: "text" | "json") => {
+      const text =
+        mode === "json"
+          ? JSON.stringify(entry, null, 2)
+          : `[${new Date(entry.timestamp).toISOString()}] [${entry.level.toUpperCase()}] [${entry.source}] ${entry.message}`;
+      void navigator.clipboard
+        .writeText(text)
+        .then(() => {
+          setCopiedLogId(entry.id);
+          setCopiedLogMode(mode);
+          if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+          copyTimerRef.current = setTimeout(() => {
+            setCopiedLogId(null);
+            setCopiedLogMode(null);
+          }, 1500);
+        })
+        .catch(() => {
+          /* clipboard unavailable */
+        });
+    },
+    [],
+  );
 
   // Adapters so the existing panel components (ChannelsPanel, etc.) can post
   // mutations through the shared `requestJsonCore` plumbing.
@@ -1313,22 +1462,110 @@ export function CommandShell({ initialStatus }: Props) {
                       return false;
                     return true;
                   })
-                  .map((l) => (
-                    <div className="log-row" key={l.id}>
-                      <div className="log-meta">
-                        <span>{fmtTimeOfDay(l.timestamp)}</span>
-                        <span className={`log-level ${l.level}`}>
-                          {l.level}
-                        </span>
-                        <span
-                          style={{ color: "var(--foreground-subtle)" }}
-                        >
-                          {l.source}
-                        </span>
+                  .map((l) => {
+                    const expanded = expandedLogIds.has(l.id);
+                    const data = l.data ?? null;
+                    const truncated = Boolean(
+                      data && (data as Record<string, unknown>).__truncated,
+                    );
+                    const preview = truncated
+                      ? String(
+                          (data as Record<string, unknown>).__preview ?? "",
+                        )
+                      : "";
+                    const originalBytes = truncated
+                      ? Number(
+                          (data as Record<string, unknown>).__originalBytes ??
+                            0,
+                        )
+                      : 0;
+                    const hasData =
+                      data && Object.keys(data).length > 0;
+                    return (
+                      <div
+                        className={`log-row main-log-row${expanded ? " expanded" : ""}`}
+                        key={l.id}
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => hasData && toggleExpanded(l.id)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" && hasData) {
+                            e.preventDefault();
+                            toggleExpanded(l.id);
+                          }
+                        }}
+                      >
+                        <div className="log-meta">
+                          <span>{fmtTimeOfDay(l.timestamp)}</span>
+                          <span className={`log-level ${l.level}`}>
+                            {l.level}
+                          </span>
+                          <span
+                            style={{ color: "var(--foreground-subtle)" }}
+                          >
+                            {l.source}
+                          </span>
+                          {truncated && (
+                            <span
+                              className="log-trunc-pill"
+                              title="Payload truncated by server"
+                            >
+                              ⚠ truncated
+                            </span>
+                          )}
+                          {hasData && (
+                            <span className="log-expand-hint" aria-hidden>
+                              {expanded ? "▾" : "▸"}
+                            </span>
+                          )}
+                          <div
+                            className="log-copy-row"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <button
+                              type="button"
+                              className="log-copy-btn"
+                              onClick={() => copyLogAs(l, "text")}
+                              title="Copy as text"
+                            >
+                              {copiedLogId === l.id &&
+                              copiedLogMode === "text"
+                                ? "✓"
+                                : "copy ⎘"}
+                            </button>
+                            <button
+                              type="button"
+                              className="log-copy-btn"
+                              onClick={() => copyLogAs(l, "json")}
+                              title="Copy full entry as JSON"
+                            >
+                              {copiedLogId === l.id &&
+                              copiedLogMode === "json"
+                                ? "✓"
+                                : "json ⎘"}
+                            </button>
+                          </div>
+                        </div>
+                        <div className="log-msg">{l.message}</div>
+                        {expanded && hasData && (
+                          <div className="log-data">
+                            {truncated && (
+                              <div className="log-trunc-callout">
+                                ⚠ Truncated ({originalBytes.toLocaleString()}{" "}
+                                bytes). View full in Vercel function logs.
+                                {preview && (
+                                  <div className="log-trunc-preview">
+                                    Preview: {preview}
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                            <LogJsonTree value={data} />
+                          </div>
+                        )}
                       </div>
-                      <div className="log-msg">{l.message}</div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 {logs.length === 0 && (
                   <p className="muted-copy">No logs collected yet.</p>
                 )}
@@ -1503,47 +1740,99 @@ export function CommandShell({ initialStatus }: Props) {
               {logs.length === 0 && (
                 <div className="rail-empty">No logs yet.</div>
               )}
-              {logs.map((l) => (
-                <div className="log-row" key={l.id}>
-                  <div className="log-meta">
-                    <span>{fmtTimeOfDay(l.timestamp)}</span>
-                    <span className={`log-level ${l.level}`}>{l.level}</span>
-                    <span style={{ color: "var(--foreground-subtle)" }}>
-                      {l.source}
-                    </span>
+              {logs.slice(0, RAIL_LOG_CAP).map((l) => {
+                const truncated = Boolean(
+                  l.data &&
+                    (l.data as Record<string, unknown>).__truncated,
+                );
+                return (
+                  <div className="log-row rail-log-row" key={l.id}>
+                    <div className="log-meta">
+                      <span>{fmtTimeOfDay(l.timestamp)}</span>
+                      <span className={`log-level ${l.level}`}>{l.level}</span>
+                      <span style={{ color: "var(--foreground-subtle)" }}>
+                        {l.source}
+                      </span>
+                      {truncated && (
+                        <span className="log-trunc-pill" title="Truncated">
+                          ⚠
+                        </span>
+                      )}
+                    </div>
+                    <div className="log-msg log-msg-clip">{l.message}</div>
                   </div>
-                  <div className="log-msg">{l.message}</div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </details>
         </div>
       </div>
 
-      <div className="right-rail">
+      <div
+        className="right-rail"
+        onMouseEnter={() => setLogsHoverPaused(true)}
+        onMouseLeave={() => setLogsHoverPaused(false)}
+        onFocusCapture={() => setLogsHoverPaused(true)}
+        onBlurCapture={() => setLogsHoverPaused(false)}
+      >
         <div className="rail-header">
           <span className="rail-title">Live Logs</span>
           <span className="rail-meta">
             {logs.length} recent ·{" "}
-            <span className="status-dot success" style={{ marginRight: 0 }}></span>
+            <span
+              className={`status-dot ${logsHoverPaused || !logsLive ? "muted" : "success"}`}
+              style={{ marginRight: 0 }}
+              title={
+                logsHoverPaused
+                  ? "Paused (hover)"
+                  : !logsLive
+                    ? "Paused"
+                    : "Live"
+              }
+            ></span>
           </span>
         </div>
         <div className="rail-content">
           {logs.length === 0 && (
             <div className="rail-empty">No logs yet. Polling /api/admin/logs…</div>
           )}
-          {logs.map((l) => (
-            <div className="log-row" key={l.id}>
-              <div className="log-meta">
-                <span>{fmtTimeOfDay(l.timestamp)}</span>
-                <span className={`log-level ${l.level}`}>{l.level}</span>
-                <span style={{ color: "var(--foreground-subtle)" }}>
-                  {l.source}
-                </span>
+          {logs.slice(0, RAIL_LOG_CAP).map((l) => {
+            const truncated = Boolean(
+              l.data && (l.data as Record<string, unknown>).__truncated,
+            );
+            return (
+              <div className="log-row rail-log-row" key={l.id}>
+                <div className="log-meta">
+                  <span>{fmtTimeOfDay(l.timestamp)}</span>
+                  <span className={`log-level ${l.level}`}>{l.level}</span>
+                  <span style={{ color: "var(--foreground-subtle)" }}>
+                    {l.source}
+                  </span>
+                  {truncated && (
+                    <span
+                      className="log-trunc-pill"
+                      title="Truncated — view in main Logs panel"
+                    >
+                      ⚠
+                    </span>
+                  )}
+                  <button
+                    type="button"
+                    className="log-copy-btn rail-copy-btn"
+                    onClick={() =>
+                      copyLogAs(l, "text")
+                    }
+                    title="Copy"
+                  >
+                    {copiedLogId === l.id && copiedLogMode === "text"
+                      ? "✓"
+                      : "⎘"}
+                  </button>
+                </div>
+                <div className="log-msg log-msg-clip">{l.message}</div>
               </div>
-              <div className="log-msg">{l.message}</div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </div>
     </div>
@@ -2405,6 +2694,101 @@ function Style() {
         }
         .logs-source-row { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
         .logs-table { margin-top: 16px; display: flex; flex-direction: column; gap: 12px; max-height: 560px; overflow: auto; }
+
+        .main-log-row {
+          cursor: default;
+          padding: 8px 10px;
+          border-radius: 4px;
+          border: 1px solid transparent;
+          border-bottom: 1px solid var(--border);
+          transition: background-color 150ms ease, border-color 150ms ease;
+        }
+        .main-log-row:hover { background: var(--background-hover); }
+        .main-log-row.expanded {
+          background: var(--background-elevated);
+          border-color: var(--border);
+        }
+        .main-log-row:focus-visible {
+          outline: 1px solid var(--foreground-muted);
+          outline-offset: 1px;
+        }
+        .main-log-row .log-meta {
+          align-items: center;
+          gap: 10px;
+        }
+        .log-copy-row {
+          margin-left: auto; display: inline-flex; gap: 4px;
+          opacity: 0;
+          transition: opacity 150ms ease;
+        }
+        .main-log-row:hover .log-copy-row,
+        .main-log-row.expanded .log-copy-row { opacity: 1; }
+        .log-copy-btn {
+          background: transparent;
+          border: 1px solid var(--border);
+          color: var(--foreground-muted);
+          font-family: var(--font-geist-mono, ui-monospace, monospace);
+          font-size: 10px;
+          padding: 2px 6px;
+          border-radius: 3px;
+          cursor: pointer;
+          transition: color 150ms ease, border-color 150ms ease;
+        }
+        .log-copy-btn:hover { color: var(--foreground); border-color: var(--border-strong); }
+        .rail-copy-btn { border: none; padding: 0 4px; margin-left: auto; }
+        .log-trunc-pill {
+          display: inline-flex; align-items: center;
+          padding: 1px 6px;
+          border-radius: 3px;
+          border: 1px solid var(--warning);
+          color: var(--warning);
+          font-size: 10px;
+          font-family: var(--font-geist-mono, ui-monospace, monospace);
+        }
+        .log-expand-hint {
+          color: var(--foreground-subtle); font-size: 10px;
+          font-family: var(--font-geist-mono, ui-monospace, monospace);
+        }
+        .log-data {
+          margin-top: 8px;
+          padding: 10px 12px;
+          background: var(--background);
+          border: 1px solid var(--border);
+          border-radius: 4px;
+          font-family: var(--font-geist-mono, ui-monospace, monospace);
+          font-size: 11px;
+          overflow-x: auto;
+        }
+        .log-trunc-callout {
+          color: var(--warning);
+          margin-bottom: 8px;
+          padding-bottom: 8px;
+          border-bottom: 1px solid var(--border);
+        }
+        .log-trunc-preview {
+          color: var(--foreground-muted);
+          margin-top: 4px;
+          white-space: pre-wrap;
+          word-break: break-word;
+        }
+        .jt-block { display: flex; flex-direction: column; gap: 2px; }
+        .jt-row { display: flex; gap: 6px; align-items: baseline; }
+        .jt-key { color: var(--foreground-subtle); flex-shrink: 0; }
+        .jt-str { color: var(--info); word-break: break-word; }
+        .jt-num { color: var(--warning); }
+        .jt-bool { color: var(--success); }
+        .jt-null { color: var(--foreground-subtle); font-style: italic; }
+        .jt-empty { color: var(--foreground-subtle); }
+
+        .log-msg-clip {
+          display: -webkit-box;
+          -webkit-line-clamp: 1;
+          -webkit-box-orient: vertical;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          word-break: break-all;
+        }
+        .rail-log-row .log-meta { align-items: center; gap: 8px; }
 
         .faq-content {
           font-size: 13px; line-height: 1.6; color: var(--foreground);
