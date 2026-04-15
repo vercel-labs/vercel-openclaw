@@ -816,7 +816,7 @@ export function CommandShell({ initialStatus }: Props) {
           )}
 
           {view === "channels" && (
-            <section>
+            <section className="cmd-channels">
               <ChannelsPanel
                 active={view === "channels"}
                 status={status}
@@ -2024,6 +2024,145 @@ function Style() {
         }
         .login-input:focus { border-color: var(--border-strong); }
         .login-error { color: var(--danger); font-size: 12px; font-family: var(--font-geist-mono, ui-monospace, monospace); }
+
+        /* ─── Scoped Channels-panel overrides (align legacy panels with CommandShell theme) ─── */
+        .cmd-channels { display: flex; flex-direction: column; gap: 24px; }
+        .cmd-channels .panel-card {
+          border-radius: var(--radius);
+          padding: 20px;
+          background: var(--background-elevated);
+          border: 1px solid var(--border);
+        }
+        .cmd-channels .panel-head {
+          padding-bottom: 12px;
+          margin-bottom: 16px;
+          border-bottom: 1px solid var(--border);
+          align-items: baseline;
+        }
+        .cmd-channels h2, .cmd-channels h3 {
+          font-weight: 600;
+          letter-spacing: -0.01em;
+        }
+        .cmd-channels h2 { font-size: 14px; }
+        .cmd-channels h3 { font-size: 13px; }
+        .cmd-channels .eyebrow {
+          font-family: var(--font-geist-mono, ui-monospace, monospace);
+          font-size: 11px;
+          font-weight: 500;
+          text-transform: uppercase;
+          letter-spacing: 0.08em;
+          color: var(--foreground-subtle);
+          margin: 0 0 8px;
+        }
+        .cmd-channels .lede,
+        .cmd-channels .muted-copy,
+        .cmd-channels p {
+          font-size: 12px;
+          line-height: 1.5;
+          color: var(--foreground-muted);
+        }
+        .cmd-channels .button {
+          min-height: 32px;
+          padding: 0 14px;
+          border-radius: 6px;
+          font-size: 13px;
+          font-weight: 500;
+          font-family: inherit;
+        }
+        .cmd-channels .button.primary {
+          background: var(--foreground);
+          border-color: var(--foreground);
+          color: var(--background);
+        }
+        .cmd-channels .button.primary:hover:not(:disabled) {
+          background: #fff;
+          border-color: #fff;
+        }
+        .cmd-channels .button.ghost {
+          background: transparent;
+          border-color: var(--border);
+          color: var(--foreground);
+        }
+        .cmd-channels .button.ghost:hover:not(:disabled) {
+          background: var(--background-hover);
+          border-color: var(--border-strong);
+        }
+        .cmd-channels .button.success {
+          background: transparent;
+          border-color: var(--success);
+          color: var(--success);
+        }
+        .cmd-channels .button.success:hover:not(:disabled) {
+          background: rgba(69, 165, 87, 0.08);
+          border-color: var(--success);
+          color: var(--success);
+        }
+        .cmd-channels .button.danger {
+          background: transparent;
+          border-color: var(--danger);
+          color: var(--danger);
+        }
+        .cmd-channels .button.danger:hover:not(:disabled) {
+          background: rgba(229, 72, 77, 0.08);
+          color: var(--danger);
+        }
+        .cmd-channels .field-label {
+          display: block;
+          font-family: var(--font-geist-mono, ui-monospace, monospace);
+          font-size: 11px;
+          font-weight: 500;
+          text-transform: uppercase;
+          letter-spacing: 0.08em;
+          color: var(--foreground-subtle);
+          margin: 0 0 6px;
+        }
+        .cmd-channels .text-input {
+          background: var(--background);
+          color: var(--foreground);
+          border: 1px solid var(--border);
+          border-radius: 6px;
+          padding: 8px 12px;
+          font-size: 12px;
+          font-family: var(--font-geist-mono, ui-monospace, monospace);
+          width: 100%;
+        }
+        .cmd-channels .text-input:focus {
+          border-color: var(--border-strong);
+          outline: none;
+        }
+        .cmd-channels .auth-chip,
+        .cmd-channels .pill {
+          font-family: var(--font-geist-mono, ui-monospace, monospace);
+          font-size: 11px;
+          padding: 2px 8px;
+          border-radius: 12px;
+          background: var(--background-hover);
+          color: var(--foreground);
+          border: 1px solid var(--border);
+          min-height: auto;
+        }
+        .cmd-channels .panel-grid {
+          display: grid;
+          gap: 12px;
+          grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+        }
+        .cmd-channels code {
+          font-family: var(--font-geist-mono, ui-monospace, monospace);
+          font-size: 12px;
+          background: var(--background);
+          padding: 1px 6px;
+          border-radius: 4px;
+          border: 1px solid var(--border);
+        }
+        .cmd-channels a:not(.button) {
+          color: var(--foreground);
+          text-decoration: underline;
+          text-decoration-color: var(--border-strong);
+          text-underline-offset: 3px;
+        }
+        .cmd-channels a:not(.button):hover {
+          text-decoration-color: var(--foreground);
+        }
 
         /* Button-ified NavItem */
         button.nav-item {
