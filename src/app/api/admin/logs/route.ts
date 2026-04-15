@@ -3,10 +3,12 @@ import { getSandboxController } from "@/server/sandbox/controller";
 import type { LogEntry, LogLevel, LogSource } from "@/shared/types";
 import { requireJsonRouteAuth, authJsonOk } from "@/server/auth/route-auth";
 import {
+  capLogData,
   filterLogEntries,
   getFilteredServerLogs,
   logDebug,
   logWarn,
+  parseServerLogIdCounter,
   type LogFilters,
 } from "@/server/log";
 import { getInitializedMeta } from "@/server/store/store";
@@ -34,11 +36,16 @@ function parseLogLine(line: string, index: number): LogEntry | null {
     };
 
     const level = normalizeLevel(parsed.level);
-    const data = parsed.ctx && Object.keys(parsed.ctx).length > 0
+    const rawData = parsed.ctx && Object.keys(parsed.ctx).length > 0
       ? parsed.ctx
       : undefined;
+    const data = capLogData(rawData);
     return {
-      id: `log-${parsed.ts ?? index}-${index}`,
+      // Stable sandbox-parsed IDs use the `sbx-` prefix so they cannot
+      // collide with server-buffer IDs (`slog-`) or plain-text fallbacks
+      // (`log-plain-`). They are deterministic per response by using the
+      // parsed timestamp + the line's source order.
+      id: `sbx-${parsed.ts ?? "untimed"}-${index}`,
       timestamp: parsed.ts ? new Date(parsed.ts).getTime() : 0,
       timestampKind: parsed.ts ? "exact" : "untimed",
       sourceOrder: index,
@@ -85,6 +92,15 @@ function parseSource(raw: unknown): LogSource | null {
 
 function normalizeSource(primary: unknown, fallback?: unknown): LogSource {
   return parseSource(primary) ?? parseSource(fallback) ?? "system";
+}
+
+/**
+ * Extract the numeric counter from a server-buffer log id (`slog-NNN...`).
+ * Returns `null` for any malformed input; callers should treat null as
+ * "no cursor" and fall back to returning the full server buffer.
+ */
+function parseCursor(id: string | null): number | null {
+  return parseServerLogIdCounter(id);
 }
 
 function isValidLevel(value: string): value is LogLevel {
@@ -155,7 +171,42 @@ export async function GET(request: Request): Promise<Response> {
   };
 
   // Collect server-side structured logs from the ring buffer
-  const serverLogs = getFilteredServerLogs(filters);
+  const allServerLogs = getFilteredServerLogs(filters);
+
+  // Cursor-based fetch: when `sinceId` is provided, return only server-buffer
+  // entries whose counter is strictly greater than the parsed cursor. Sandbox
+  // tail logs are NOT incremental — `tail -n MAX_LOG_LINES` always returns the
+  // current window regardless of cursor — so we apply the filter only to the
+  // server-buffer portion.
+  const sinceIdParam = url.searchParams.get("sinceId");
+  let serverLogs = allServerLogs;
+  if (sinceIdParam) {
+    const cursor = parseCursor(sinceIdParam);
+    if (cursor === null) {
+      logDebug("admin.logs.invalid_cursor", { sinceId: sinceIdParam });
+      // Fall back to full buffer when cursor is malformed.
+    } else {
+      serverLogs = allServerLogs.filter((entry) => {
+        const counter = parseServerLogIdCounter(entry.id);
+        return counter !== null && counter > cursor;
+      });
+    }
+  }
+
+  // Compute nextCursor from the highest server-buffer id currently present
+  // (after filters but before cursor filter) so clients always advance even
+  // when the most recent entries don't match their query filters. Use the
+  // unfiltered current buffer max via getFilteredServerLogs({}) so clients
+  // don't get stuck when filtered results are empty.
+  let nextCursor: string | null = null;
+  let maxCounter = -1;
+  for (const entry of getFilteredServerLogs({})) {
+    const counter = parseServerLogIdCounter(entry.id);
+    if (counter !== null && counter > maxCounter) {
+      maxCounter = counter;
+      nextCursor = entry.id;
+    }
+  }
 
   // Collect sandbox logs when the sandbox exists and is in an active state
   const meta = await getInitializedMeta();
@@ -229,6 +280,7 @@ export async function GET(request: Request): Promise<Response> {
   return authJsonOk(
     {
       logs: allLogs,
+      nextCursor,
       diagnostics: {
         serverLogCount: serverLogs.length,
         sandboxLogCount: sandboxLogs.length,

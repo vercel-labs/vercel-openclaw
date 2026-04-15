@@ -3,6 +3,13 @@ import type { LogEntry, LogLevel, LogSource } from "@/shared/types";
 
 const RING_BUFFER_SIZE = 1000;
 
+/**
+ * Maximum serialized size (in chars) of a log entry's `data` field before it
+ * is truncated in the ring buffer. The full ctx is still emitted to
+ * console.* (Vercel function logs are not size-constrained the same way).
+ */
+export const MAX_LOG_DATA_BYTES = 4096;
+
 let _buffer: LogEntry[] = [];
 let _idCounter = 0;
 
@@ -40,9 +47,32 @@ function inferSource(msg: string, ctx?: Record<string, unknown>): LogSource {
   return "system";
 }
 
+/**
+ * Generate a stable, monotonically increasing log ID.
+ *
+ * Format: `slog-NNNNNNNNNNNN` (12-digit zero-padded counter). The fixed-width
+ * counter ensures lexicographic sort matches numeric sort, and dropping the
+ * `Date.now()` component eliminates collisions when two logs land in the same
+ * millisecond.
+ *
+ * Exported so cursor parsing in API routes can reuse the same scheme.
+ */
 function nextId(): string {
   _idCounter += 1;
-  return `slog-${Date.now()}-${_idCounter}`;
+  return `slog-${String(_idCounter).padStart(12, "0")}`;
+}
+
+/**
+ * Parse a server-buffer log id of the form `slog-NNN...` into its numeric
+ * counter. Returns `null` when the id does not match the expected shape.
+ */
+export function parseServerLogIdCounter(id: string | null): number | null {
+  if (!id) return null;
+  const match = /^slog-(\d+)$/.exec(id);
+  if (!match) return null;
+  const n = Number.parseInt(match[1]!, 10);
+  if (!Number.isFinite(n)) return null;
+  return n;
 }
 
 /**
@@ -56,6 +86,31 @@ export function extractRequestId(request: Request): string | undefined {
     request.headers.get("x-request-id") ??
     undefined
   );
+}
+
+/**
+ * Cap a log entry's `data` payload to `MAX_LOG_DATA_BYTES` (measured against
+ * its JSON.stringify length). Returns the input unchanged when it is under
+ * the cap, or a truncation marker object
+ * `{ __truncated, __originalBytes, __preview }` when it exceeds the cap.
+ * Returns `undefined` when the input is `undefined`.
+ *
+ * This is applied both to entries produced in-process by `log()` (for the
+ * ring buffer) and to entries parsed from sandbox tail output in
+ * `/api/admin/logs` so that a single oversized ctx (e.g. a multi-KB stack
+ * trace) cannot dominate the UI.
+ */
+export function capLogData(
+  data: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  if (data === undefined) return undefined;
+  const serialized = JSON.stringify(data);
+  if (serialized.length <= MAX_LOG_DATA_BYTES) return data;
+  return {
+    __truncated: true,
+    __originalBytes: serialized.length,
+    __preview: serialized.slice(0, 512),
+  };
 }
 
 export function log(level: LogLevel, msg: string, ctx?: Record<string, unknown>): void {
@@ -83,7 +138,15 @@ export function log(level: LogLevel, msg: string, ctx?: Record<string, unknown>)
   // buffer.  This prevents high-frequency diagnostic logs from evicting
   // operationally important info/warn/error entries.
   if (level !== "debug") {
-    _buffer.push(entry);
+    // Cap buffered `data` size so a single oversized payload (e.g. a giant
+    // upstream response) cannot dominate the ring or balloon /api/admin/logs.
+    // The full ctx is still passed to console.* below for Vercel function logs.
+    const cappedData = capLogData(entry.data);
+    const bufferedEntry: LogEntry =
+      cappedData === entry.data
+        ? entry
+        : { ...entry, ...(cappedData ? { data: cappedData } : {}) };
+    _buffer.push(bufferedEntry);
     if (_buffer.length > RING_BUFFER_SIZE) {
       _buffer = _buffer.slice(-RING_BUFFER_SIZE);
     }

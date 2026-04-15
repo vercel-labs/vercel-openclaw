@@ -2,6 +2,7 @@ import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  capLogData,
   log,
   logInfo,
   logWarn,
@@ -10,6 +11,8 @@ import {
   getServerLogs,
   getFilteredServerLogs,
   extractRequestId,
+  parseServerLogIdCounter,
+  MAX_LOG_DATA_BYTES,
   _resetLogBuffer,
 } from "@/server/log";
 
@@ -306,6 +309,124 @@ describe("getFilteredServerLogs() correlation filters", () => {
   it("returns empty when no correlation match", () => {
     const results = getFilteredServerLogs({ opId: "op_nonexistent" });
     assert.equal(results.length, 0);
+  });
+});
+
+describe("monotonic IDs", () => {
+  it("produces strictly ordered ids on consecutive calls", () => {
+    log("info", "a");
+    log("info", "b");
+    log("info", "c");
+    const logs = getServerLogs();
+    const counters = logs.map((l) => parseServerLogIdCounter(l.id));
+    assert.equal(counters[0], 1);
+    assert.equal(counters[1], 2);
+    assert.equal(counters[2], 3);
+    // String sort matches numeric sort because the counter is zero-padded.
+    const sorted = [...logs].sort((x, y) => (x.id < y.id ? -1 : x.id > y.id ? 1 : 0));
+    assert.deepEqual(
+      sorted.map((l) => l.id),
+      logs.map((l) => l.id),
+    );
+  });
+
+  it("does not collide when many ids are generated within the same ms", () => {
+    // Synchronous tight loop guarantees most calls land in the same ms.
+    for (let i = 0; i < 50; i++) {
+      log("info", `same-ms-${i}`);
+    }
+    const ids = getServerLogs().map((l) => l.id);
+    const unique = new Set(ids);
+    assert.equal(unique.size, ids.length, "all ids should be unique");
+  });
+
+  it("ids match the slog-NNNNNNNNNNNN shape", () => {
+    log("info", "shape");
+    const id = getServerLogs()[0].id;
+    assert.match(id, /^slog-\d{12}$/);
+  });
+});
+
+describe("data truncation", () => {
+  it("truncates buffered data when JSON.stringify exceeds MAX_LOG_DATA_BYTES", () => {
+    const huge = "x".repeat(MAX_LOG_DATA_BYTES + 100);
+    log("info", "big.data", { payload: huge });
+    const entry = getServerLogs()[0];
+    assert.equal(entry.data?.__truncated, true);
+    assert.equal(typeof entry.data?.__originalBytes, "number");
+    assert.ok((entry.data?.__originalBytes as number) > MAX_LOG_DATA_BYTES);
+    assert.equal(typeof entry.data?.__preview, "string");
+    assert.ok((entry.data?.__preview as string).length <= 512);
+    // Original payload key is gone in the buffered copy.
+    assert.equal(entry.data?.payload, undefined);
+  });
+
+  it("does not truncate when data fits within the cap", () => {
+    log("info", "small.data", { hello: "world", count: 1 });
+    const entry = getServerLogs()[0];
+    assert.deepEqual(entry.data, { hello: "world", count: 1 });
+  });
+
+  it("emits the full ctx to console.info even when buffered copy is truncated", () => {
+    const huge = "x".repeat(MAX_LOG_DATA_BYTES + 100);
+    const original = console.info;
+    const calls: string[] = [];
+    console.info = (...args: unknown[]) => {
+      calls.push(args.map((a) => (typeof a === "string" ? a : JSON.stringify(a))).join(" "));
+    };
+    try {
+      log("info", "console.full", { payload: huge });
+    } finally {
+      console.info = original;
+    }
+    assert.equal(calls.length, 1);
+    // Console payload should contain the full huge string.
+    assert.ok(
+      calls[0].includes(huge.slice(0, 1000)),
+      "console.info should receive full ctx",
+    );
+    // And it should NOT have the truncation markers.
+    assert.ok(!calls[0].includes("__truncated"));
+  });
+});
+
+describe("capLogData()", () => {
+  it("returns undefined when input is undefined", () => {
+    assert.equal(capLogData(undefined), undefined);
+  });
+
+  it("returns the same object reference when under the cap", () => {
+    const input = { hello: "world", count: 42 };
+    const result = capLogData(input);
+    assert.equal(result, input);
+  });
+
+  it("produces the truncation shape when over the cap", () => {
+    const huge = "x".repeat(MAX_LOG_DATA_BYTES + 100);
+    const result = capLogData({ payload: huge });
+    assert.ok(result, "result should be defined");
+    assert.equal(result.__truncated, true);
+    assert.equal(typeof result.__originalBytes, "number");
+    assert.ok((result.__originalBytes as number) > MAX_LOG_DATA_BYTES);
+    assert.equal(typeof result.__preview, "string");
+    assert.ok((result.__preview as string).length <= 512);
+    assert.equal(result.payload, undefined);
+  });
+});
+
+describe("parseServerLogIdCounter()", () => {
+  it("extracts numeric counter from slog-NNN id", () => {
+    assert.equal(parseServerLogIdCounter("slog-000000000042"), 42);
+    assert.equal(parseServerLogIdCounter("slog-1"), 1);
+  });
+
+  it("returns null for malformed ids", () => {
+    assert.equal(parseServerLogIdCounter(null), null);
+    assert.equal(parseServerLogIdCounter(""), null);
+    assert.equal(parseServerLogIdCounter("nope"), null);
+    assert.equal(parseServerLogIdCounter("slog-"), null);
+    assert.equal(parseServerLogIdCounter("slog-abc"), null);
+    assert.equal(parseServerLogIdCounter("sbx-123"), null);
   });
 });
 

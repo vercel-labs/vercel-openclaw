@@ -552,6 +552,54 @@ test("GET /api/admin/logs: excludes tail header lines from sandbox output", asyn
   });
 });
 
+test("GET /api/admin/logs: truncates oversized sandbox-parsed ctx", async () => {
+  await withTestEnv(async () => {
+    const huge = "x".repeat(5000); // > MAX_LOG_DATA_BYTES (4096)
+    const stdout = JSON.stringify({
+      ts: "2026-03-20T06:00:00.000Z",
+      level: "error",
+      source: "channels",
+      msg: "channels.delivery_failed",
+      ctx: { stack: huge, opId: "op_huge" },
+    });
+
+    _setSandboxControllerForTesting(
+      fakeSandboxController("sandbox-huge", stdout),
+    );
+    await mutateMeta((meta) => {
+      meta.status = "running";
+      meta.sandboxId = "sandbox-huge";
+    });
+
+    const route = getAdminLogsRoute();
+    const result = await callRoute(
+      route.GET!,
+      buildAuthGetRequest("/api/admin/logs"),
+    );
+
+    assert.equal(result.status, 200);
+    const body = result.json as {
+      logs: Array<{
+        message: string;
+        data?: {
+          __truncated?: boolean;
+          __originalBytes?: number;
+          __preview?: string;
+          stack?: string;
+        };
+      }>;
+    };
+    const entry = body.logs.find((l) => l.message === "channels.delivery_failed");
+    assert.ok(entry, "expected the truncated sandbox entry to be present");
+    assert.equal(entry.data?.__truncated, true);
+    assert.equal(typeof entry.data?.__originalBytes, "number");
+    assert.ok((entry.data?.__originalBytes as number) > 4096);
+    assert.ok((entry.data?.__preview as string).length <= 512);
+    // Original ctx key should be gone in the truncated shape.
+    assert.equal(entry.data?.stack, undefined);
+  });
+});
+
 test("GET /api/admin/logs: does not read sandbox logs when status is stopped", async () => {
   await withTestEnv(async () => {
     let sandboxGetCalled = false;
@@ -720,6 +768,125 @@ test("GET /api/admin/logs: diagnostics report tailError when sandbox get throws"
     assert.match(body.diagnostics.sandbox.tailError!, /sandbox unavailable/);
     assert.equal(body.diagnostics.sandboxLogCount, 0);
     assert.ok(body.diagnostics.serverLogCount >= 1, "server logs still returned");
+  });
+});
+
+// ===========================================================================
+// GET /api/admin/logs — cursor-based fetch
+// ===========================================================================
+
+/**
+ * Warm up the route once and reset the buffer so store-init logs
+ * (`store.initialized`, `store.memory_fallback`) don't leak into seed-based
+ * cursor assertions. After this helper returns, the buffer is empty and any
+ * subsequent log calls will produce contiguous counters.
+ */
+async function warmupAndReset(): Promise<void> {
+  const route = getAdminLogsRoute();
+  await callRoute(route.GET!, buildAuthGetRequest("/api/admin/logs"));
+  _resetLogBuffer();
+}
+
+test("GET /api/admin/logs: ?sinceId returns only entries with greater counter", async () => {
+  await withTestEnv(async () => {
+    await warmupAndReset();
+
+    logInfo("seed.one");
+    logInfo("seed.two");
+    logInfo("seed.three");
+    logInfo("seed.four");
+    logInfo("seed.five");
+
+    const allRoute = getAdminLogsRoute();
+    const allResult = await callRoute(
+      allRoute.GET!,
+      buildAuthGetRequest("/api/admin/logs?search=seed."),
+    );
+    const allBody = allResult.json as {
+      logs: Array<{ id: string; message: string }>;
+      nextCursor: string | null;
+    };
+    const second = allBody.logs.find((l) => l.message === "seed.two");
+    assert.ok(second, "expected to find seed.two");
+    const cursor = second.id;
+
+    const route = getAdminLogsRoute();
+    const result = await callRoute(
+      route.GET!,
+      buildAuthGetRequest(
+        `/api/admin/logs?search=seed.&sinceId=${encodeURIComponent(cursor)}`,
+      ),
+    );
+    assert.equal(result.status, 200);
+    const body = result.json as {
+      logs: Array<{ message: string }>;
+      nextCursor: string | null;
+    };
+    // Entries strictly newer than seed.two: seed.three, seed.four, seed.five
+    const messages = body.logs.map((l) => l.message).sort();
+    assert.deepEqual(messages, ["seed.five", "seed.four", "seed.three"]);
+    assert.ok(body.nextCursor, "nextCursor should be present");
+  });
+});
+
+test("GET /api/admin/logs: malformed ?sinceId falls back to full buffer", async () => {
+  await withTestEnv(async () => {
+    await warmupAndReset();
+
+    logInfo("malformed.a");
+    logInfo("malformed.b");
+    logInfo("malformed.c");
+
+    const route = getAdminLogsRoute();
+    const result = await callRoute(
+      route.GET!,
+      buildAuthGetRequest(
+        "/api/admin/logs?search=malformed.&sinceId=garbage-not-a-cursor",
+      ),
+    );
+    assert.equal(result.status, 200);
+    const body = result.json as { logs: Array<{ message: string }> };
+    const messages = body.logs.map((l) => l.message).sort();
+    assert.deepEqual(messages, ["malformed.a", "malformed.b", "malformed.c"]);
+  });
+});
+
+test("GET /api/admin/logs: nextCursor is null when buffer is empty", async () => {
+  await withTestEnv(async () => {
+    await warmupAndReset();
+
+    const route = getAdminLogsRoute();
+    const result = await callRoute(
+      route.GET!,
+      buildAuthGetRequest("/api/admin/logs"),
+    );
+    assert.equal(result.status, 200);
+    const body = result.json as { nextCursor: string | null };
+    assert.equal(body.nextCursor, null);
+  });
+});
+
+test("GET /api/admin/logs: nextCursor matches highest server-buffer id", async () => {
+  await withTestEnv(async () => {
+    await warmupAndReset();
+
+    logInfo("nc.first");
+    logInfo("nc.second");
+    logInfo("nc.third");
+
+    const route = getAdminLogsRoute();
+    const result = await callRoute(
+      route.GET!,
+      buildAuthGetRequest("/api/admin/logs?search=nc."),
+    );
+    assert.equal(result.status, 200);
+    const body = result.json as {
+      logs: Array<{ id: string; message: string }>;
+      nextCursor: string | null;
+    };
+    const third = body.logs.find((l) => l.message === "nc.third");
+    assert.ok(third, "expected to find nc.third");
+    assert.equal(body.nextCursor, third.id);
   });
 });
 
