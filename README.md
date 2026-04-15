@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <a href="https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Fvercel-labs%2Fvercel-openclaw.git&integration-ids=oac_V3R1GIpkoJorr6fqyiwdhl17&env=ADMIN_SECRET&envDescription=Serves%20as%20your%20password%20for%20the%20admin%20UI.&project-name=openclaw&repository-name=openclaw"><img src="https://vercel.com/button" alt="Deploy with Vercel" /></a>
+  <a href="https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Fvercel-labs%2Fvercel-openclaw.git&env=ADMIN_SECRET&envDescription=Serves%20as%20your%20password%20for%20the%20admin%20UI.&project-name=openclaw&repository-name=openclaw&stores=%255B%257B%2522integrationSlug%2522%253A%2522upstash%2522%252C%2522productSlug%2522%253A%2522upstash-kv%2522%252C%2522type%2522%253A%2522integration%2522%257D%255D"><img src="https://vercel.com/button" alt="Deploy with Vercel" /></a>
 </p>
 
 ---
