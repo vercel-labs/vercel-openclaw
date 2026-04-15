@@ -711,13 +711,21 @@ export function CommandShell({ initialStatus }: Props) {
                   </div>
                 </div>
                 <div className="hero-meta">
-                  <span>Uptime: {fmtDuration(uptimeMs)}</span>
-                  <span>
-                    Timeout remaining:{" "}
-                    {fmtDuration(status.timeoutRemainingMs)}
+                  <span className="hero-meta-item">
+                    Uptime:{" "}
+                    <span className="hero-meta-val">{fmtDuration(uptimeMs)}</span>
                   </span>
-                  <span>
-                    Last keepalive: {fmtRelative(status.lastKeepaliveAt)}
+                  <span className="hero-meta-item">
+                    Timeout remaining:{" "}
+                    <span className="hero-meta-val">
+                      {fmtDuration(status.timeoutRemainingMs)}
+                    </span>
+                  </span>
+                  <span className="hero-meta-item">
+                    Last keepalive:{" "}
+                    <span className="hero-meta-val">
+                      {fmtRelative(status.lastKeepaliveAt)}
+                    </span>
                   </span>
                 </div>
                 {status.lastError && (
@@ -1762,6 +1770,14 @@ function Style() {
           max-width: 480px;
         }
         .hero-meta { display: flex; gap: 24px; color: var(--foreground-muted); font-size: 13px; flex-wrap: wrap; }
+        .hero-meta-item { display: inline-flex; align-items: baseline; gap: 6px; min-width: 0; }
+        .hero-meta-val {
+          display: inline-block;
+          font-family: var(--font-geist-mono, ui-monospace, monospace);
+          font-variant-numeric: tabular-nums;
+          color: var(--foreground);
+          min-width: 7ch;
+        }
         .hero-error {
           font-family: var(--font-geist-mono, ui-monospace, monospace);
           color: var(--danger); font-size: 12px; max-width: 600px;
