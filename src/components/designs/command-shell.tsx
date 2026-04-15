@@ -587,41 +587,11 @@ export function CommandShell({ initialStatus }: Props) {
               <span />
             </button>
             <div className="breadcrumb">
-              <span>designs</span>
-              <span>/</span>
-              <span>command</span>
-              <span>/</span>
               <span className="current">{view}</span>
               {pending && <span className="pending">· {pending}…</span>}
               {actionMsg && <span className="action-msg">· {actionMsg}</span>}
             </div>
           </div>
-          <div className="command-palette-trigger">
-            <span>Search…</span>
-            <div className="shortcuts">
-              <kbd>⌘</kbd>
-              <kbd>K</kbd>
-            </div>
-          </div>
-          <button
-            type="button"
-            className="search-icon-btn"
-            aria-label="Search"
-          >
-            <svg
-              width="16"
-              height="16"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.5"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              <circle cx="11" cy="11" r="8" />
-              <line x1="21" y1="21" x2="16.65" y2="16.65" />
-            </svg>
-          </button>
         </div>
 
         <div className="content">
