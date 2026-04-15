@@ -7,9 +7,11 @@ import {
 } from "@/server/openclaw/config";
 import { buildRestoreAssetManifest } from "@/server/openclaw/restore-assets";
 import {
+  _resetDecisionLogThrottleForTesting,
   runRestoreOracleCycle,
   type RestoreOracleDeps,
 } from "@/server/sandbox/restore-oracle";
+import { _resetLogBuffer, getServerLogs } from "@/server/log";
 import type { PrepareRestoreResult } from "@/server/sandbox/lifecycle";
 import type { RestoreDecision } from "@/shared/restore-decision";
 import { createDefaultMeta, type SingleMeta } from "@/shared/types";
@@ -596,5 +598,47 @@ describe("runRestoreOracleCycle", () => {
 
     assert.equal(result.executed, false);
     assert.equal(result.blockedReason, "already-running");
+  });
+
+  test("logDecision throttles repeated identical decisions to debug", async () => {
+    _resetLogBuffer();
+    _resetDecisionLogThrottleForTesting();
+
+    const desiredConfigHash = computeGatewayConfigHash({});
+    const desiredAssetSha = buildRestoreAssetManifest().sha256;
+
+    const meta = baseMeta({
+      snapshotDynamicConfigHash: desiredConfigHash,
+      runtimeDynamicConfigHash: desiredConfigHash,
+      snapshotAssetSha256: desiredAssetSha,
+      runtimeAssetSha256: desiredAssetSha,
+      restorePreparedStatus: "ready",
+      restorePreparedReason: "prepared",
+    });
+
+    const { deps } = buildDeps(meta);
+
+    await runRestoreOracleCycle(
+      { origin: "https://app.example.com", reason: "test" },
+      deps,
+    );
+    await runRestoreOracleCycle(
+      { origin: "https://app.example.com", reason: "test" },
+      deps,
+    );
+    await runRestoreOracleCycle(
+      { origin: "https://app.example.com", reason: "test" },
+      deps,
+    );
+
+    const decisionEntries = getServerLogs().filter(
+      (e) => e.message === "sandbox.restore.decision",
+    );
+    const infoCount = decisionEntries.filter((e) => e.level === "info").length;
+    assert.equal(
+      infoCount,
+      1,
+      `expected exactly 1 info-level decision log, got ${infoCount}`,
+    );
   });
 });

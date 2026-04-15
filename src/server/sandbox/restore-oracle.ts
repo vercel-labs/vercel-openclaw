@@ -1,4 +1,4 @@
-import { logInfo, logWarn } from "@/server/log";
+import { logDebug, logInfo, logWarn } from "@/server/log";
 import type {
   PrepareRestoreResult,
   ProbeResult,
@@ -401,8 +401,24 @@ export async function runRestoreOracleCycle(
   }
 }
 
+let lastDecisionFingerprint: string | null = null;
+
+export function _resetDecisionLogThrottleForTesting(): void {
+  lastDecisionFingerprint = null;
+}
+
 function logDecision(decision: RestoreDecision): void {
-  logInfo("sandbox.restore.decision", {
+  const fingerprint = [
+    decision.source,
+    decision.destructive,
+    decision.reusable,
+    decision.needsPrepare,
+    decision.blocking,
+    decision.nextAction,
+    decision.status,
+  ].join("|");
+
+  const payload = {
     source: decision.source,
     destructive: decision.destructive,
     reusable: decision.reusable,
@@ -417,5 +433,13 @@ function logDecision(decision: RestoreDecision): void {
     idleMs: decision.idleMs,
     minIdleMs: decision.minIdleMs,
     probeReady: decision.probeReady,
-  });
+  };
+
+  if (fingerprint === lastDecisionFingerprint) {
+    logDebug("sandbox.restore.decision", { ...payload, suppressed: true });
+    return;
+  }
+
+  lastDecisionFingerprint = fingerprint;
+  logInfo("sandbox.restore.decision", payload);
 }
