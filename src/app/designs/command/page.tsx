@@ -8,8 +8,7 @@ import {
 import { getInitializedMeta, getStore } from "@/server/store/store";
 import { getPublicChannelState } from "@/server/channels/state";
 import { computeWouldBlock } from "@/server/firewall/state";
-import { buildRestoreTargetAttestation } from "@/server/sandbox/restore-attestation";
-import { buildRestoreTargetPlan } from "@/server/sandbox/restore-attestation";
+import { buildRestoreTargetAttestation, buildRestoreTargetPlan } from "@/server/sandbox/restore-attestation";
 import { getSandboxSleepConfig } from "@/server/sandbox/timeout";
 import type { StatusPayload } from "@/components/admin-types";
 import { GATEWAY_CHAT_PATH } from "@/shared/gateway-paths";
@@ -33,10 +32,7 @@ async function getInitialStatus(): Promise<StatusPayload | null> {
     const host = hdrs.get("host") ?? "localhost";
     const proto = hdrs.get("x-forwarded-proto")?.split(",")[0]?.trim() ?? "https";
     const syntheticRequest = new Request(`${proto}://${host}/`, {
-      headers: {
-        host,
-        "x-forwarded-proto": proto,
-      },
+      headers: { host, "x-forwarded-proto": proto },
     });
 
     const sleepConfig = getSandboxSleepConfig();
@@ -97,7 +93,7 @@ async function getInitialStatus(): Promise<StatusPayload | null> {
   }
 }
 
-export default async function HomePage() {
+export default async function CommandDesignPage() {
   const initialStatus = await getInitialStatus();
   return <CommandShell initialStatus={initialStatus} />;
 }
