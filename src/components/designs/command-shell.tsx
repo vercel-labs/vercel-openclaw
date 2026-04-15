@@ -2146,6 +2146,118 @@ function Style() {
           gap: 12px;
           grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
         }
+        /* Channel grid: equal-height cards, responsive columns, bottom-anchored actions */
+        .cmd-channels .channel-grid {
+          display: grid;
+          gap: 16px;
+          grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+          align-items: stretch;
+          margin-top: 20px;
+        }
+        @media (max-width: 900px) {
+          .cmd-channels .channel-grid {
+            grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+          }
+        }
+        @media (max-width: 640px) {
+          .cmd-channels .channel-grid {
+            grid-template-columns: 1fr;
+          }
+        }
+        .cmd-channels .channel-card {
+          display: flex;
+          flex-direction: column;
+          gap: 14px;
+          padding: 18px;
+          height: 100%;
+          min-width: 0;
+        }
+        .cmd-channels .channel-card > * {
+          min-width: 0;
+        }
+        /* Card header: title/summary on the left, pill pinned top-right */
+        .cmd-channels .channel-head {
+          display: flex;
+          align-items: flex-start;
+          justify-content: space-between;
+          gap: 10px;
+          padding-bottom: 10px;
+          border-bottom: 1px solid var(--border);
+        }
+        .cmd-channels .channel-head > div {
+          min-width: 0;
+          display: flex;
+          flex-direction: column;
+          gap: 4px;
+        }
+        .cmd-channels .channel-head h3 {
+          margin: 0;
+          line-height: 1.3;
+          word-break: break-word;
+        }
+        .cmd-channels .channel-pill {
+          flex: 0 0 auto;
+          white-space: nowrap;
+          align-self: flex-start;
+        }
+        /* Pin the primary action row to the bottom of each card */
+        .cmd-channels .channel-card .inline-actions {
+          margin-top: auto;
+          display: flex;
+          flex-wrap: wrap;
+          gap: 8px;
+          padding-top: 4px;
+        }
+        .cmd-channels .channel-card .inline-actions .button {
+          flex: 1 1 auto;
+          min-width: 0;
+          white-space: nowrap;
+        }
+        /* Tame the PORT 8787 — Handler registered chip so it sits inline */
+        .cmd-channels .port-status-row {
+          display: flex;
+          flex-direction: column;
+          gap: 4px;
+          padding: 8px 10px;
+          border: 1px solid var(--border);
+          border-radius: 6px;
+          background: var(--background);
+        }
+        .cmd-channels .port-status-header {
+          display: flex;
+          flex-wrap: wrap;
+          align-items: center;
+          gap: 8px;
+          min-width: 0;
+        }
+        .cmd-channels .port-status-message {
+          font-size: 12px;
+          color: var(--foreground-muted);
+          min-width: 0;
+          flex: 1 1 auto;
+          overflow-wrap: anywhere;
+        }
+        .cmd-channels .port-status-dot {
+          flex: 0 0 auto;
+          width: 8px;
+          height: 8px;
+          border-radius: 50%;
+        }
+        /* Breathing room between stacked sections inside the form body */
+        .cmd-channels .channel-wizard {
+          display: flex;
+          flex-direction: column;
+          gap: 12px;
+          flex: 1 1 auto;
+        }
+        .cmd-channels .channel-wizard > * + * {
+          margin-top: 0;
+        }
+        .cmd-channels .channel-card .stack {
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+        }
         .cmd-channels code {
           font-family: var(--font-geist-mono, ui-monospace, monospace);
           font-size: 12px;
