@@ -1,9 +1,15 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { toast } from "sonner";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import type { StatusPayload } from "@/components/admin-types";
+import type {
+  ActionResult,
+  StatusPayload,
+} from "@/components/admin-types";
+import { requestJsonCore } from "@/components/admin-shell";
+import { ChannelsPanel } from "@/components/panels/channels-panel";
 import type { LogEntry, LogLevel, LogSource, SnapshotRecord } from "@/shared/types";
 import type { AdminFaqPayload } from "@/shared/admin-faq";
 
@@ -190,6 +196,39 @@ export function CommandShell({ initialStatus }: Props) {
       if (lId) clearInterval(lId);
     };
   }, [status, refreshStatus, refreshLogs, logsLive]);
+
+  // Adapters so the existing panel components (ChannelsPanel, etc.) can post
+  // mutations through the shared `requestJsonCore` plumbing.
+  const requestJson = useCallback(
+    async <T,>(
+      action: string,
+      input: RequestInit & { label: string; refreshAfter?: boolean },
+    ): Promise<ActionResult<T>> => {
+      return requestJsonCore<T>(
+        action,
+        { ...input, toastSuccess: false },
+        {
+          setPendingAction: (label) => setPending(label),
+          setStatus: () => setStatus(null),
+          refreshPassive: refreshStatus,
+          toastSuccess: () => {},
+          toastError: (msg) => toast.error(msg),
+        },
+      );
+    },
+    [refreshStatus],
+  );
+
+  const runAction = useCallback(
+    async (
+      action: string,
+      input: RequestInit & { label: string },
+    ): Promise<boolean> => {
+      const result = await requestJson(action, input);
+      return result.ok;
+    },
+    [requestJson],
+  );
 
   const doAction = useCallback(
     async (
@@ -770,34 +809,14 @@ export function CommandShell({ initialStatus }: Props) {
 
           {view === "channels" && (
             <section>
-              <div className="section-header">
-                <h2 className="section-title">Channels</h2>
-                <span className="eyebrow">
-                  {channelRows.filter((c) => c.configured).length} configured
-                </span>
-              </div>
-              {channelRows.map((c) => (
-                <div className="dense-row" key={c.name}>
-                  <div
-                    className="dense-col label"
-                    style={{ display: "flex", alignItems: "center" }}
-                  >
-                    <span className={`status-dot ${c.tone}`}></span>
-                    {c.name}
-                  </div>
-                  <div
-                    className="dense-col mono"
-                    style={{ color: "var(--foreground-muted)" }}
-                  >
-                    {truncate(c.webhook, 60)}
-                  </div>
-                  <div className="dense-col right mono">{c.state}</div>
-                </div>
-              ))}
-              <p className="muted-copy" style={{ marginTop: 16 }}>
-                Channel credentials are configured in the main admin panel. This
-                read-only view polls /api/status for current connectivity.
-              </p>
+              <ChannelsPanel
+                active={view === "channels"}
+                status={status}
+                busy={pending !== null}
+                runAction={runAction}
+                requestJson={requestJson}
+                refresh={refreshStatus}
+              />
             </section>
           )}
 
