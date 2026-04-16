@@ -676,10 +676,7 @@ export function CommandShell({ initialStatus }: Props) {
       <div className={`sidebar${sidebarOpen ? " open" : ""}`}>
         <div className="sidebar-header">
           <img src="/openclaw-logo.svg" width={24} height={24} alt="OpenClaw" />
-          <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-            <span className="sidebar-title">OpenClaw</span>
-            <span className="sidebar-url">/designs/command</span>
-          </div>
+          <span className="sidebar-title">OpenClaw</span>
         </div>
 
         <div className="sidebar-nav">
@@ -1973,7 +1970,6 @@ function Style() {
           border-bottom: 1px solid var(--border);
         }
         .sidebar-title { font-weight: 500; font-size: 14px; color: var(--foreground); }
-        .sidebar-url { font-size: 11px; color: var(--foreground-subtle); font-family: var(--font-geist-mono, ui-monospace, monospace); }
         .sidebar-nav {
           flex-grow: 1; padding: 16px 8px;
           display: flex; flex-direction: column; gap: 2px;
