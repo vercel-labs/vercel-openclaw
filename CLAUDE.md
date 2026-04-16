@@ -500,9 +500,10 @@ Notes:
 
 ## Admin UI
 
-Main file:
+Main files:
 
-- `src/components/admin-shell.tsx`
+- `src/components/designs/command-shell.tsx` — production admin UI mounted at `/`
+- `src/components/admin-shell.tsx` — legacy control surface still mounted at `/admin` as a fallback
 
 The admin page is intentionally small. It is a control surface, not a dashboard framework.
 
