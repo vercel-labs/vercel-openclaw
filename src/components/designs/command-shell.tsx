@@ -179,15 +179,6 @@ function truncate(s: string | null, n: number): string {
   return s.slice(0, n) + "…";
 }
 
-function safeHost(url: string | null | undefined): string | null {
-  if (!url) return null;
-  try {
-    return new URL(url).host;
-  } catch {
-    return url;
-  }
-}
-
 function channelErrorFor(
   name: string,
   channels: PublicChannelState | null,
@@ -204,6 +195,38 @@ function channelErrorFor(
       return channels.discord.endpointError ?? null;
     case "WhatsApp":
       return channels.whatsapp.lastError ?? null;
+    default:
+      return null;
+  }
+}
+
+function channelIdentityFor(
+  name: string,
+  channels: PublicChannelState | null,
+): string | null {
+  if (!channels) return null;
+  switch (name) {
+    case "Slack": {
+      const s = channels.slack;
+      if (!s.configured) return null;
+      return s.team ?? s.user ?? null;
+    }
+    case "Telegram": {
+      const t = channels.telegram;
+      if (!t.configured) return null;
+      return t.botUsername ? `@${t.botUsername}` : null;
+    }
+    case "Discord": {
+      const d = channels.discord;
+      if (!d.configured) return null;
+      if (d.botUsername) return `@${d.botUsername}`;
+      return d.appName ?? null;
+    }
+    case "WhatsApp": {
+      const w = channels.whatsapp;
+      if (!w.configured) return null;
+      return w.linkedPhone ?? w.displayName ?? null;
+    }
     default:
       return null;
   }
@@ -1010,16 +1033,14 @@ export function CommandShell({ initialStatus }: Props) {
               <div className="home-channel-grid">
                 {channelRows.map((row) => {
                   const errMsg = channelErrorFor(row.name, channels);
-                  const webhookHost = row.webhook
-                    ? safeHost(row.webhook)
-                    : null;
+                  const identity = channelIdentityFor(row.name, channels);
                   return (
                     <button
                       key={row.name}
                       type="button"
                       className="home-channel-card"
                       onClick={() => selectView("channels")}
-                      aria-label={`${row.name} — ${row.state}. Open channels configuration.`}
+                      aria-label={`${row.name}${identity ? ` (${identity})` : ""} — ${row.state}. Open channels configuration.`}
                     >
                       <div className="home-channel-head">
                         <span>{row.name}</span>
@@ -1028,8 +1049,11 @@ export function CommandShell({ initialStatus }: Props) {
                           {row.state}
                         </span>
                       </div>
-                      <div className="home-channel-sub">
-                        {webhookHost ?? "—"}
+                      <div
+                        className="home-channel-sub"
+                        title={identity ?? undefined}
+                      >
+                        {identity ?? "—"}
                       </div>
                       {errMsg && (
                         <div className="home-channel-err" title={errMsg}>
