@@ -12,6 +12,7 @@ import { requestJsonCore } from "@/components/admin-shell";
 import { ChannelsPanel } from "@/components/panels/channels-panel";
 import type { LogEntry, LogLevel, LogSource, SnapshotRecord } from "@/shared/types";
 import type { AdminFaqPayload } from "@/shared/admin-faq";
+import type { PublicChannelState } from "@/shared/channel-admin-state";
 
 type Props = { initialStatus: StatusPayload | null };
 
@@ -22,6 +23,7 @@ type View =
   | "terminal"
   | "logs"
   | "snapshots"
+  | "diagnostics"
   | "faq";
 
 type SshResult = {
@@ -175,6 +177,36 @@ function truncate(s: string | null, n: number): string {
   if (!s) return "—";
   if (s.length <= n) return s;
   return s.slice(0, n) + "…";
+}
+
+function safeHost(url: string | null | undefined): string | null {
+  if (!url) return null;
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
+}
+
+function channelErrorFor(
+  name: string,
+  channels: PublicChannelState | null,
+): string | null {
+  if (!channels) return null;
+  switch (name) {
+    case "Slack":
+      return channels.slack.lastError ?? null;
+    case "Telegram":
+      return (
+        channels.telegram.lastError ?? channels.telegram.commandSyncError ?? null
+      );
+    case "Discord":
+      return channels.discord.endpointError ?? null;
+    case "WhatsApp":
+      return channels.whatsapp.lastError ?? null;
+    default:
+      return null;
+  }
 }
 
 export function CommandShell({ initialStatus }: Props) {
@@ -711,6 +743,11 @@ export function CommandShell({ initialStatus }: Props) {
             onClick={() => selectView("snapshots")}
           />
           <NavItem
+            label="Diagnostics"
+            active={view === "diagnostics"}
+            onClick={() => selectView("diagnostics")}
+          />
+          <NavItem
             label="FAQ"
             active={view === "faq"}
             onClick={() => selectView("faq")}
@@ -964,7 +1001,49 @@ export function CommandShell({ initialStatus }: Props) {
             </div>
           </section>
 
-          {view === "status" && (
+          {view === "status" && channelRows.length > 0 && (
+            <section>
+              <div className="section-header">
+                <h2 className="section-title">Channels</h2>
+                <span className="eyebrow">status</span>
+              </div>
+              <div className="home-channel-grid">
+                {channelRows.map((row) => {
+                  const errMsg = channelErrorFor(row.name, channels);
+                  const webhookHost = row.webhook
+                    ? safeHost(row.webhook)
+                    : null;
+                  return (
+                    <button
+                      key={row.name}
+                      type="button"
+                      className="home-channel-card"
+                      onClick={() => selectView("channels")}
+                      aria-label={`${row.name} — ${row.state}. Open channels configuration.`}
+                    >
+                      <div className="home-channel-head">
+                        <span>{row.name}</span>
+                        <span className="home-channel-state">
+                          <span className={`status-dot ${row.tone}`} />
+                          {row.state}
+                        </span>
+                      </div>
+                      <div className="home-channel-sub">
+                        {webhookHost ?? "—"}
+                      </div>
+                      {errMsg && (
+                        <div className="home-channel-err" title={errMsg}>
+                          {errMsg}
+                        </div>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            </section>
+          )}
+
+          {view === "diagnostics" && (
             <section>
               <div className="section-header">
                 <h2 className="section-title">Lifecycle Metrics</h2>
@@ -2165,6 +2244,53 @@ function Style() {
         .metric-card { background: var(--background); padding: 16px; display: flex; flex-direction: column; gap: 6px; }
         .metric-val { font-family: var(--font-geist-mono, ui-monospace, monospace); font-size: 14px; color: var(--foreground); }
         .metric-label { font-size: 12px; color: var(--foreground-muted); }
+
+        .home-channel-grid {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 1px;
+          background: var(--border);
+          border: 1px solid var(--border);
+          border-radius: var(--radius);
+          overflow: hidden;
+        }
+        @media (max-width: 720px) { .home-channel-grid { grid-template-columns: 1fr; } }
+        .home-channel-card {
+          background: var(--background);
+          padding: 14px 16px;
+          display: flex; flex-direction: column; gap: 6px;
+          cursor: pointer;
+          transition: background 150ms ease;
+          text-align: left;
+          border: 0;
+          color: inherit;
+          font: inherit;
+        }
+        .home-channel-card:hover { background: var(--background-hover); }
+        .home-channel-card:focus-visible {
+          outline: 1px solid var(--border-strong);
+          outline-offset: -1px;
+          background: var(--background-hover);
+        }
+        .home-channel-head {
+          display: flex; align-items: center; justify-content: space-between;
+          font-size: 14px; color: var(--foreground); font-weight: 500;
+        }
+        .home-channel-state {
+          display: flex; align-items: center; gap: 6px;
+          font-family: var(--font-geist-mono, ui-monospace, monospace);
+          font-size: 11px; color: var(--foreground-muted);
+          text-transform: lowercase;
+        }
+        .home-channel-sub {
+          font-family: var(--font-geist-mono, ui-monospace, monospace);
+          font-size: 11px; color: var(--foreground-subtle);
+          overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
+        .home-channel-err {
+          font-size: 11px; color: var(--danger);
+          overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
 
         .cli-block {
           display: flex; align-items: center; justify-content: space-between;
