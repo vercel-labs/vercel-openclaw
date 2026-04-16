@@ -12,6 +12,7 @@ import {
 } from "@/server/deploy-preflight";
 import { logInfo, logError } from "@/server/log";
 import { getPublicOrigin } from "@/server/public-url";
+import { jsonError } from "@/shared/http";
 import {
   ensureRunningSandboxDynamicConfigFresh,
   getSandboxDomain,
@@ -519,32 +520,44 @@ export async function POST(request: Request): Promise<Response> {
 
   const startedAt = new Date().toISOString();
 
-  const url = new URL(request.url);
-  const queryMode = url.searchParams.get("mode");
-  let bodyMode: string | undefined;
   try {
-    const body = (await request.json()) as { mode?: string };
-    bodyMode = body.mode;
-  } catch {
-    // No JSON body — use query param or default to safe.
+    const url = new URL(request.url);
+    const queryMode = url.searchParams.get("mode");
+    let bodyMode: string | undefined;
+    try {
+      const body = (await request.json()) as { mode?: string };
+      bodyMode = body.mode;
+    } catch {
+      // No JSON body — use query param or default to safe.
+    }
+    const rawMode = queryMode ?? bodyMode;
+    const mode = rawMode === "destructive" ? "destructive" : "safe";
+
+    logInfo("launch_verify.mode_resolved", {
+      source: queryMode ? "query" : bodyMode ? "body" : "default",
+      mode,
+    });
+
+    logInfo("launch_verify.started", { mode });
+
+    const streaming = wantsStream(request);
+
+    if (streaming) {
+      return await buildStreamingResponse(request, auth, mode, startedAt);
+    }
+
+    return await buildJsonResponse(request, auth, mode, startedAt);
+  } catch (error) {
+    // Anything that escapes the phase-level try/catches inside
+    // buildJsonResponse / buildStreamingResponse lands here. Without this
+    // wrapper the runtime returns an empty 500, which is impossible to debug
+    // from the client side.
+    logError("launch_verify.unhandled_error", {
+      error: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? error.stack : undefined,
+    });
+    return jsonError(error);
   }
-  const rawMode = queryMode ?? bodyMode;
-  const mode = rawMode === "destructive" ? "destructive" : "safe";
-
-  logInfo("launch_verify.mode_resolved", {
-    source: queryMode ? "query" : bodyMode ? "body" : "default",
-    mode,
-  });
-
-  logInfo("launch_verify.started", { mode });
-
-  const streaming = wantsStream(request);
-
-  if (streaming) {
-    return buildStreamingResponse(request, auth, mode, startedAt);
-  }
-
-  return buildJsonResponse(request, auth, mode, startedAt);
 }
 
 function buildStreamingResponse(

@@ -93,6 +93,7 @@ const EXCLUDED_FILES = new Set([
   "scripts/verify-package-manager.mjs",
   "scripts/check-verifier-contract.mjs",
   "scripts/test-self-heal.ts",
+  "scripts/vendor-openclaw-runtime-artifact.mjs",
 ]);
 
 const packageJsonPath = join(ROOT, "package.json");
