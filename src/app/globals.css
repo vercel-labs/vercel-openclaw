@@ -1518,16 +1518,8 @@ a[href]:focus-visible {
   min-width: 0;
 }
 
-.channel-card.channel-slack .channel-head h3 {
-  color: #a855f7;
-}
-
-.channel-card.channel-discord .channel-head h3 {
-  color: var(--discord);
-}
-
-.channel-card.channel-telegram .channel-head h3 {
-  color: var(--telegram);
+.channel-card .channel-head h3 {
+  color: var(--foreground);
 }
 
 .channel-pill {

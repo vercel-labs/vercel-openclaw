@@ -410,8 +410,8 @@ export function CommandShell({ initialStatus }: Props) {
           const msg =
             (payload as { error?: { message?: string } } | null)?.error?.message ??
             `${res.status}`;
-          setActionMsg(`${label} failed: ${msg}`);
-          actionMsgTimerRef.current = setTimeout(() => setActionMsg(null), 6000);
+          setActionMsg(null);
+          toast.error(`${label} failed`, { description: msg });
           return { ok: false, data: payload };
         }
         setActionMsg(`${label} ok`);
@@ -420,8 +420,8 @@ export function CommandShell({ initialStatus }: Props) {
         await refreshLogs();
         return { ok: true, data: payload };
       } catch (err) {
-        setActionMsg(`${label} failed: ${(err as Error).message}`);
-        actionMsgTimerRef.current = setTimeout(() => setActionMsg(null), 6000);
+        setActionMsg(null);
+        toast.error(`${label} failed`, { description: (err as Error).message });
         return { ok: false, data: null };
       } finally {
         setPending(null);
@@ -549,18 +549,35 @@ export function CommandShell({ initialStatus }: Props) {
     return (
       <div className="login-wrap">
         <Style />
-        <form className="login-card" onSubmit={handleLogin}>
+        <form
+          className="login-card"
+          onSubmit={handleLogin}
+          method="post"
+          action="/api/auth/login"
+        >
           <div className="login-header">
             <img src="/openclaw-logo.svg" width={24} height={24} alt="OpenClaw" />
             <span className="sidebar-title">OpenClaw</span>
           </div>
+          <input
+            type="text"
+            name="username"
+            value="admin"
+            readOnly
+            autoComplete="username"
+            aria-hidden="true"
+            tabIndex={-1}
+            style={{ position: "absolute", left: "-9999px", width: 1, height: 1, opacity: 0 }}
+          />
           <label className="eyebrow" htmlFor="secret">Admin secret</label>
           <input
             id="secret"
+            name="password"
             type="password"
             value={secret}
             onChange={(e) => setSecret(e.target.value)}
             autoFocus
+            autoComplete="current-password"
             className="login-input"
             placeholder="ADMIN_SECRET"
           />
@@ -668,43 +685,36 @@ export function CommandShell({ initialStatus }: Props) {
         <div className="sidebar-nav">
           <NavItem
             label="Status"
-            kbds={["G", "S"]}
             active={view === "status"}
             onClick={() => selectView("status")}
           />
           <NavItem
             label="Channels"
-            kbds={["G", "C"]}
             active={view === "channels"}
             onClick={() => selectView("channels")}
           />
           <NavItem
             label="Firewall"
-            kbds={["G", "F"]}
             active={view === "firewall"}
             onClick={() => selectView("firewall")}
           />
           <NavItem
             label="Terminal"
-            kbds={["G", "T"]}
             active={view === "terminal"}
             onClick={() => selectView("terminal")}
           />
           <NavItem
             label="Logs"
-            kbds={["G", "L"]}
             active={view === "logs"}
             onClick={() => selectView("logs")}
           />
           <NavItem
             label="Snapshots"
-            kbds={["G", "P"]}
             active={view === "snapshots"}
             onClick={() => selectView("snapshots")}
           />
           <NavItem
             label="FAQ"
-            kbds={["G", "?"]}
             active={view === "faq"}
             onClick={() => selectView("faq")}
           />
@@ -735,7 +745,17 @@ export function CommandShell({ initialStatus }: Props) {
             }}
           >
             <span>User</span>
-            <div className="pill">{status.user?.name ?? "admin"}</div>
+            <div className="user-cluster">
+              <div className="pill">{status.user?.name ?? "admin"}</div>
+              <a
+                href="/api/auth/signout"
+                className="signout-link"
+                title="Sign out and clear the session cookie"
+                aria-label="Sign out"
+              >
+                Sign out
+              </a>
+            </div>
           </div>
           <button
             type="button"
@@ -885,7 +905,11 @@ export function CommandShell({ initialStatus }: Props) {
                 <button
                   className="btn btn-ghost"
                   onClick={() => doAction("Snapshot", "/api/admin/snapshot")}
-                  disabled={pending !== null}
+                  disabled={
+                    pending !== null ||
+                    status.status === "uninitialized" ||
+                    status.status === "stopped"
+                  }
                   title="Stop the sandbox (auto-snapshots on stop)"
                   aria-label="Take snapshot — stops the sandbox, which auto-snapshots"
                 >
@@ -894,7 +918,11 @@ export function CommandShell({ initialStatus }: Props) {
                 <button
                   className="btn btn-danger"
                   onClick={() => doAction("Stop", "/api/admin/stop")}
-                  disabled={pending !== null || status.status === "stopped"}
+                  disabled={
+                    pending !== null ||
+                    status.status === "stopped" ||
+                    status.status === "uninitialized"
+                  }
                   title="Stop the sandbox; state is preserved by auto-snapshot"
                   aria-label="Stop sandbox"
                 >
@@ -1274,7 +1302,9 @@ export function CommandShell({ initialStatus }: Props) {
                   </div>
                   <button
                     className="cli-copy"
+                    disabled={!sandboxId}
                     onClick={async () => {
+                      if (!sandboxId) return;
                       if (
                         typeof navigator !== "undefined" &&
                         navigator.clipboard
@@ -1284,7 +1314,16 @@ export function CommandShell({ initialStatus }: Props) {
                       setCopied(true);
                       setTimeout(() => setCopied(false), 2000);
                     }}
-                    aria-label="Copy command"
+                    aria-label={
+                      sandboxId
+                        ? "Copy command"
+                        : "No sandbox running — nothing to copy"
+                    }
+                    title={
+                      sandboxId
+                        ? "Copy command"
+                        : "No sandbox running — start one from the Status tab"
+                    }
                   >
                     {copied ? "✓" : "copy"}
                   </button>
@@ -1769,7 +1808,8 @@ export function CommandShell({ initialStatus }: Props) {
       </div>
 
       <div
-        className="right-rail"
+        className={`right-rail${view === "logs" ? " right-rail-hidden" : ""}`}
+        aria-hidden={view === "logs"}
         onMouseEnter={() => setLogsHoverPaused(true)}
         onMouseLeave={() => setLogsHoverPaused(false)}
         onFocusCapture={() => setLogsHoverPaused(true)}
@@ -1841,12 +1881,10 @@ export function CommandShell({ initialStatus }: Props) {
 
 function NavItem({
   label,
-  kbds,
   active,
   onClick,
 }: {
   label: string;
-  kbds: string[];
   active?: boolean;
   onClick?: () => void;
 }) {
@@ -1857,11 +1895,6 @@ function NavItem({
       onClick={onClick}
     >
       <div className="nav-icon-text">{label}</div>
-      <div style={{ display: "flex", gap: 4 }}>
-        {kbds.map((k) => (
-          <kbd key={k}>{k}</kbd>
-        ))}
-      </div>
     </button>
   );
 }
@@ -1945,6 +1978,7 @@ function Style() {
           flex-grow: 1; padding: 16px 8px;
           display: flex; flex-direction: column; gap: 2px;
           overflow-y: auto;
+          scrollbar-gutter: stable;
         }
         .nav-item {
           display: flex; align-items: center; justify-content: space-between;
@@ -1968,16 +2002,6 @@ function Style() {
           color: var(--foreground-subtle);
           max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
         }
-        kbd {
-          font-family: var(--font-geist-mono, ui-monospace, monospace);
-          font-size: 11px; padding: 2px 4px;
-          border: 1px solid var(--border-strong); border-radius: 4px;
-          color: var(--foreground-subtle);
-          background: var(--background);
-          box-shadow: inset 0 -1px 0 rgba(255,255,255,0.05);
-          line-height: 1;
-        }
-
         .main { flex-grow: 1; display: flex; flex-direction: column; min-width: 0; background: var(--background); }
         .toolbar {
           height: 48px; padding: 0 16px;
@@ -2003,6 +2027,7 @@ function Style() {
 
         .content {
           flex-grow: 1; overflow-y: auto;
+          scrollbar-gutter: stable;
           padding: 32px 48px;
           display: flex; flex-direction: column; gap: 48px;
         }
@@ -2115,6 +2140,23 @@ function Style() {
         }
         .reset-link:hover:not(:disabled) .reset-hint { color: var(--danger); }
 
+        .user-cluster { display: flex; align-items: center; gap: 8px; }
+        .signout-link {
+          font-family: var(--font-geist-mono, ui-monospace, monospace);
+          font-size: 11px;
+          color: var(--foreground-muted);
+          text-decoration: none;
+          padding: 2px 6px;
+          border: 1px solid transparent;
+          border-radius: 4px;
+          transition: color 150ms ease, border-color 150ms ease, background 150ms ease;
+        }
+        .signout-link:hover {
+          color: var(--foreground);
+          border-color: var(--border-strong);
+          background: var(--background-hover);
+        }
+
         .metrics-grid {
           display: grid;
           grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
@@ -2148,7 +2190,8 @@ function Style() {
           transition: background 150ms ease, color 150ms ease;
           flex-shrink: 0;
         }
-        .cli-copy:hover { color: var(--foreground); background: var(--background-hover); }
+        .cli-copy:hover:not(:disabled) { color: var(--foreground); background: var(--background-hover); }
+        .cli-copy:disabled { opacity: 0.4; cursor: not-allowed; }
 
         .right-rail {
           width: 320px; flex-shrink: 0;
@@ -2157,6 +2200,7 @@ function Style() {
           background: var(--background);
         }
         @media (max-width: 900px) { .right-rail { display: none; } }
+        .right-rail-hidden { display: none; }
 
         .toolbar-left { display: flex; align-items: center; gap: 12px; min-width: 0; }
         .sidebar-toggle {
@@ -2263,6 +2307,7 @@ function Style() {
         .rail-meta { font-size: 11px; color: var(--foreground-subtle); display: flex; align-items: center; gap: 8px; font-family: var(--font-geist-mono, ui-monospace, monospace); }
         .rail-content {
           flex-grow: 1; overflow-y: auto;
+          scrollbar-gutter: stable;
           padding: 16px;
           display: flex; flex-direction: column; gap: 16px;
         }
@@ -2439,16 +2484,11 @@ function Style() {
         .cmd-channels .channel-grid {
           display: grid;
           gap: 16px;
-          grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-          align-items: stretch;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          align-items: start;
           margin-top: 20px;
         }
-        @media (max-width: 900px) {
-          .cmd-channels .channel-grid {
-            grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-          }
-        }
-        @media (max-width: 640px) {
+        @media (max-width: 720px) {
           .cmd-channels .channel-grid {
             grid-template-columns: 1fr;
           }
@@ -2467,6 +2507,7 @@ function Style() {
         /* Card header: title/summary on the left, pill pinned top-right */
         .cmd-channels .channel-head {
           display: flex;
+          flex-wrap: nowrap;
           align-items: flex-start;
           justify-content: space-between;
           gap: 10px;
@@ -2502,25 +2543,33 @@ function Style() {
           min-width: 0;
           white-space: nowrap;
         }
-        /* Tame the PORT 8787 — Handler registered chip so it sits inline */
+        /* Port status reads as a quiet inline line, not a bordered chip */
         .cmd-channels .port-status-row {
           display: flex;
           flex-direction: column;
-          gap: 4px;
-          padding: 8px 10px;
-          border: 1px solid var(--border);
-          border-radius: 6px;
-          background: var(--background);
+          gap: 2px;
+          padding: 0;
+          border: 0;
+          background: transparent;
         }
         .cmd-channels .port-status-header {
           display: flex;
-          flex-wrap: wrap;
           align-items: center;
           gap: 8px;
           min-width: 0;
+          font-family: var(--font-geist-mono, ui-monospace, monospace);
+          font-size: 11px;
+          letter-spacing: 0.04em;
+          text-transform: uppercase;
+          color: var(--foreground-subtle);
+        }
+        .cmd-channels .port-status-header .field-label {
+          margin: 0;
         }
         .cmd-channels .port-status-message {
-          font-size: 12px;
+          font-size: 11px;
+          text-transform: none;
+          letter-spacing: normal;
           color: var(--foreground-muted);
           min-width: 0;
           flex: 1 1 auto;
@@ -2528,8 +2577,8 @@ function Style() {
         }
         .cmd-channels .port-status-dot {
           flex: 0 0 auto;
-          width: 8px;
-          height: 8px;
+          width: 6px;
+          height: 6px;
           border-radius: 50%;
         }
         /* Breathing room between stacked sections inside the form body */
@@ -2606,8 +2655,15 @@ function Style() {
         }
         .fw-mode-pill:hover:not(:disabled) { color: var(--foreground); border-color: var(--border-strong); }
         .fw-mode-pill.active {
-          color: var(--foreground); border-color: var(--border-strong);
-          background: var(--background-hover);
+          color: var(--background);
+          border-color: var(--foreground);
+          background: var(--foreground);
+          font-weight: 600;
+        }
+        .fw-mode-pill.active:hover:not(:disabled) {
+          color: var(--background);
+          border-color: var(--foreground);
+          background: var(--foreground);
         }
         .fw-mode-pill:disabled { opacity: 0.8; cursor: default; }
 
@@ -2682,6 +2738,7 @@ function Style() {
           font-family: var(--font-geist-mono, ui-monospace, monospace);
           font-size: 12px; color: var(--foreground);
           max-height: 240px; overflow: auto;
+          scrollbar-gutter: stable;
         }
         .ssh-pre.ssh-stderr { color: var(--warning); }
 
@@ -2693,7 +2750,7 @@ function Style() {
           font-size: 11px; color: var(--foreground-muted); cursor: pointer;
         }
         .logs-source-row { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
-        .logs-table { margin-top: 16px; display: flex; flex-direction: column; gap: 12px; max-height: 560px; overflow: auto; }
+        .logs-table { margin-top: 16px; display: flex; flex-direction: column; gap: 12px; max-height: 560px; overflow: auto; scrollbar-gutter: stable; }
 
         .main-log-row {
           cursor: default;

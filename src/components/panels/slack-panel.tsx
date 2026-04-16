@@ -261,9 +261,6 @@ export function SlackPanel({
         copied={copied}
         onCopy={handleCopyWebhook}
       />
-      <ChannelInfoRow label="Health">
-        <code className="inline-code">Ready</code>
-      </ChannelInfoRow>
       {portCheck ? <PortStatusRow port={portCheck} /> : null}
       <div className="inline-actions">
         {oauthAvailable ? (
