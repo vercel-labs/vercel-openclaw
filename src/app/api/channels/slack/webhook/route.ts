@@ -1,7 +1,11 @@
 import * as workflowApi from "workflow/api";
 
 import { getPublicOrigin } from "@/server/public-url";
-import { channelDedupKey, channelUserMessageDedupKey } from "@/server/channels/keys";
+import {
+  channelDedupKey,
+  channelPendingBootMessageKey,
+  channelUserMessageDedupKey,
+} from "@/server/channels/keys";
 import { drainChannelWorkflow } from "@/server/workflows/channels/drain-channel-workflow";
 import {
   getSlackUrlVerificationChallenge,
@@ -213,8 +217,48 @@ export async function POST(request: Request): Promise<Response> {
     };
   }
 
-  // Skip bot messages to avoid feedback loops
+  // Skip bot messages to avoid feedback loops. Before returning, sweep any
+  // "🦞 Bot waking up…" placeholder we parked in this thread — OpenClaw's
+  // reply arriving means the dead-time fill has served its purpose.
   if (eventInfo.botId) {
+    if (eventInfo.channel && eventInfo.threadTs) {
+      const pendingKey = channelPendingBootMessageKey(
+        "slack",
+        eventInfo.channel,
+        eventInfo.threadTs,
+      );
+      try {
+        const bootTs = await getStore().getValue<string>(pendingKey);
+        if (bootTs) {
+          await fetch("https://slack.com/api/chat.delete", {
+            method: "POST",
+            headers: {
+              authorization: `Bearer ${config.botToken}`,
+              "content-type": "application/json",
+            },
+            body: JSON.stringify({
+              channel: eventInfo.channel,
+              ts: bootTs,
+            }),
+            signal: AbortSignal.timeout(SLACK_BOOT_MESSAGE_TIMEOUT_MS),
+          }).catch(() => {});
+          await getStore().deleteValue(pendingKey).catch(() => {});
+          logInfo("channels.slack_pending_boot_cleared", {
+            requestId,
+            channel: eventInfo.channel,
+            threadTs: eventInfo.threadTs,
+            bootTs,
+          });
+        }
+      } catch (error) {
+        logWarn("channels.slack_pending_boot_clear_failed", {
+          requestId,
+          channel: eventInfo.channel,
+          threadTs: eventInfo.threadTs,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
     logInfo("channels.slack_webhook_bot_skip", {
       requestId,
       dedupId,

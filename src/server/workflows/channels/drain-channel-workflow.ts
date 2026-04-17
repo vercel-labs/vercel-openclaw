@@ -12,7 +12,10 @@ import { logInfo, logWarn } from "@/server/log";
 import { getInitializedMeta } from "@/server/store/store";
 import { getStore } from "@/server/store/store";
 import { mutateMeta } from "@/server/store/store";
-import { channelForwardDiagnosticKey } from "@/server/store/keyspace";
+import {
+  channelForwardDiagnosticKey,
+  channelPendingBootMessageKey,
+} from "@/server/store/keyspace";
 
 export type RetryingForwardResult = {
   ok: boolean;
@@ -201,6 +204,9 @@ export async function processChannelStep(
   try {
     // --- Phase 1: Wake the sandbox ---
     console.log(`[DIAG] Phase 1: runWithBootMessages starting`);
+    // Slack and Telegram keep the boot message alive past sandbox-ready so we
+    // can fill the ~5s Claude-generating gap before the real reply arrives.
+    const deferBootCleanup = channel === "slack" || channel === "telegram";
     const bootResult = await runWithBootMessages({
       channel: channel as ChannelName,
       adapter: buildMinimalBootAdapter(),
@@ -209,6 +215,7 @@ export async function processChannelStep(
       reason: `channel:${channel}`,
       timeoutMs: WORKFLOW_SANDBOX_READY_TIMEOUT_MS,
       existingBootHandle,
+      deferCleanupToCaller: deferBootCleanup,
     });
 
     diag.bootResultStatus = bootResult.meta.status;
@@ -593,9 +600,47 @@ export async function processChannelStep(
       });
     }
 
-    // Clean up the boot message after the native handler has processed.
+    // Boot-message cleanup. Slack/Telegram keep a "dead-time" status message
+    // visible while OpenClaw/Claude generates the real reply (~5s). For Slack
+    // we store the boot-message ts under a thread-keyed Redis entry so the
+    // Slack webhook can delete it when OpenClaw's reply event arrives. For
+    // Telegram there is no bot-message webhook signal, so the message stays.
     if (existingBootHandle) {
-      await existingBootHandle.clear().catch(() => {});
+      if (channel === "slack" && forwardResult.ok) {
+        await existingBootHandle
+          .update("🦞 Bot waking up\u2026")
+          .catch(() => {});
+        const slackPayload = payload as {
+          event?: {
+            channel?: string;
+            ts?: string;
+            thread_ts?: string;
+          };
+        } | null;
+        const slackChannel = slackPayload?.event?.channel;
+        const threadTs =
+          slackPayload?.event?.thread_ts ?? slackPayload?.event?.ts ?? null;
+        const bootTs =
+          typeof bootMessageId === "string" ? bootMessageId : null;
+        if (slackChannel && threadTs && bootTs) {
+          try {
+            await getStore().setValue(
+              channelPendingBootMessageKey("slack", slackChannel, threadTs),
+              bootTs,
+              600,
+            );
+          } catch {
+            // Best effort — if the store write fails the boot message will
+            // just stay until the thread reply makes it harmless.
+          }
+        }
+      } else if (channel === "telegram" && forwardResult.ok) {
+        await existingBootHandle
+          .update("🦞 Restoring Sandbox")
+          .catch(() => {});
+      } else {
+        await existingBootHandle.clear().catch(() => {});
+      }
     }
 
     diag.outcome = forwardResult.ok ? "success" : `failed:${forwardResult.status}`;

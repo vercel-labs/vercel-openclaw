@@ -106,6 +106,14 @@ export function channelUserMessageDedupKey(
   return buildKey(`channels:${channel}:user-message-dedup:${channelId}:${ts}`);
 }
 
+export function channelPendingBootMessageKey(
+  channel: ChannelName,
+  channelId: string,
+  threadTs: string,
+): string {
+  return buildKey(`channels:${channel}:pending-boot:${channelId}:${threadTs}`);
+}
+
 export function watchdogReportKey(): string {
   return buildKey("watchdog:latest");
 }

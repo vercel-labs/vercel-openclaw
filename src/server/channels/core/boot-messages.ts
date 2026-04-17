@@ -16,7 +16,7 @@ const BOOT_MESSAGE_INITIAL = "🦞 Waking up\u2026 one moment.";
 
 const STATUS_MESSAGES: Partial<Record<SingleMeta["status"], string>> = {
   restoring: "🦞 Restoring\u2026",
-  creating: "🦞 Creating sandbox\u2026",
+  creating: "🦞 Restoring Sandbox",
   setup: "🦞 Setting up\u2026",
   booting: "🦞 Starting gateway\u2026",
   running: "🦞 Processing\u2026",
@@ -45,6 +45,12 @@ export type RunWithBootMessagesOptions<
   pollIntervalMs?: number;
   /** Reuse a boot message already sent (e.g. from the webhook route). */
   existingBootHandle?: BootMessageHandle;
+  /**
+   * Skip the implicit 500ms auto-clear when the function returns. Use when the
+   * caller needs to keep the boot message visible past sandbox-ready (e.g. to
+   * fill the gap before the real bot reply arrives) and will clear it itself.
+   */
+  deferCleanupToCaller?: boolean;
 };
 
 export type BootMessagesResult = {
@@ -104,6 +110,7 @@ export async function runWithBootMessages<
     timeoutMs,
     pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
     existingBootHandle,
+    deferCleanupToCaller = false,
   } = options;
 
   const initialMeta = await getInitializedMeta();
@@ -231,16 +238,19 @@ export async function runWithBootMessages<
       await sleep(pollIntervalMs);
     }
   } finally {
-    // Always clean up the boot message
-    setTimeout(() => {
-      void handle.clear().catch((error) => {
-        logWarn("channels.boot_message_cleanup_failed", {
-          channel,
-          phase: "finalize",
-          error: error instanceof Error ? error.message : String(error),
+    // Caller opts out when it wants to keep the boot message alive past
+    // sandbox-ready (e.g. to fill the gap before the real bot reply arrives).
+    if (!deferCleanupToCaller) {
+      setTimeout(() => {
+        void handle.clear().catch((error) => {
+          logWarn("channels.boot_message_cleanup_failed", {
+            channel,
+            phase: "finalize",
+            error: error instanceof Error ? error.message : String(error),
+          });
         });
-      });
-    }, BOOT_MESSAGE_CLEAR_DELAY_MS).unref?.();
+      }, BOOT_MESSAGE_CLEAR_DELAY_MS).unref?.();
+    }
   }
 }
 
