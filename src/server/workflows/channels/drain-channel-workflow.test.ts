@@ -136,7 +136,7 @@ test.beforeEach(async () => {
   for (const key of WORKFLOW_TEST_ENV_KEYS) {
     workflowTestEnvOriginals[key] = process.env[key];
   }
-  process.env.NODE_ENV = "test";
+  (process.env as Record<string, string | undefined>)["NODE_ENV"] = "test";
   delete process.env.VERCEL;
   delete process.env.VERCEL_ENV;
   delete process.env.VERCEL_URL;
@@ -153,7 +153,7 @@ test.afterEach(async () => {
     if (value === undefined) {
       delete process.env[key];
     } else {
-      process.env[key] = value;
+      (process.env as Record<string, string | undefined>)[key] = value;
     }
   }
 });

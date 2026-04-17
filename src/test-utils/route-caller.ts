@@ -491,9 +491,18 @@ export function getAdminRestoreRoute(): AdminRouteModule {
   return _adminRestoreRoute;
 }
 
+type LaunchVerifyQueueProbeModule = typeof import("@/server/launch-verify/queue-probe");
+type LaunchVerifyQueueProbeAdapter = Pick<
+  LaunchVerifyQueueProbeModule,
+  "publishLaunchVerifyQueueProbe" | "waitForLaunchVerifyQueueResult"
+>;
+
 type LaunchVerifyRouteModule = {
   POST: (request: Request) => Promise<Response>;
   GET: (request: Request) => Promise<Response>;
+  __setLaunchVerifyQueueProbeAdapterForTests?: (
+    adapter: LaunchVerifyQueueProbeAdapter | null,
+  ) => void;
 };
 
 let _adminLaunchVerifyRoute: LaunchVerifyRouteModule | null = null;

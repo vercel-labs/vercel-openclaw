@@ -355,17 +355,19 @@ test("Telegram webhook: fast path fires when status=running AND telegramListener
       const result = await callRoute(route.POST, req);
       assert.equal(result.status, 200);
       assert.deepEqual(result.json, { ok: true });
+      const forwardUrl = capturedForwardUrl as string | null;
+      if (typeof forwardUrl !== "string") {
+        assert.fail(
+          "fast-path should forward to the native handler on port 8787",
+        );
+      }
       assert.ok(
-        capturedForwardUrl,
-        "fast-path should forward to the native handler on port 8787",
+        forwardUrl.includes("8787"),
+        `forward should hit the 8787 surface (got ${forwardUrl})`,
       );
       assert.ok(
-        capturedForwardUrl!.includes("8787"),
-        `forward should hit the 8787 surface (got ${capturedForwardUrl})`,
-      );
-      assert.ok(
-        capturedForwardUrl!.endsWith("/telegram-webhook"),
-        `forward should end with /telegram-webhook (got ${capturedForwardUrl})`,
+        forwardUrl.endsWith("/telegram-webhook"),
+        `forward should end with /telegram-webhook (got ${forwardUrl})`,
       );
       assert.equal(
         startMock.mock.callCount(),
