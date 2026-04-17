@@ -12,6 +12,7 @@ import {
   channelProcessingKey,
   channelQueueKey,
   channelSessionHistoryKey,
+  channelUserMessageDedupKey,
   cronJobsKey,
   cronNextWakeKey,
   debugLockKey,
@@ -109,6 +110,10 @@ test("keyspace: custom instance id updates all key prefixes lazily", () => {
       assert.equal(
         channelDedupKey(channel, "dedup-1"),
         `fork-a:channels:${channel}:dedup:dedup-1`,
+      );
+      assert.equal(
+        channelUserMessageDedupKey(channel, "C123", "1234.5"),
+        `fork-a:channels:${channel}:user-message-dedup:C123:1234.5`,
       );
     }
 

@@ -1,7 +1,7 @@
 import * as workflowApi from "workflow/api";
 
 import { getPublicOrigin } from "@/server/public-url";
-import { channelDedupKey } from "@/server/channels/keys";
+import { channelDedupKey, channelUserMessageDedupKey } from "@/server/channels/keys";
 import { drainChannelWorkflow } from "@/server/workflows/channels/drain-channel-workflow";
 import {
   getSlackUrlVerificationChallenge,
@@ -47,23 +47,26 @@ function workflowStartFailedResponse() {
   );
 }
 
-async function releaseSlackWebhookDedupLockForRetry(
-  lock: SlackWebhookDedupLock | null,
-): Promise<SlackWebhookDedupReleaseResult> {
-  if (!lock) {
-    return { attempted: false, released: false, releaseError: null };
-  }
-
-  try {
-    await getStore().releaseLock(lock.key, lock.token);
-    return { attempted: true, released: true, releaseError: null };
-  } catch (error) {
-    return {
-      attempted: true,
-      released: false,
-      releaseError: error instanceof Error ? error.message : String(error),
-    };
-  }
+async function releaseSlackWebhookDedupLocksForRetry(
+  locks: ReadonlyArray<SlackWebhookDedupLock | null>,
+): Promise<SlackWebhookDedupReleaseResult[]> {
+  return Promise.all(
+    locks.map(async (lock) => {
+      if (!lock) {
+        return { attempted: false, released: false, releaseError: null };
+      }
+      try {
+        await getStore().releaseLock(lock.key, lock.token);
+        return { attempted: true, released: true, releaseError: null };
+      } catch (error) {
+        return {
+          attempted: true,
+          released: false,
+          releaseError: error instanceof Error ? error.message : String(error),
+        };
+      }
+    }),
+  );
 }
 
 function extractSlackEventInfo(payload: unknown): {
@@ -336,6 +339,46 @@ export async function POST(request: Request): Promise<Response> {
     }));
   }
 
+  // Wake-path only: collapse Slack's dual-event delivery (app_mention +
+  // message.channels for the same user post). Both have distinct event_ids
+  // so the event-id dedup above lets both through; this second lock keyed on
+  // the user message's channel+ts ensures only ONE wake/workflow per user
+  // post. The fast path above intentionally forwards BOTH events to the
+  // native Bolt handler, which has its own dedup.
+  let userMessageDedupLock: SlackWebhookDedupLock | null = null;
+  const userMessageTs =
+    typeof (payload as { event?: { ts?: unknown } } | null)?.event?.ts === "string"
+      ? (payload as { event: { ts: string } }).event.ts
+      : null;
+  if (eventInfo.channel && userMessageTs) {
+    const userMessageKey = channelUserMessageDedupKey(
+      "slack",
+      eventInfo.channel,
+      userMessageTs,
+    );
+    const userMessageToken = await getStore().acquireLock(
+      userMessageKey,
+      24 * 60 * 60,
+    );
+    if (!userMessageToken) {
+      logInfo(
+        "channels.slack_webhook_user_message_dedup_skip",
+        withOperationContext(op, {
+          channel: eventInfo.channel,
+          ts: userMessageTs,
+          eventType: eventInfo.eventType,
+          eventSubtype: eventInfo.eventSubtype,
+          dedupId,
+        }),
+      );
+      return Response.json({ ok: true });
+    }
+    userMessageDedupLock = {
+      key: userMessageKey,
+      token: userMessageToken,
+    };
+  }
+
   // Send "Waking up" boot message from the webhook route (before workflow)
   // so the user gets immediate feedback. The message ts is passed to the
   // workflow so the step can update/delete it during processing.
@@ -399,7 +442,11 @@ export async function POST(request: Request): Promise<Response> {
       slackForwardHeaderKeys: Object.keys(slackForwardHeaders),
     }));
   } catch (error) {
-    const dedupRelease = await releaseSlackWebhookDedupLockForRetry(dedupLock);
+    const [dedupRelease, userMessageRelease] =
+      await releaseSlackWebhookDedupLocksForRetry([
+        dedupLock,
+        userMessageDedupLock,
+      ]);
     logWarn("channels.slack_workflow_start_failed", withOperationContext(op, {
       error: error instanceof Error ? error.message : String(error),
       attemptedAction: "start_drain_channel_workflow",
@@ -407,6 +454,10 @@ export async function POST(request: Request): Promise<Response> {
       dedupLockReleaseAttempted: dedupRelease.attempted,
       dedupLockReleased: dedupRelease.released,
       dedupLockReleaseError: dedupRelease.releaseError,
+      userMessageDedupLockKey: userMessageDedupLock?.key ?? null,
+      userMessageDedupLockReleaseAttempted: userMessageRelease.attempted,
+      userMessageDedupLockReleased: userMessageRelease.released,
+      userMessageDedupLockReleaseError: userMessageRelease.releaseError,
       retryable: true,
       ...eventInfo,
     }));

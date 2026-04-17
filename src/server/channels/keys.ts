@@ -5,4 +5,5 @@ export {
   channelProcessingKey,
   channelQueueKey,
   channelSessionHistoryKey,
+  channelUserMessageDedupKey,
 } from "@/server/store/keyspace";

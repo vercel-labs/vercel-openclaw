@@ -12,7 +12,10 @@ import assert from "node:assert/strict";
 import { mock } from "node:test";
 import test from "node:test";
 
-import { channelDedupKey } from "@/server/channels/keys";
+import {
+  channelDedupKey,
+  channelUserMessageDedupKey,
+} from "@/server/channels/keys";
 import { getStore } from "@/server/store/store";
 import { withHarness, type ScenarioHarness } from "@/test-utils/harness";
 import {
@@ -208,6 +211,48 @@ test("Slack webhook: duplicate event_id is deduplicated", async () => {
   });
 });
 
+test("Slack webhook: app_mention + message for same user post collapses to one workflow", async () => {
+  await withHarness(async (h) => {
+    await configureSlack(h);
+    const route = getSlackWebhookRoute();
+    const startMock = mock.method(slackWebhookWorkflowRuntime, "start", async () => {});
+
+    const channel = "C123";
+    const ts = "1234567890.000001";
+    const appMention = {
+      type: "event_callback",
+      event_id: "Ev_APP_MENTION",
+      event: { type: "app_mention", text: "@bot hello", channel, ts, user: "U1" },
+    };
+    const message = {
+      type: "event_callback",
+      event_id: "Ev_MESSAGE",
+      event: { type: "message", text: "@bot hello", channel, ts, user: "U1" },
+    };
+
+    try {
+      const r1 = await callRoute(
+        route.POST,
+        buildSlackWebhook({ signingSecret: SLACK_SIGNING_SECRET, payload: appMention }),
+      );
+      assert.equal(r1.status, 200);
+      resetAfterCallbacks();
+      const r2 = await callRoute(
+        route.POST,
+        buildSlackWebhook({ signingSecret: SLACK_SIGNING_SECRET, payload: message }),
+      );
+      assert.equal(r2.status, 200);
+      assert.equal(
+        startMock.mock.callCount(),
+        1,
+        "second sibling event must not start a second workflow",
+      );
+    } finally {
+      startMock.mock.restore();
+    }
+  });
+});
+
 test("Slack webhook: fast path non-ok response returns 200 without falling through to workflow", async () => {
   await withHarness(async (h) => {
     await configureSlack(h);
@@ -260,6 +305,11 @@ test("Slack webhook: releases dedup lock and returns 500 when workflow start fai
       },
     };
     const dedupKey = channelDedupKey("slack", payload.event_id);
+    const userMessageDedupKey = channelUserMessageDedupKey(
+      "slack",
+      payload.event.channel,
+      payload.event.ts,
+    );
     const startMock = mock.method(slackWebhookWorkflowRuntime, "start", async () => {
       throw new Error("workflow engine unavailable");
     });
@@ -277,6 +327,17 @@ test("Slack webhook: releases dedup lock and returns 500 when workflow start fai
       const reacquiredToken = await getStore().acquireLock(dedupKey, 60);
       assert.ok(reacquiredToken, "dedup lock should be released when workflow start fails");
       await getStore().releaseLock(dedupKey, reacquiredToken!);
+
+      const reacquiredUserMessageToken = await getStore().acquireLock(
+        userMessageDedupKey,
+        60,
+      );
+      assert.ok(
+        reacquiredUserMessageToken,
+        "user-message dedup lock should be released when workflow start fails",
+      );
+      await getStore().releaseLock(userMessageDedupKey, reacquiredUserMessageToken!);
+
       assert.equal(startMock.mock.callCount(), 1);
     } finally {
       startMock.mock.restore();

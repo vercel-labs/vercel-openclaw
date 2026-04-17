@@ -98,6 +98,14 @@ export function channelDedupKey(channel: ChannelName, dedupId: string): string {
   return buildKey(`channels:${channel}:dedup:${dedupId}`);
 }
 
+export function channelUserMessageDedupKey(
+  channel: ChannelName,
+  channelId: string,
+  ts: string,
+): string {
+  return buildKey(`channels:${channel}:user-message-dedup:${channelId}:${ts}`);
+}
+
 export function watchdogReportKey(): string {
   return buildKey("watchdog:latest");
 }
