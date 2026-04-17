@@ -374,7 +374,7 @@ export async function POST(request: Request): Promise<Response> {
       requestId ?? null,
       bootMessageTs,
       receivedAtMs,
-      { slackForwardHeaders },
+      { slackForwardHeaders, slackRawBody: rawBody },
     ]);
     logInfo("channels.slack_workflow_started", withOperationContext(op, {
       ...eventInfo,
