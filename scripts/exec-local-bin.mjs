@@ -21,7 +21,7 @@ const executable =
 
 if (!existsSync(executable)) {
   console.error(`Local binary not found: ${executable}`);
-  console.error("Run npm install before invoking this wrapper.");
+  console.error("Run pnpm install before invoking this wrapper.");
   process.exit(127);
 }
 

@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 /**
- * Machine-readable self-audit: verify the repo signals npm-first
- * and contains no stale pnpm/tsx references in discovery surfaces.
+ * Machine-readable self-audit: verify the repo signals pnpm-first
+ * (host migrated from npm to pnpm in PR #7) and contains no stale
+ * npm/tsx references in discovery surfaces.
  *
  * Exit 0 + JSON { ok: true, ... } when clean.
  * Exit 1 + JSON { ok: false, findings: [...] } when drift detected.
@@ -65,8 +66,15 @@ function collectFiles(pathName) {
 
 function scanFile(text, file) {
   const findings = [];
+  // Sandbox bootstrap legitimately uses npm inside the Vercel Sandbox
+  // (Plan 4b — migrating the sandbox to pnpm is a separate effort).
+  const isSandboxBootstrap = file.startsWith("src/server/openclaw/");
   const patterns = [
-    { label: "pnpm", regex: /\bpnpm\b/ },
+    // Flag bare "npm" commands in host tooling — the host repo is pnpm-first.
+    // Allow `npm` inside the sandbox bootstrap until Plan 4b lands.
+    ...(isSandboxBootstrap
+      ? []
+      : [{ label: "npm", regex: /\bnpm\s+(install|ci|run|test|exec)\b/ }]),
     { label: "npx tsx", regex: /npx\s+tsx/ },
     { label: "tsx --test", regex: /tsx\s+--test/, skip: /--import\s+tsx\s+--test/ },
   ];
@@ -87,13 +95,29 @@ function scanFile(text, file) {
   return findings;
 }
 
-// Exclude meta-guard scripts that legitimately reference pnpm/tsx patterns
+// Exclude meta-guard scripts that legitimately reference pnpm/tsx patterns,
+// plus scripts that benchmark/emulate sandbox bootstrap (sandbox still uses
+// npm until Plan 4b lands).
 const EXCLUDED_FILES = new Set([
   "scripts/audit-verifier-surface.mjs",
   "scripts/verify-package-manager.mjs",
   "scripts/check-verifier-contract.mjs",
   "scripts/test-self-heal.ts",
   "scripts/vendor-openclaw-runtime-artifact.mjs",
+  "scripts/bench-sandbox-direct.mjs",
+]);
+
+// Exclude directories whose contents legitimately shell out to npm inside
+// the sandbox. Plan 4b will migrate these together.
+const EXCLUDED_DIR_PREFIXES = [
+  "scripts/experiments/",
+];
+
+// Files that describe sandbox behavior (including the npm install it runs
+// today). These document operator-visible surface of the sandbox boot, not
+// host tooling.
+const SANDBOX_DOC_FILES = new Set([
+  ".claude/skills/vercel-openclaw-testing/SKILL.md",
 ]);
 
 const packageJsonPath = join(ROOT, "package.json");
@@ -109,14 +133,19 @@ const files = Array.from(new Set(CANDIDATE_PATHS.flatMap(collectFiles))).sort();
 
 const findings = files
   .flatMap((file) => scanFile(readFileSync(join(ROOT, file), "utf8"), file))
-  .filter((f) => !EXCLUDED_FILES.has(f.file));
+  .filter(
+    (f) =>
+      !EXCLUDED_FILES.has(f.file) &&
+      !EXCLUDED_DIR_PREFIXES.some((prefix) => f.file.startsWith(prefix)) &&
+      !SANDBOX_DOC_FILES.has(f.file),
+  );
 
 const result = {
   ok:
     typeof packageManager === "string" &&
-    packageManager.startsWith("npm@") &&
-    existsSync(join(ROOT, "package-lock.json")) &&
-    !existsSync(join(ROOT, "pnpm-lock.yaml")) &&
+    packageManager.startsWith("pnpm@") &&
+    existsSync(join(ROOT, "pnpm-lock.yaml")) &&
+    !existsSync(join(ROOT, "package-lock.json")) &&
     findings.length === 0,
   packageManager,
   hasPackageLock: existsSync(join(ROOT, "package-lock.json")),

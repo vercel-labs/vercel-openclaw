@@ -147,9 +147,11 @@ export function buildGetRequest(
 let patched = false;
 
 /**
- * Replace `after` on the `next/server` CJS module object with
- * `capturedAfter`.  Must be called **before** any route handler
- * module is `require()`-d so the patched binding is what gets used.
+ * Replace `after` and `connection` on the `next/server` CJS module with
+ * test doubles.  `after` is captured via `capturedAfter`; `connection`
+ * is replaced with a no-op because the test harness does not establish
+ * a Next.js request scope. Must be called **before** any route handler
+ * module is `require()`-d so the patched bindings are what get used.
  *
  * Safe to call multiple times — only patches once.
  */
@@ -158,6 +160,7 @@ export function patchNextServerAfter(): void {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const ns = require("next/server");
   ns.after = capturedAfter;
+  ns.connection = async () => {};
   patched = true;
 }
 
@@ -330,6 +333,7 @@ let _adminRestoreRoute: AdminRouteModule | null = null;
 
 export function getHealthRoute(): SimpleRouteModule {
   if (!_healthRoute) {
+    patchNextServerAfter();
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     _healthRoute = require("@/app/api/health/route") as SimpleRouteModule;
   }
@@ -463,6 +467,7 @@ export function getAuthAuthorizeRoute(): SimpleRouteModule {
 
 export function getAuthCallbackRoute(): SimpleRouteModule {
   if (!_authCallbackRoute) {
+    patchNextServerAfter();
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     _authCallbackRoute = require("@/app/api/auth/callback/route") as SimpleRouteModule;
   }
@@ -486,9 +491,18 @@ export function getAdminRestoreRoute(): AdminRouteModule {
   return _adminRestoreRoute;
 }
 
+type LaunchVerifyQueueProbeModule = typeof import("@/server/launch-verify/queue-probe");
+type LaunchVerifyQueueProbeAdapter = Pick<
+  LaunchVerifyQueueProbeModule,
+  "publishLaunchVerifyQueueProbe" | "waitForLaunchVerifyQueueResult"
+>;
+
 type LaunchVerifyRouteModule = {
   POST: (request: Request) => Promise<Response>;
   GET: (request: Request) => Promise<Response>;
+  __setLaunchVerifyQueueProbeAdapterForTests?: (
+    adapter: LaunchVerifyQueueProbeAdapter | null,
+  ) => void;
 };
 
 let _adminLaunchVerifyRoute: LaunchVerifyRouteModule | null = null;

@@ -261,8 +261,9 @@ test("POST /api/admin/ensure: schedules create when stopped with snapshot (v2 pe
     assert.equal(result.status, 202);
     const body = result.json as { state: string; status: string };
     assert.equal(body.state, "waiting");
-    // v2 persistent sandboxes always use "creating" — SDK auto-resumes
-    assert.equal(body.status, "creating");
+    // When a snapshot exists, lifecycle advances status to "restoring"
+    // so the waiting-page UI can distinguish restore from a fresh create.
+    assert.equal(body.status, "restoring");
   });
 });
 
