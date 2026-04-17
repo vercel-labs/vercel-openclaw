@@ -1,5 +1,7 @@
 import { cookies, headers } from "next/headers";
+import { redirect } from "next/navigation";
 import { CommandShell } from "@/components/designs/command-shell";
+import { VIEW_SLUGS, type View } from "@/shared/admin-views";
 import { getAuthMode } from "@/server/env";
 import {
   hasAdminSession,
@@ -97,7 +99,25 @@ async function getInitialStatus(): Promise<StatusPayload | null> {
   }
 }
 
-export default async function HomePage() {
+export default async function HomePage({
+  params,
+}: {
+  params: Promise<{ slug?: string[] }>;
+}) {
+  const { slug } = await params;
+  const first = slug?.[0];
+
+  if (slug && slug.length > 1) {
+    redirect(first ? `/${first}` : "/");
+  }
+  if (first === "status") {
+    redirect("/");
+  }
+  if (first && !(VIEW_SLUGS as readonly string[]).includes(first)) {
+    redirect("/");
+  }
+
+  const initialView: View = (first as View | undefined) ?? "status";
   const initialStatus = await getInitialStatus();
-  return <CommandShell initialStatus={initialStatus} />;
+  return <CommandShell initialStatus={initialStatus} initialView={initialView} />;
 }

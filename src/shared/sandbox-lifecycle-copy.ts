@@ -5,6 +5,7 @@ const LIFECYCLE_PROGRESS_LABELS: Partial<Record<SingleStatus, string>> = {
   setup: "Installing OpenClaw…",
   restoring: "Restoring snapshot…",
   booting: "Waiting for gateway…",
+  snapshotting: "Finishing snapshot…",
 };
 
 const FIRST_RUN_CALLOUT = {

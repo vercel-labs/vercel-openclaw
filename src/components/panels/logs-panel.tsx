@@ -253,6 +253,7 @@ export function LogsPanel({ active, status, readDeps }: LogsPanelProps) {
   const emptyMessage = (() => {
     if (sandboxStatus === "creating") return "Sandbox is being created -- logs will appear once setup begins.";
     if (isBooting) return "Sandbox is starting up -- logs may appear as setup progresses.";
+    if (sandboxStatus === "snapshotting") return "Sandbox is finishing its snapshot. Logs will return once it's stopped.";
     if (isStopped) return "Sandbox is stopped. Start it from the Status tab to see logs.";
     if (sandboxStatus === "error") return "Sandbox is in an error state. Check the Status tab.";
     if (sandboxStatus === "uninitialized") return "Sandbox has not been created yet. Use the Status tab to get started.";

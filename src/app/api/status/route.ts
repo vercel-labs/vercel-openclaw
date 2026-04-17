@@ -10,6 +10,7 @@ import {
 import {
   getRunningSandboxTimeoutRemainingMs,
   probeGatewayReady,
+  reconcileSnapshottingStatus,
   reconcileStaleRunningStatus,
   touchRunningSandbox,
 } from "@/server/sandbox/lifecycle";
@@ -111,6 +112,13 @@ export async function GET(request: Request): Promise<Response> {
         Date.now() - gatewayCheckedAt > sleepConfig.heartbeatIntervalMs * 2
       ) {
         responseMeta = await reconcileStaleRunningStatus();
+      }
+
+      // When metadata says "snapshotting", the app is waiting for a
+      // non-blocking stop to finish its auto-snapshot.  Poll the SDK so
+      // the UI flips to "stopped" (or "error") as soon as the phase ends.
+      if (responseMeta.status === "snapshotting") {
+        responseMeta = await reconcileSnapshottingStatus();
       }
     }
 

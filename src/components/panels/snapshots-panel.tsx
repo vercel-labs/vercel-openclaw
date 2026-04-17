@@ -60,6 +60,7 @@ export function SnapshotsPanel({
     "restoring",
     "booting",
     "setup",
+    "snapshotting",
   ]).has(lifecycleStatus);
   const isResetDisabled =
     busy || lifecycleStatus === "uninitialized" || isLifecycleTransition;

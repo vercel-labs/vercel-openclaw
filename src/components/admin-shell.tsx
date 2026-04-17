@@ -294,6 +294,7 @@ const TRANSITIONAL_STATUSES = new Set([
   "setup",
   "booting",
   "restoring",
+  "snapshotting",
 ]);
 
 export function AdminShell({

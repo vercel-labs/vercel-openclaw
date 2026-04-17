@@ -77,6 +77,7 @@ export class FakeSandboxHandle implements SandboxHandle {
   extendedTimeouts: number[] = [];
   snapshotCalled = false;
   stopCalled = false;
+  lastStopOptions?: { blocking?: boolean };
   deleteCalled = false;
   createEnv?: Record<string, string>;
   createTimeNetworkPolicy?: import("@vercel/sandbox").NetworkPolicy;
@@ -266,8 +267,9 @@ export class FakeSandboxHandle implements SandboxHandle {
     return { snapshotId: `snap-${this.sandboxId}` };
   }
 
-  async stop(_options?: { blocking?: boolean }): Promise<void> {
+  async stop(options?: { blocking?: boolean }): Promise<void> {
     this.stopCalled = true;
+    this.lastStopOptions = options;
     this._status = "stopped";
     this.eventLog.push({
       kind: "stop",

@@ -7,12 +7,33 @@
 <h1 align="center">Deploy OpenClaw on Vercel</h1>
 
 <p align="center">
-  Get a personal OpenClaw instance running in a Vercel Sandbox — with one click.
+  Get a personal OpenClaw instance running in a Vercel Sandbox — with one command.
 </p>
+
+<h3 align="center">▶ Recommended: use the <code>vclaw</code> CLI</h3>
+
+<p align="center">
+  <code>npx @vercel/vclaw create</code>
+</p>
+
+<p align="center">
+  Clones this repo, picks a Vercel scope, provisions Redis, wires env vars, deploys to production, and runs launch verification — all in one command. This is the fastest, most reliable path and the one we actively support.
+</p>
+
+<p align="center">
+  <sub>Prefer a browser-only flow? The Deploy button still works — see below.</sub>
+</p>
+
+---
+
+<details>
+<summary><strong>Deploy with the Vercel button instead</strong></summary>
 
 <p align="center">
   <a href="https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Fvercel-labs%2Fvercel-openclaw.git&env=ADMIN_SECRET&envDescription=Serves%20as%20your%20password%20for%20the%20admin%20UI.&project-name=openclaw&repository-name=openclaw&stores=%255B%257B%2522type%2522%253A%2522integration%2522%252C%2522integrationSlug%2522%253A%2522redis%2522%252C%2522productSlug%2522%253A%2522redis%2522%257D%255D"><img src="https://vercel.com/button" alt="Deploy with Vercel" /></a>
 </p>
+
+</details>
 
 ---
 
@@ -20,7 +41,7 @@
 
 This is a Next.js app that wraps [OpenClaw](https://openclaw.vercel.app) in a full control plane — auth, persistent sandboxes, channel integrations, and an egress firewall — and runs it inside a [Vercel Sandbox](https://vercel.com/docs/vercel-sandbox).
 
-Click **Deploy with Vercel** above, set a password, and you're up.
+Run `npx @vercel/vclaw create` (or click **Deploy with Vercel** above), set a password, and you're up.
 
 ## Getting started
 

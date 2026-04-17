@@ -333,7 +333,12 @@ export async function ensureSandboxRunning(options: {
   schedule?: BackgroundScheduler;
   op?: OperationContext;
 }): Promise<{ state: "running" | "waiting"; meta: SingleMeta }> {
-  const meta = await getInitializedMeta();
+  let meta = await getInitializedMeta();
+  // If a non-blocking stop is mid-snapshot, try to advance to "stopped" so
+  // the restore path can run instead of bouncing through "waiting" again.
+  if (meta.status === "snapshotting") {
+    meta = await reconcileSnapshottingStatus();
+  }
   const opCtx = options.op ? withOperationContext(options.op, {
     sandboxId: meta.sandboxId,
     snapshotId: meta.snapshotId,
@@ -741,7 +746,7 @@ export async function stopSandbox(): Promise<SingleMeta> {
 
         logInfo("sandbox.status_transition", {
           from: meta.status,
-          to: "stopped",
+          to: "snapshotting",
           sandboxId: meta.sandboxId,
           cronWakeRead,
         });
@@ -771,13 +776,16 @@ export async function stopSandbox(): Promise<SingleMeta> {
           logInfo("sandbox.cron_jobs_cleared", { reason: "no-jobs-on-stop" });
         }
 
-        // v2 persistent sandboxes auto-snapshot on stop — no manual snapshot() needed
-        await sandbox.stop({ blocking: true });
+        // v2 persistent sandboxes auto-snapshot on stop — no manual snapshot() needed.
+        // blocking:false lets the stop request return as soon as the SDK has
+        // accepted it; the auto-snapshot continues in the background and we
+        // reconcile the status via reconcileSnapshottingStatus().
+        await sandbox.stop({ blocking: false });
 
         const stoppedMeta = await mutateMeta((next) => {
           // Keep sandboxId — persistent sandbox persists across stop/resume
           next.portUrls = null;
-          next.status = "stopped";
+          next.status = "snapshotting";
           next.lastAccessedAt = Date.now();
           next.lastError = null;
           // lastRestoreMetrics describes a previously-ready runtime.  Once
@@ -1782,6 +1790,82 @@ export async function reconcileStaleRunningStatus(): Promise<SingleMeta> {
       sandboxId: meta.sandboxId,
       sdkStatus: "not-found",
       metaStatus: meta.status,
+    });
+    return mutateMeta((next) => {
+      next.status = "stopped";
+      next.lastError = null;
+      next.lastGatewayProbeReady = false;
+    });
+  }
+}
+
+/**
+ * Reconcile meta while a non-blocking stop is finishing its auto-snapshot.
+ *
+ * After `stopSandbox()` calls `sandbox.stop({ blocking: false })` the app
+ * parks meta at `status = "snapshotting"`.  The SDK continues writing the
+ * snapshot in the background; this helper polls `sandbox.status` and
+ * transitions meta to `"stopped"` (happy path), `"error"` (snapshot failed),
+ * or leaves it untouched if the snapshot is still in flight.
+ *
+ * Guardrail: if meta has been parked in `snapshotting` past the stale
+ * operation window, force-transition to `"stopped"` so the user isn't
+ * blocked forever — the SDK treats a stopped persistent sandbox as
+ * resumable regardless of whether the most recent snapshot finished.
+ */
+export async function reconcileSnapshottingStatus(): Promise<SingleMeta> {
+  const meta = await getInitializedMeta();
+  if (meta.status !== "snapshotting" || !meta.sandboxId) {
+    return meta;
+  }
+
+  try {
+    const sandbox = await getSandboxController().get({ sandboxId: meta.sandboxId });
+    const sdkStatus = sandbox.status;
+    if (sdkStatus === "stopped") {
+      logInfo("sandbox.snapshotting_reconciled", {
+        sandboxId: meta.sandboxId,
+        sdkStatus,
+        outcome: "stopped",
+      });
+      return mutateMeta((next) => {
+        next.status = "stopped";
+        next.lastError = null;
+        next.lastGatewayProbeReady = false;
+      });
+    }
+    if (sdkStatus === "failed" || sdkStatus === "aborted") {
+      logWarn("sandbox.snapshotting_reconciled", {
+        sandboxId: meta.sandboxId,
+        sdkStatus,
+        outcome: "failed",
+      });
+      return mutateMeta((next) => {
+        next.status = "error";
+        next.lastError = `snapshot ${sdkStatus}`;
+        next.lastGatewayProbeReady = false;
+      });
+    }
+    // Still snapshotting / stopping / pending — check stale guardrail.
+    if (isOperationStale(meta)) {
+      logWarn("sandbox.snapshotting_reconciled", {
+        sandboxId: meta.sandboxId,
+        sdkStatus,
+        outcome: "stale-force-stopped",
+      });
+      return mutateMeta((next) => {
+        next.status = "stopped";
+        next.lastError = null;
+        next.lastGatewayProbeReady = false;
+      });
+    }
+    return meta;
+  } catch {
+    // get() throws when the sandbox is gone — treat as fully stopped.
+    logInfo("sandbox.snapshotting_reconciled", {
+      sandboxId: meta.sandboxId,
+      sdkStatus: "not-found",
+      outcome: "stopped",
     });
     return mutateMeta((next) => {
       next.status = "stopped";
@@ -3324,7 +3408,8 @@ export function isBusyStatus(status: SingleMeta["status"]): boolean {
     status === "creating" ||
     status === "setup" ||
     status === "restoring" ||
-    status === "booting"
+    status === "booting" ||
+    status === "snapshotting"
   );
 }
 

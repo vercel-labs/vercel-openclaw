@@ -281,12 +281,19 @@ export type OpenclawPackageSpecConfig = {
   source: OpenclawPackageSpecSource;
 };
 
+let packageSpecFallbackWarned = false;
+
+export function _resetOpenclawPackageSpecWarnedForTesting(): void {
+  packageSpecFallbackWarned = false;
+}
+
 export function getOpenclawPackageSpecConfig(): OpenclawPackageSpecConfig {
   const explicit = process.env.OPENCLAW_PACKAGE_SPEC?.trim();
   if (explicit) {
     return { value: explicit, source: "explicit" };
   }
-  if (isVercelDeployment()) {
+  if (isVercelDeployment() && !packageSpecFallbackWarned) {
+    packageSpecFallbackWarned = true;
     logWarn("env.openclaw_package_spec_fallback", {
       resolved: OPENCLAW_DEFAULT_PACKAGE_SPEC,
       reason: "OPENCLAW_PACKAGE_SPEC is not set on a Vercel deployment",

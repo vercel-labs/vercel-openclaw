@@ -2,6 +2,12 @@ import { logInfo } from "@/server/log";
 
 const VALID_VCPUS = new Set([1, 2, 4, 8]);
 
+let vcpusLogged = false;
+
+export function _resetSandboxVcpusLoggedForTesting(): void {
+  vcpusLogged = false;
+}
+
 /**
  * Return the configured sandbox vCPU count.
  *
@@ -20,15 +26,21 @@ export function getSandboxVcpus(): number {
 
   const parsed = Number.parseInt(raw, 10);
   if (VALID_VCPUS.has(parsed)) {
-    logInfo("sandbox.resources.vcpus_resolved", { vcpus: parsed, source: "env" });
+    if (!vcpusLogged) {
+      vcpusLogged = true;
+      logInfo("sandbox.resources.vcpus_resolved", { vcpus: parsed, source: "env" });
+    }
     return parsed;
   }
 
-  logInfo("sandbox.resources.vcpus_fallback", {
-    raw,
-    parsed,
-    fallback: 1,
-    reason: "invalid_value",
-  });
+  if (!vcpusLogged) {
+    vcpusLogged = true;
+    logInfo("sandbox.resources.vcpus_fallback", {
+      raw,
+      parsed,
+      fallback: 1,
+      reason: "invalid_value",
+    });
+  }
   return 1;
 }

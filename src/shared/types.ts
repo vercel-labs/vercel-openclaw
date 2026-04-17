@@ -45,6 +45,7 @@ export type SingleStatus =
   | "creating"
   | "setup"
   | "running"
+  | "snapshotting"
   | "stopped"
   | "restoring"
   | "error"
@@ -783,6 +784,7 @@ export function isSingleStatus(value: unknown): value is SingleStatus {
     value === "creating" ||
     value === "setup" ||
     value === "running" ||
+    value === "snapshotting" ||
     value === "stopped" ||
     value === "restoring" ||
     value === "error" ||

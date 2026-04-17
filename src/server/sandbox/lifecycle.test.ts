@@ -19,6 +19,7 @@ import {
   getSandboxDomain,
   touchRunningSandbox,
   markSandboxUnavailable,
+  reconcileSnapshottingStatus,
   resetSandbox,
   CRON_JOBS_KEY,
 } from "@/server/sandbox/lifecycle";
@@ -182,7 +183,7 @@ test("FakeSandboxController implements the SandboxController interface", async (
   assert.equal(policy, "allow-all");
 });
 
-test("stopSandbox snapshots and transitions to stopped", async () => {
+test("stopSandbox transitions to snapshotting and preserves sandboxId", async () => {
   const fake = new FakeSandboxController();
   await withTestEnv(fake, async () => {
     // Set up a "running" sandbox in meta
@@ -194,15 +195,21 @@ test("stopSandbox snapshots and transitions to stopped", async () => {
 
     const result = await stopSandbox();
 
-    assert.equal(result.status, "stopped");
-    // v2: persistent sandboxes auto-snapshot on stop — no manual snapshot() call
+    // v2 non-blocking stop: API returns with status "snapshotting" while the
+    // platform finishes the auto-snapshot.  The reconciler flips it to
+    // "stopped" on the next status read.
+    assert.equal(result.status, "snapshotting");
     // sandboxId is preserved (persistent sandbox identity persists across stop/resume)
     assert.equal(result.sandboxId, "sbx-running-1");
     assert.equal(result.portUrls, null);
 
-    // Verify the fake was called
+    // Verify the fake was called with blocking:false
     assert.equal(fake.retrieved.length, 1);
     assert.equal(fake.retrieved[0], "sbx-running-1");
+    const handle = fake.getHandle("sbx-running-1");
+    assert.ok(handle, "handle should exist");
+    assert.equal(handle.stopCalled, true);
+    assert.equal(handle.lastStopOptions?.blocking, false);
   });
 });
 
@@ -346,7 +353,7 @@ test("pre-snapshot cleanup failure does not prevent stop", async () => {
 
     const result = await stopSandbox();
 
-    assert.equal(result.status, "stopped");
+    assert.equal(result.status, "snapshotting");
     // v2: persistent sandboxes auto-snapshot on stop — stop() is called, not snapshot()
     assert.equal(handle.stopCalled, true, "stop should still run after cleanup failure");
   });
@@ -379,7 +386,7 @@ test("stopSandbox logs warning and continues when pre-snapshot cleanup fails", a
 
     const result = await stopSandbox();
 
-    assert.equal(result.status, "stopped");
+    assert.equal(result.status, "snapshotting");
     // v2: persistent sandboxes auto-snapshot on stop — snapshotId not set from snapshot()
 
     const warningLog = getServerLogs().find(
@@ -406,7 +413,7 @@ test("snapshotSandbox delegates to stopSandbox", async () => {
 
     const result = await snapshotSandbox();
 
-    assert.equal(result.status, "stopped");
+    assert.equal(result.status, "snapshotting");
     // v2: persistent sandboxes auto-snapshot on stop — sandboxId is preserved
     assert.equal(result.sandboxId, "sbx-running-2");
   });
@@ -427,6 +434,100 @@ test("stopSandbox returns current meta if already stopped with snapshot", async 
     assert.equal(result.snapshotId, "snap-existing");
     // Should not have called get since it short-circuited
     assert.equal(fake.retrieved.length, 0);
+  });
+});
+
+test("reconcileSnapshottingStatus transitions to stopped when SDK reports stopped", async () => {
+  const fake = new FakeSandboxController();
+  await withTestEnv(fake, async () => {
+    // Pre-create the handle so get() finds it in the "stopped" state.
+    const handle = (await fake.create({ ports: [3000], timeout: 300_000 })) as FakeSandboxHandle;
+    handle.setStatus("stopped");
+
+    await mutateMeta((meta) => {
+      meta.status = "snapshotting";
+      meta.sandboxId = handle.sandboxId;
+      meta.lastAccessedAt = Date.now();
+    });
+
+    const reconciled = await reconcileSnapshottingStatus();
+    assert.equal(reconciled.status, "stopped");
+    assert.equal(reconciled.sandboxId, handle.sandboxId);
+  });
+});
+
+test("reconcileSnapshottingStatus transitions to error when SDK reports failed", async () => {
+  const fake = new FakeSandboxController();
+  await withTestEnv(fake, async () => {
+    const handle = (await fake.create({ ports: [3000], timeout: 300_000 })) as FakeSandboxHandle;
+    handle.setStatus("failed");
+
+    await mutateMeta((meta) => {
+      meta.status = "snapshotting";
+      meta.sandboxId = handle.sandboxId;
+      meta.lastAccessedAt = Date.now();
+    });
+
+    const reconciled = await reconcileSnapshottingStatus();
+    assert.equal(reconciled.status, "error");
+    assert.match(String(reconciled.lastError), /snapshot failed/);
+  });
+});
+
+test("reconcileSnapshottingStatus leaves meta unchanged while SDK still snapshotting", async () => {
+  const fake = new FakeSandboxController();
+  await withTestEnv(fake, async () => {
+    const handle = (await fake.create({ ports: [3000], timeout: 300_000 })) as FakeSandboxHandle;
+    handle.setStatus("snapshotting");
+
+    await mutateMeta((meta) => {
+      meta.status = "snapshotting";
+      meta.sandboxId = handle.sandboxId;
+      meta.lastAccessedAt = Date.now();
+    });
+
+    const reconciled = await reconcileSnapshottingStatus();
+    assert.equal(reconciled.status, "snapshotting");
+  });
+});
+
+test("reconcileSnapshottingStatus no-ops when status is not snapshotting", async () => {
+  const fake = new FakeSandboxController();
+  await withTestEnv(fake, async () => {
+    await mutateMeta((meta) => {
+      meta.status = "running";
+      meta.sandboxId = "sbx-not-snapshotting";
+    });
+
+    const reconciled = await reconcileSnapshottingStatus();
+    assert.equal(reconciled.status, "running");
+    // get() must NOT have been called because meta wasn't snapshotting
+    assert.equal(fake.retrieved.length, 0);
+  });
+});
+
+test("ensureSandboxRunning returns waiting state during snapshotting", async () => {
+  const fake = new FakeSandboxController();
+  await withTestEnv(fake, async () => {
+    const handle = (await fake.create({ ports: [3000], timeout: 300_000 })) as FakeSandboxHandle;
+    // SDK still reports "snapshotting" so the reconciler won't advance it.
+    handle.setStatus("snapshotting");
+
+    await mutateMeta((meta) => {
+      meta.status = "snapshotting";
+      meta.sandboxId = handle.sandboxId;
+      meta.lastAccessedAt = Date.now();
+    });
+
+    const result = await ensureSandboxRunning({
+      origin: "https://test.example.com",
+      reason: "test",
+    });
+
+    // Busy path: isBusyStatus("snapshotting") is true, so ensureSandboxRunning
+    // returns waiting rather than attempting a resume mid-snapshot.
+    assert.equal(result.state, "waiting");
+    assert.equal(result.meta.status, "snapshotting");
   });
 });
 
@@ -4184,13 +4285,15 @@ test("restore after runtime-only reconcile still performs hot-path config write"
   });
 });
 
-test("stopSandbox transitions to stopped and preserves sandboxId", async () => {
+test("stopSandbox transitions to snapshotting and preserves sandboxId (harness)", async () => {
   await withHarness(async (h) => {
     await h.driveToRunning();
 
     const meta = await stopSandbox();
 
-    assert.equal(meta.status, "stopped");
+    // v2 non-blocking stop surfaces "snapshotting" immediately; the reconciler
+    // flips it to "stopped" once the SDK reports the persistent sandbox is done.
+    assert.equal(meta.status, "snapshotting");
     // v2: persistent sandbox preserves sandboxId across stop/resume
     assert.ok(meta.sandboxId, "sandboxId should be preserved after stop");
     assert.equal(meta.portUrls, null, "portUrls should be cleared on stop");

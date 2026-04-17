@@ -292,14 +292,16 @@ test("POST /api/admin/stop: stops running sandbox and returns status", async () 
 
     assert.equal(result.status, 200);
     const body = result.json as { status: string; snapshotId: string | null };
-    assert.equal(body.status, "stopped");
+    // v2 non-blocking stop returns "snapshotting" immediately; the status
+    // reconciler flips it to "stopped" on the next /api/status read.
+    assert.equal(body.status, "snapshotting");
     // v2 persistent sandboxes auto-snapshot on stop — no manual snapshot() call
     // snapshotId may be null since metadata no longer tracks it from snapshot()
 
     // sandboxId should be preserved (persistent sandbox identity persists)
     const meta = await getInitializedMeta();
     assert.equal(meta.sandboxId, "sbx-to-stop", "sandboxId should be preserved after stop");
-    assert.equal(meta.status, "stopped");
+    assert.equal(meta.status, "snapshotting");
   });
 });
 
@@ -382,12 +384,14 @@ test("POST /api/admin/snapshot: triggers stop flow (v2 auto-snapshots on stop)",
 
     assert.equal(result.status, 200);
     const body = result.json as { status: string; snapshotId: string | null };
-    assert.equal(body.status, "stopped");
+    // v2 non-blocking stop: API returns "snapshotting"; the status reconciler
+    // flips it to "stopped" on the next /api/status read.
+    assert.equal(body.status, "snapshotting");
     // v2: snapshot() is not called manually — SDK auto-snapshots on stop
 
     // Verify metadata was updated
     const meta = await getInitializedMeta();
-    assert.equal(meta.status, "stopped");
+    assert.equal(meta.status, "snapshotting");
     // v2: sandboxId is preserved (persistent sandbox identity persists)
     assert.equal(meta.sandboxId, "sbx-snap-me");
   });

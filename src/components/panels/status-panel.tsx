@@ -26,6 +26,7 @@ const IS_TRANSITIONAL = new Set<SingleStatus>([
   "restoring",
   "booting",
   "setup",
+  "snapshotting",
 ]);
 
 function getStepOrder(isResuming: boolean) {

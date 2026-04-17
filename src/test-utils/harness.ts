@@ -41,6 +41,7 @@ import {
   ensureSandboxRunning,
   stopSandbox,
   probeGatewayReady,
+  reconcileSnapshottingStatus,
 } from "@/server/sandbox/lifecycle";
 import { generateDiscordKeyPair } from "@/test-utils/webhook-builders";
 
@@ -440,6 +441,10 @@ export function createScenarioHarness(options?: {
 
     async stopToSnapshot(): Promise<string> {
       await stopSandbox();
+      // v2 non-blocking stop parks meta in "snapshotting" — mirror the
+      // production flow where the next status read reconciles it to
+      // "stopped" once the SDK confirms the auto-snapshot is done.
+      await reconcileSnapshottingStatus();
       let meta = await getInitializedMeta();
       assert.equal(meta.status, "stopped");
 

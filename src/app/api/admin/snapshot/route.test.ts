@@ -104,7 +104,9 @@ test("POST /api/admin/snapshot: triggers snapshot and returns status + snapshotI
 
     assert.equal(result.status, 200);
     const body = result.json as { status: string; sandboxId: string | null };
-    assert.equal(body.status, "stopped");
+    // v2 non-blocking stop: API returns "snapshotting" while the platform
+    // finishes the auto-snapshot; /api/status reconciles to "stopped" later.
+    assert.equal(body.status, "snapshotting");
     // v2 persistent: stop auto-snapshots, no manual snapshotId returned
   });
 });

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
 
 import {
+  _resetOpenclawPackageSpecWarnedForTesting,
   _setAiGatewayTokenOverrideForTesting,
   getAiGatewayBearerTokenOptional,
   getAiGatewayAuthMode,
@@ -267,6 +268,7 @@ test("getOpenclawPackageSpecConfig returns explicit source when env var is set",
 test("getOpenclawPackageSpec logs warning on Vercel when falling back to default", async () => {
   const { _resetLogBuffer, getServerLogs } = await import("@/server/log");
   _resetLogBuffer();
+  _resetOpenclawPackageSpecWarnedForTesting();
   withEnv(
     {
       OPENCLAW_PACKAGE_SPEC: undefined,
@@ -285,9 +287,31 @@ test("getOpenclawPackageSpec logs warning on Vercel when falling back to default
   );
 });
 
+test("getOpenclawPackageSpec logs fallback warning only once per process", async () => {
+  const { _resetLogBuffer, getServerLogs } = await import("@/server/log");
+  _resetLogBuffer();
+  _resetOpenclawPackageSpecWarnedForTesting();
+  withEnv(
+    {
+      OPENCLAW_PACKAGE_SPEC: undefined,
+      VERCEL: "1",
+    },
+    () => {
+      getOpenclawPackageSpec();
+      getOpenclawPackageSpec();
+      getOpenclawPackageSpec();
+      const warns = getServerLogs().filter(
+        (e) => e.message === "env.openclaw_package_spec_fallback",
+      );
+      assert.equal(warns.length, 1, "fallback warning should log once per process");
+    },
+  );
+});
+
 test("getOpenclawPackageSpec does not log when spec is explicitly set", async () => {
   const { _resetLogBuffer, getServerLogs } = await import("@/server/log");
   _resetLogBuffer();
+  _resetOpenclawPackageSpecWarnedForTesting();
   withEnv(
     {
       OPENCLAW_PACKAGE_SPEC: "openclaw@2.0.0",

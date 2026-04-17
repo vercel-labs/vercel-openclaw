@@ -48,10 +48,12 @@ test("admin/stop POST: stops running sandbox and returns stopped status", async 
 
     assert.equal(result.status, 200);
     const body = result.json as { status: string; snapshotId: string | null };
-    assert.equal(body.status, "stopped");
+    // v2 non-blocking stop returns "snapshotting" immediately; the status
+    // reconciler flips it to "stopped" on the next /api/status read.
+    assert.equal(body.status, "snapshotting");
 
     const afterMeta = await h.getMeta();
-    assert.equal(afterMeta.status, "stopped");
+    assert.equal(afterMeta.status, "snapshotting");
   });
 });
 

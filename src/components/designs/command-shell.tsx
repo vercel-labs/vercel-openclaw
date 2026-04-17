@@ -13,18 +13,9 @@ import { ChannelsPanel } from "@/components/panels/channels-panel";
 import type { LogEntry, LogLevel, LogSource, SnapshotRecord } from "@/shared/types";
 import type { AdminFaqPayload } from "@/shared/admin-faq";
 import type { PublicChannelState } from "@/shared/channel-admin-state";
+import { type View, pathForView, viewForPath } from "@/shared/admin-views";
 
-type Props = { initialStatus: StatusPayload | null };
-
-type View =
-  | "status"
-  | "channels"
-  | "firewall"
-  | "terminal"
-  | "logs"
-  | "snapshots"
-  | "diagnostics"
-  | "faq";
+type Props = { initialStatus: StatusPayload | null; initialView?: View };
 
 type SshResult = {
   command: string;
@@ -232,7 +223,7 @@ function channelIdentityFor(
   }
 }
 
-export function CommandShell({ initialStatus }: Props) {
+export function CommandShell({ initialStatus, initialView = "status" }: Props) {
   const [status, setStatus] = useState<StatusPayload | null>(initialStatus);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [pending, setPending] = useState<string | null>(null);
@@ -244,12 +235,29 @@ export function CommandShell({ initialStatus }: Props) {
   const [tick, setTick] = useState(0);
 
   // View + feature state
-  const [view, setView] = useState<View>("status");
+  const [view, setView] = useState<View>(initialView);
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const selectView = useCallback((v: View) => {
     setView(v);
     setSidebarOpen(false);
+    if (typeof window !== "undefined") {
+      const nextPath = pathForView(v);
+      if (window.location.pathname !== nextPath) {
+        window.history.pushState(null, "", nextPath);
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const sync = () => {
+      setView(viewForPath(window.location.pathname));
+    };
+    window.addEventListener("popstate", sync);
+    return () => {
+      window.removeEventListener("popstate", sync);
+    };
   }, []);
 
   // Firewall
@@ -871,59 +879,6 @@ export function CommandShell({ initialStatus }: Props) {
             </section>
           )}
 
-          {status.setupProgress &&
-            ["creating", "setup", "booting", "restoring"].includes(status.status) && (
-              <section>
-                <div className="section-header">
-                  <h2 className="section-title">Setup progress</h2>
-                  <span className="eyebrow">
-                    {status.setupProgress.phase}
-                  </span>
-                </div>
-                <div className="setup-steps">
-                  {[
-                    "Creating sandbox",
-                    "Installing OpenClaw",
-                    "Configuring",
-                    "Starting gateway",
-                    "Ready",
-                  ].map((step, idx) => {
-                    const phase = status.setupProgress?.phase ?? "";
-                    const active =
-                      (idx === 0 &&
-                        (phase === "creating-sandbox" ||
-                          phase === "resuming-sandbox")) ||
-                      (idx === 1 &&
-                        (phase.startsWith("installing") ||
-                          phase === "cleaning-cache")) ||
-                      (idx === 2 &&
-                        (phase === "writing-config" ||
-                          phase === "checking-version")) ||
-                      (idx === 3 &&
-                        (phase === "starting-gateway" ||
-                          phase === "waiting-for-gateway" ||
-                          phase === "pairing-device" ||
-                          phase === "applying-firewall")) ||
-                      (idx === 4 && phase === "ready");
-                    return (
-                      <div
-                        key={step}
-                        className={`setup-step${active ? " active" : ""}`}
-                      >
-                        <span className="setup-step-dot" />
-                        <span>{step}</span>
-                      </div>
-                    );
-                  })}
-                </div>
-                {status.setupProgress.preview && (
-                  <p className="muted-copy" style={{ marginTop: 8 }}>
-                    {status.setupProgress.preview}
-                  </p>
-                )}
-              </section>
-            )}
-
           <section>
             <div className="hero-panel">
               <div className="hero-info">
@@ -965,7 +920,8 @@ export function CommandShell({ initialStatus }: Props) {
                   disabled={
                     pending !== null ||
                     status.status === "uninitialized" ||
-                    status.status === "stopped"
+                    status.status === "stopped" ||
+                    status.status === "snapshotting"
                   }
                   title="Stop the sandbox (auto-snapshots on stop)"
                   aria-label="Take snapshot — stops the sandbox, which auto-snapshots"
@@ -978,7 +934,8 @@ export function CommandShell({ initialStatus }: Props) {
                   disabled={
                     pending !== null ||
                     status.status === "stopped" ||
-                    status.status === "uninitialized"
+                    status.status === "uninitialized" ||
+                    status.status === "snapshotting"
                   }
                   title="Stop the sandbox; state is preserved by auto-snapshot"
                   aria-label="Stop sandbox"
@@ -989,8 +946,12 @@ export function CommandShell({ initialStatus }: Props) {
                   <button
                     className="btn btn-primary"
                     onClick={() => doAction("Restore", "/api/admin/ensure")}
-                    disabled={pending !== null}
-                    title="Create or resume the sandbox from the latest snapshot"
+                    disabled={pending !== null || status.status === "snapshotting"}
+                    title={
+                      status.status === "snapshotting"
+                        ? "Waiting for snapshot to finish…"
+                        : "Create or resume the sandbox from the latest snapshot"
+                    }
                     aria-label="Restore sandbox"
                   >
                     Restore
@@ -1870,6 +1831,74 @@ export function CommandShell({ initialStatus }: Props) {
             </section>
           )}
 
+          {status.setupProgress &&
+            ["creating", "setup", "booting", "restoring"].includes(status.status) && (
+              <section className="setup-progress-section">
+                <div className="section-header">
+                  <h2 className="section-title">Setup progress</h2>
+                  <span className="eyebrow">
+                    {status.setupProgress.phase}
+                  </span>
+                </div>
+                <div className="setup-steps">
+                  {[
+                    "Creating sandbox",
+                    "Installing OpenClaw",
+                    "Configuring",
+                    "Starting gateway",
+                    "Ready",
+                  ].map((step, idx) => {
+                    const phase = status.setupProgress?.phase ?? "";
+                    const active =
+                      (idx === 0 &&
+                        (phase === "creating-sandbox" ||
+                          phase === "resuming-sandbox")) ||
+                      (idx === 1 &&
+                        (phase.startsWith("installing") ||
+                          phase === "cleaning-cache")) ||
+                      (idx === 2 &&
+                        (phase === "writing-config" ||
+                          phase === "checking-version")) ||
+                      (idx === 3 &&
+                        (phase === "starting-gateway" ||
+                          phase === "waiting-for-gateway" ||
+                          phase === "pairing-device" ||
+                          phase === "applying-firewall")) ||
+                      (idx === 4 && phase === "ready");
+                    return (
+                      <div
+                        key={step}
+                        className={`setup-step${active ? " active" : ""}`}
+                      >
+                        <span className="setup-step-dot" />
+                        <span>{step}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+                {status.setupProgress.preview && (
+                  <p className="muted-copy" style={{ marginTop: 8 }}>
+                    {status.setupProgress.preview}
+                  </p>
+                )}
+                {status.setupProgress.lines.length > 0 && (
+                  <div className="setup-logs" aria-label="Install logs">
+                    <div className="setup-logs-header">
+                      <span className="eyebrow">Install logs</span>
+                      <span className="rail-meta">
+                        {status.setupProgress.lines.length} lines
+                      </span>
+                    </div>
+                    <pre className="setup-logs-pre">
+                      {status.setupProgress.lines
+                        .map((line) => `[${line.stream}] ${line.text}`)
+                        .join("\n")}
+                    </pre>
+                  </div>
+                )}
+              </section>
+            )}
+
           <details className="mobile-logs">
             <summary>
               <span className="eyebrow">Live Logs</span>
@@ -2101,12 +2130,13 @@ function Style() {
           color: var(--foreground-subtle);
           max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
         }
-        .main { flex-grow: 1; display: flex; flex-direction: column; min-width: 0; background: var(--background); }
+        .main { flex-grow: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--background); }
         .toolbar {
           height: 48px; padding: 0 16px;
+          flex-shrink: 0;
           border-bottom: 1px solid var(--border);
           display: flex; align-items: center; justify-content: space-between;
-          background: var(--background); position: sticky; top: 0; z-index: 10;
+          background: var(--background); z-index: 10;
         }
         .breadcrumb { display: flex; align-items: center; gap: 8px; color: var(--foreground-muted); font-family: var(--font-geist-mono, ui-monospace, monospace); font-size: 12px; }
         .breadcrumb .current { color: var(--foreground); font-weight: 500; }
@@ -2125,7 +2155,8 @@ function Style() {
         .command-palette-trigger .shortcuts { display: flex; gap: 4px; margin-left: auto; }
 
         .content {
-          flex-grow: 1; overflow-y: auto;
+          flex-grow: 1; flex-shrink: 1; min-height: 0;
+          overflow-y: auto;
           scrollbar-gutter: stable;
           padding: 32px 48px;
           display: flex; flex-direction: column; gap: 48px;
@@ -2445,11 +2476,13 @@ function Style() {
           .toolbar { padding: 0 12px; }
         }
         .rail-header {
-          height: 48px; padding: 0 16px;
+          min-height: 48px; padding: 0 16px;
           border-bottom: 1px solid var(--border);
           display: flex; align-items: center; justify-content: space-between;
+          flex-shrink: 0;
+          background: var(--background);
         }
-        .rail-title { font-weight: 500; font-size: 13px; }
+        .rail-title { font-weight: 500; font-size: 12px; font-family: var(--font-geist-mono, ui-monospace, monospace); color: var(--foreground); }
         .rail-meta { font-size: 11px; color: var(--foreground-subtle); display: flex; align-items: center; gap: 8px; font-family: var(--font-geist-mono, ui-monospace, monospace); }
         .rail-content {
           flex-grow: 1; overflow-y: auto;
@@ -2789,6 +2822,35 @@ function Style() {
           background: var(--foreground-subtle);
         }
         .setup-step.active .setup-step-dot { background: var(--info); }
+
+        .setup-progress-section { margin-top: 12px; }
+        .setup-logs {
+          margin-top: 12px;
+          border: 1px solid var(--border);
+          border-radius: 6px;
+          background: var(--background);
+          overflow: hidden;
+        }
+        .setup-logs-header {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          padding: 6px 10px;
+          border-bottom: 1px solid var(--border);
+          background: var(--background-elevated);
+        }
+        .setup-logs-pre {
+          margin: 0;
+          padding: 10px;
+          max-height: 260px;
+          overflow: auto;
+          font-family: var(--font-geist-mono, ui-monospace, monospace);
+          font-size: 11px;
+          line-height: 1.5;
+          color: var(--foreground-muted);
+          white-space: pre-wrap;
+          word-break: break-word;
+        }
 
         .fw-mode-pills { display: flex; gap: 4px; }
         .fw-mode-pill {
