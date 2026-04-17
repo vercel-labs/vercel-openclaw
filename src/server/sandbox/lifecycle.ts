@@ -3198,6 +3198,24 @@ async function destroyCurrentSandboxWithoutSnapshot(
 
   try {
     const sandbox = await getSandboxController().get({ sandboxId: meta.sandboxId });
+    // Best-effort stop before delete. In @vercel/sandbox v2, delete() against a
+    // running sandbox can succeed but leaves in-flight work (gateway writes,
+    // cron persistence, log flush) truncated. Stopping first gives OpenClaw a
+    // chance to drain cleanly. Any errors here are logged but do not block the
+    // destroy — reset must always be able to make forward progress even if the
+    // sandbox is already unhealthy.
+    try {
+      await sandbox.stop();
+      logInfo("sandbox.reset.stopped_before_delete", ctx({
+        sandboxId: meta.sandboxId,
+        sandboxStatus: sandbox.status,
+      }));
+    } catch (stopErr) {
+      logWarn("sandbox.reset.stop_before_delete_failed", ctx({
+        sandboxId: meta.sandboxId,
+        error: stopErr instanceof Error ? stopErr.message : String(stopErr),
+      }));
+    }
     await sandbox.delete();
     logInfo("sandbox.reset.destroyed", ctx({ sandboxId: meta.sandboxId }));
   } catch (error) {
