@@ -1,4 +1,3 @@
-import { requireAdminAuth } from "@/server/auth/admin-auth";
 import {
   clearCookie,
   getCookieValue,
@@ -28,13 +27,22 @@ type SlackOAuthV2Response = {
 };
 
 export async function GET(request: Request): Promise<Response> {
-  const auth = await requireAdminAuth(request);
-  if (auth instanceof Response) {
-    return auth;
-  }
-
+  // This is an OAuth callback — Slack redirects the user's browser back here
+  // after they click Allow. The browser won't carry an admin session because
+  // the install flow may have been started via a one-time install_token from
+  // `vclaw create --slack` (no admin login). CSRF protection comes from the
+  // HttpOnly+SameSite=Lax state cookie that can only be set by the /install
+  // entry point, which is itself guarded by admin session OR install_token.
   const url = new URL(request.url);
   const secure = isSecureRequest(request);
+  const userAgent = request.headers.get("user-agent") ?? "";
+
+  logInfo("slack_install.callback_received", {
+    userAgent: userAgent.slice(0, 160),
+    hasCode: Boolean(url.searchParams.get("code")),
+    hasState: Boolean(url.searchParams.get("state")),
+    hasError: Boolean(url.searchParams.get("error")),
+  });
 
   // Slack returns ?error= when the user denies or something goes wrong
   const slackError = url.searchParams.get("error");
@@ -47,7 +55,10 @@ export async function GET(request: Request): Promise<Response> {
   const state = url.searchParams.get("state")?.trim();
   const stateCookie = getCookieValue(request, SLACK_OAUTH_STATE_COOKIE);
   if (!state || !stateCookie || !timingSafeStringEqual(state, stateCookie)) {
-    logWarn("slack_install.state_mismatch");
+    logWarn("slack_install.state_mismatch", {
+      hasStateParam: Boolean(state),
+      hasStateCookie: Boolean(stateCookie),
+    });
     return redirectToAdmin(request, "state_mismatch", secure);
   }
 
