@@ -221,6 +221,24 @@ export async function POST(request: Request): Promise<Response> {
     return Response.json({ ok: true });
   }
 
+  // Skip message edit/deletion subtypes. Slack fires `message_changed`
+  // repeatedly as a user types (every few keystrokes) and `message_deleted`
+  // when messages are removed. Each event has a unique event_id, so dedup
+  // doesn't catch them — and a stopped sandbox would wake, send a "Waking
+  // up…" boot message, and try to forward the edit, multiplying work for
+  // what is not a user-intended utterance. The native Slack handler already
+  // ignores edits, so forwarding them buys nothing even when running.
+  const ignorableSubtypes = new Set(["message_changed", "message_deleted"]);
+  if (eventInfo.eventSubtype && ignorableSubtypes.has(eventInfo.eventSubtype)) {
+    logInfo("channels.slack_webhook_subtype_skip", {
+      requestId,
+      dedupId,
+      eventType: eventInfo.eventType,
+      eventSubtype: eventInfo.eventSubtype,
+    });
+    return Response.json({ ok: true });
+  }
+
   const op = createOperationContext({
     trigger: "channel.slack.webhook",
     reason: "incoming slack webhook",
