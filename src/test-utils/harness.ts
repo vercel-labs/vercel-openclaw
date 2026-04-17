@@ -116,8 +116,12 @@ const ENV_OVERRIDES: Record<string, string | undefined> = {
   VERCEL_PROJECT_PRODUCTION_URL: undefined,
   REDIS_URL: undefined,
   KV_URL: undefined,
-  // Prevent OIDC token fetching during tests
-  AI_GATEWAY_API_KEY: "test-ai-gateway-key",
+  // Prevent OIDC token fetching during tests. Left undefined by default so
+  // firewall policy sync does not inject an AI Gateway transform rule; tests
+  // that need the transform must set the credential override explicitly via
+  // `_setAiGatewayCredentialOverrideForTesting`.
+  AI_GATEWAY_API_KEY: undefined,
+  VERCEL_OIDC_TOKEN: undefined,
 };
 
 // ---------------------------------------------------------------------------

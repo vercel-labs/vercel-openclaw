@@ -9,6 +9,7 @@ import { extractTelegramChatId } from "@/server/channels/telegram/adapter";
 import { deleteMessage, editMessageText } from "@/server/channels/telegram/bot-api";
 import { deleteMessage as deleteWhatsAppMessage } from "@/server/channels/whatsapp/whatsapp-api";
 import { logInfo, logWarn } from "@/server/log";
+import { ensureUsableAiGatewayCredential } from "@/server/sandbox/lifecycle";
 import { getInitializedMeta } from "@/server/store/store";
 import { getStore } from "@/server/store/store";
 import { mutateMeta } from "@/server/store/store";
@@ -308,6 +309,44 @@ export async function processChannelStep(
         telegramListenerReady: telegramRestoreContract.telegramListenerReady,
         telegramListenerWaitMs: telegramRestoreContract.telegramListenerWaitMs,
       });
+    }
+
+    // --- Phase 1.5: Proactively refresh AI Gateway token if close to expiry ---
+    //
+    // The sandbox holds an Authorization-header transform whose OIDC token
+    // typically expires after ~1h. Once it expires, every chat completion
+    // inside the sandbox 401s from ai-gateway.vercel.sh, and OpenClaw still
+    // returns HTTP 200 to our webhook forward — so we never see the 401 at
+    // this layer. Refreshing proactively when the TTL is low is the only
+    // cheap way to avoid the user-visible "Something went wrong" reply.
+    try {
+      const tokenResult = await ensureUsableAiGatewayCredential({
+        minRemainingMs: 10 * 60 * 1000,
+        reason: `channel:${channel}:pre-forward`,
+      });
+      diag.preForwardTokenRefreshed = tokenResult.refreshed;
+      diag.preForwardTokenReason = tokenResult.reason;
+      diag.preForwardTokenSource = tokenResult.credential?.source ?? null;
+      if (tokenResult.refreshed) {
+        logInfo("channels.pre_forward_token_refreshed", {
+          channel,
+          requestId,
+          sandboxId: effectiveReadyMeta.sandboxId,
+          source: tokenResult.credential?.source ?? null,
+          expiresAt: tokenResult.credential?.expiresAt ?? null,
+        });
+      }
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      diag.preForwardTokenError = errorMsg;
+      logWarn("channels.pre_forward_token_refresh_failed", {
+        channel,
+        requestId,
+        sandboxId: effectiveReadyMeta.sandboxId,
+        error: errorMsg,
+      });
+      // Do not fail the delivery — the forward may still succeed with the
+      // existing token if it has not yet expired.
     }
 
     // --- Phase 2: Forward raw payload to native handler ---

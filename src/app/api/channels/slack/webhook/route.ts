@@ -164,7 +164,7 @@ export async function POST(request: Request): Promise<Response> {
     // Lenient parse on failure so we can tell a stale-secret rotation from a
     // second Slack app install. If two apps subscribe to the same webhook URL,
     // api_app_id / team_id will differ between accepted and rejected requests.
-    let failDiag: {
+    const failDiag: {
       apiAppId: string | null;
       teamId: string | null;
       eventType: string | null;

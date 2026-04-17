@@ -1,12 +1,12 @@
 {
   "version": 3,
-  "generatedAt": "2026-04-17T10:28:44.190Z",
+  "generatedAt": "2026-04-17T11:29:15.569Z",
   "roots": [
     "src/app/api/admin",
     "src/app/api/firewall",
     "src/app/api/debug"
   ],
-  "discoveredRouteCount": 45,
+  "discoveredRouteCount": 46,
   "unauthenticatedRouteCount": 0,
   "violationCount": 0,
   "routes": [
@@ -105,6 +105,10 @@
     {
       "method": "POST",
       "path": "/api/admin/prepare-restore"
+    },
+    {
+      "method": "POST",
+      "path": "/api/admin/refresh-token"
     },
     {
       "method": "POST",

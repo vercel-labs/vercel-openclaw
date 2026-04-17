@@ -16,6 +16,7 @@ import test from "node:test";
 import type { NetworkPolicy } from "@vercel/sandbox";
 
 import { withHarness, type ScenarioHarness, FakeSandboxHandle } from "@/test-utils/harness";
+import { _setAiGatewayCredentialOverrideForTesting } from "@/server/env";
 import { applyFirewallPolicyToSandbox } from "@/server/firewall/policy";
 import {
   setFirewallMode,
@@ -455,6 +456,49 @@ test("firewall policy is applied when sandbox is restored from stopped state", a
     assert.equal(fakeHandle.networkPolicies.length, 1);
     const applied = fakeHandle.networkPolicies[0] as { allow: string[] };
     assert.deepEqual(applied.allow, ["api.openai.com", "registry.npmjs.org"]);
+  });
+});
+
+test("syncFirewallPolicyIfRunning injects AI Gateway transform rule when credential is available", async () => {
+  await withHarness(async (h) => {
+    await seedRunning(h, (meta) => {
+      meta.firewall.mode = "enforcing";
+      meta.firewall.allowlist = ["api.openai.com"];
+    });
+
+    // Simulate a resolved OIDC credential so the sync path must pass it
+    // through to the transform-rule layer.
+    _setAiGatewayCredentialOverrideForTesting({
+      token: "test-oidc-token",
+      source: "oidc",
+      expiresAt: Date.now() + 60 * 60 * 1000,
+    });
+
+    try {
+      const result = await syncFirewallPolicyIfRunning();
+      assert.equal(result.applied, true);
+
+      // Policy must be the object form with the ai-gateway transform.
+      const fakeHandle = h.controller.handlesByIds.get("sbx-fake-1")!;
+      const applied = fakeHandle.networkPolicies.at(-1) as {
+        allow: Record<string, unknown[]>;
+      };
+      assert.ok(
+        applied && typeof applied === "object" && "allow" in applied,
+        "Expected object-form network policy",
+      );
+      assert.ok(
+        applied.allow["ai-gateway.vercel.sh"],
+        "Expected ai-gateway.vercel.sh entry in allow map",
+      );
+
+      // Meta token-refresh timestamps should be updated.
+      const meta = await h.getMeta();
+      assert.equal(meta.lastTokenSource, "oidc");
+      assert.ok(meta.lastTokenRefreshAt && meta.lastTokenRefreshAt > 0);
+    } finally {
+      _setAiGatewayCredentialOverrideForTesting(null);
+    }
   });
 });
 

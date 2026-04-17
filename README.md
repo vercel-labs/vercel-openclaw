@@ -69,6 +69,7 @@ This walks through the full setup:
 8. Pushes managed env vars: `ADMIN_SECRET`, `CRON_SECRET` (if `--cron-secret` is set), `VERCEL_AUTOMATION_BYPASS_SECRET` (if protection is enabled).
 9. Runs a production deploy.
 10. Runs launch verification against the new URL and reports `channelReadiness`.
+11. Optionally wires a Telegram bot and/or Slack app if you pass `--telegram` / `--slack` (see below).
 
 ### Common `vclaw` flows
 
@@ -89,6 +90,26 @@ Prepare a project but skip the deploy step:
 ```bash
 vclaw create --scope your-team --skip-deploy
 ```
+
+Wire up a Telegram bot in the same run:
+
+```bash
+vclaw create --scope your-team --telegram "123456:AA...BotFatherToken"
+```
+
+After launch verification passes, `vclaw` calls `PUT /api/channels/telegram` on the new deployment. The app validates the token via Telegram's `getMe`, generates a webhook secret, registers the Vercel URL with Telegram, and syncs slash commands — no admin-panel clicks needed.
+
+Wire up a Slack app in the same run:
+
+```bash
+vclaw create --scope your-team \
+  --slack "xoxb-..." \
+  --slack-signing-secret "abcd1234..."
+```
+
+This calls `PUT /api/channels/slack`, which validates the bot token via Slack's `auth.test` and persists both credentials so the app can verify incoming events. You still have to paste the Request URL shown in the admin panel into your Slack app's Event Subscriptions page — Slack has no API for that outside the OAuth install flow. `--slack` and `--slack-signing-secret` must be passed together.
+
+Both flags require a live deployment and are mutually exclusive with `--skip-deploy`.
 
 Re-run launch verification against an existing deployment:
 
@@ -135,7 +156,7 @@ After `vclaw create` finishes:
 1. **Sign in.** Open the printed deployment URL and enter your `ADMIN_SECRET`.
 2. **Use OpenClaw.** Visit `/gateway` or click **Start** in the admin panel. First boot takes about a minute while OpenClaw installs into the sandbox. Resumes after that take about 10 seconds (the sandbox auto-snapshots on stop and auto-resumes on get).
 3. **Verify.** `vclaw` already ran launch verification once. Re-run it from the admin panel any time you change config. Preflight is only a config-readiness check; it does not prove the sandbox can complete a real channel delivery.
-4. **Connect channels.** Wire up Slack, Telegram, WhatsApp (experimental), or Discord (experimental) from the admin panel. For Slack, set `SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET`, and `SLACK_SIGNING_SECRET` for one-click OAuth install, or enter credentials manually. A deployment is channel-ready only after destructive launch verification passes and `channelReadiness.ready` is `true`.
+4. **Connect channels.** Wire up Slack, Telegram, WhatsApp (experimental), or Discord (experimental) from the admin panel — or pre-wire Telegram and Slack during `vclaw create` itself with `--telegram` / `--slack --slack-signing-secret`. For Slack OAuth install, set `SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET`, and `SLACK_SIGNING_SECRET`, or enter credentials manually. A deployment is channel-ready only after destructive launch verification passes and `channelReadiness.ready` is `true`.
 
 ## What you get
 

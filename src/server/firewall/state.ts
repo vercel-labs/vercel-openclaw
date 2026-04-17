@@ -7,6 +7,7 @@ import { applyFirewallPolicyToSandbox } from "@/server/firewall/policy";
 import { extractDomainsWithContext, groupByRegistrableDomain, normalizeDomainList } from "@/server/firewall/domains";
 import { logDebug, logInfo, logWarn } from "@/server/log";
 import { getSandboxController } from "@/server/sandbox/controller";
+import { resolveAiGatewayCredentialOptional } from "@/server/env";
 
 const EVENT_RETENTION = 1000;
 const LEARNED_RETENTION = 500;
@@ -310,8 +311,13 @@ export async function syncFirewallPolicyIfRunning(
 
   const syncStart = Date.now();
   try {
+    // Resolve the current AI Gateway credential so the firewall transform rule
+    // is refreshed with a fresh OIDC token on every policy sync. Without this,
+    // the sandbox retains whatever token was injected at last restore, which
+    // typically expires after ~1h and causes AI Gateway 401s with no recovery.
+    const credential = await resolveAiGatewayCredentialOptional();
     const sandbox = await getSandboxController().get({ sandboxId: meta.sandboxId });
-    await applyFirewallPolicyToSandbox(sandbox, meta);
+    await applyFirewallPolicyToSandbox(sandbox, meta, credential?.token);
     const now = Date.now();
     const durationMs = now - syncStart;
     const outcome: FirewallSyncOutcome = {
@@ -322,11 +328,24 @@ export async function syncFirewallPolicyIfRunning(
       applied: true,
       reason: "policy-applied",
     };
-    logInfo("firewall.sync_completed", { operation: "sync", durationMs, policyHash: hash, allowlistCount: meta.firewall.allowlist.length, requestId: options?.requestId });
+    logInfo("firewall.sync_completed", {
+      operation: "sync",
+      durationMs,
+      policyHash: hash,
+      allowlistCount: meta.firewall.allowlist.length,
+      aiGatewayTokenApplied: !!credential?.token,
+      aiGatewayTokenSource: credential?.source ?? null,
+      requestId: options?.requestId,
+    });
     await mutateMeta((m) => {
       m.firewall.lastSyncAppliedAt = now;
       m.firewall.lastSyncReason = "policy-applied";
       m.firewall.lastSyncOutcome = outcome;
+      if (credential?.token) {
+        m.lastTokenRefreshAt = now;
+        m.lastTokenSource = credential.source;
+        m.lastTokenExpiresAt = credential.expiresAt ?? null;
+      }
     });
     return outcome;
   } catch (error) {

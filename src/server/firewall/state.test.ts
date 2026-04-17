@@ -6,7 +6,10 @@ import type { NetworkPolicy } from "@vercel/sandbox";
 import { ApiError } from "@/shared/http";
 import type { SingleMeta } from "@/shared/types";
 import { DOMAIN_PRESETS, computePolicyHash, ensureMetaShape } from "@/shared/types";
-import { _setInstanceIdOverrideForTesting } from "@/server/env";
+import {
+  _setAiGatewayCredentialOverrideForTesting,
+  _setInstanceIdOverrideForTesting,
+} from "@/server/env";
 import {
   approveDomains,
   computeWouldBlock,
@@ -31,6 +34,8 @@ async function withFirewallTestStore(fn: () => Promise<void>): Promise<void> {
     VERCEL: undefined,
     REDIS_URL: undefined,
     KV_URL: undefined,
+    AI_GATEWAY_API_KEY: undefined,
+    VERCEL_OIDC_TOKEN: undefined,
   };
   const originals: Record<string, string | undefined> = {};
 
@@ -43,6 +48,11 @@ async function withFirewallTestStore(fn: () => Promise<void>): Promise<void> {
     }
   }
 
+  // Default tests to no AI Gateway credential so firewall sync does not
+  // inject a transform rule. Tests that exercise token injection explicitly
+  // set their own credential override.
+  _setAiGatewayCredentialOverrideForTesting(null);
+
   try {
     await fn();
   } finally {
@@ -53,6 +63,7 @@ async function withFirewallTestStore(fn: () => Promise<void>): Promise<void> {
         process.env[key] = originals[key];
       }
     }
+    _setAiGatewayCredentialOverrideForTesting(null);
     _resetStoreForTesting();
     _resetLogBuffer();
   }

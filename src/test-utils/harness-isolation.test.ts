@@ -138,9 +138,10 @@ test("harness teardown: restores env vars to pre-harness values", () => {
 
   const h = createScenarioHarness();
 
-  // Harness sets NODE_ENV=test and AI_GATEWAY_API_KEY=test-ai-gateway-key
+  // Harness sets NODE_ENV=test and clears AI_GATEWAY_API_KEY so firewall
+  // sync does not inject a transform rule by default.
   assert.equal(process.env.NODE_ENV, "test");
-  assert.equal(process.env.AI_GATEWAY_API_KEY, "test-ai-gateway-key");
+  assert.equal(process.env.AI_GATEWAY_API_KEY, undefined);
 
   // Sentinel should be untouched (harness doesn't override it)
   assert.equal(process.env[sentinelKey], "before-harness");

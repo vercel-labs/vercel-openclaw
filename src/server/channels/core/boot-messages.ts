@@ -13,14 +13,14 @@ import {
 import { getInitializedMeta } from "@/server/store/store";
 
 const BOOT_MESSAGE_INITIAL =
-  "🦞 Waking up\u2026 the first reply after idle is slow. Future replies in this channel will be instant.";
+  "🦞 Waking up\u2026 sleeping sandbox. Future replies will be instant.";
 
 const STATUS_MESSAGES: Partial<Record<SingleMeta["status"], string>> = {
-  restoring: "🦞 Restoring sandbox\u2026",
-  creating: "🦞 Restoring sandbox\u2026",
-  setup: "🦞 Finishing setup\u2026",
+  restoring: "🦞 Restoring Sandbox\u2026",
+  creating: "🦞 Creating sandbox\u2026",
+  setup: "🦞 Verifying config\u2026",
   booting: "🦞 Starting OpenClaw\u2026",
-  running: "🦞 Thinking up your reply\u2026",
+  running: "🦞 Connecting\u2026",
 };
 
 const DEFAULT_POLL_INTERVAL_MS = 1_000;

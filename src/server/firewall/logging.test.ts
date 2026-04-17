@@ -16,6 +16,8 @@ async function withLoggingTestStore(fn: () => Promise<void>): Promise<void> {
     VERCEL: undefined,
     REDIS_URL: undefined,
     KV_URL: undefined,
+    AI_GATEWAY_API_KEY: undefined,
+    VERCEL_OIDC_TOKEN: undefined,
   };
   const originals: Record<string, string | undefined> = {};
 
