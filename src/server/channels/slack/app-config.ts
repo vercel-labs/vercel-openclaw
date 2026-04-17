@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 
+import { logInfo, logWarn } from "@/server/log";
 import { slackAppConfigKey, slackInstallTokenKey } from "@/server/store/keyspace";
 import { getStore } from "@/server/store/store";
 
@@ -50,25 +51,76 @@ export async function deleteSlackAppConfig(): Promise<void> {
 /**
  * Mint a one-time token that grants permission to start the Slack OAuth
  * install flow without an admin session cookie. Burned on consume.
+ *
+ * Read-after-write: immediately fetches the key back and throws if Redis
+ * silently dropped the SET. Without this, a transient store failure mints
+ * a token the user will click, only to be rejected with
+ * `slack_install_error=install_token_invalid` five seconds later — and the
+ * token is already gone from memory, so the failure is unreproducible.
  */
 export async function createSlackInstallToken(): Promise<string> {
   const token = randomBytes(INSTALL_TOKEN_BYTES).toString("base64url");
   const store = getStore();
+  const key = slackInstallTokenKey(token);
+  const tokenPrefix = token.slice(0, 6);
+
   await store.setValue(
-    slackInstallTokenKey(token),
+    key,
     { issuedAt: Date.now() },
     INSTALL_TOKEN_TTL_SECONDS,
   );
+
+  const persisted = await store.getValue<{ issuedAt?: number }>(key);
+  if (!persisted || typeof persisted.issuedAt !== "number") {
+    logWarn("slack_install_token.persistence_failed", {
+      tokenPrefix,
+      key,
+      ttl: INSTALL_TOKEN_TTL_SECONDS,
+      persistedType: persisted === null ? "null" : typeof persisted,
+    });
+    throw new Error(
+      "Failed to persist Slack install token to Redis. " +
+        "The SET succeeded but a read-after-write returned null — " +
+        "check REDIS_URL / KV_URL and openclaw's store configuration.",
+    );
+  }
+
+  logInfo("slack_install_token.created", {
+    tokenPrefix,
+    key,
+    ttl: INSTALL_TOKEN_TTL_SECONDS,
+    issuedAt: persisted.issuedAt,
+  });
+
   return token;
 }
 
 export async function consumeSlackInstallToken(token: string): Promise<boolean> {
-  if (!token || token.length < 8) return false;
+  if (!token || token.length < 8) {
+    logWarn("slack_install_token.consume_miss", {
+      reason: "token-too-short-or-missing",
+      tokenLength: token?.length ?? 0,
+    });
+    return false;
+  }
   const store = getStore();
   const key = slackInstallTokenKey(token);
+  const tokenPrefix = token.slice(0, 6);
   const record = await store.getValue<{ issuedAt?: number }>(key);
-  if (!record) return false;
+  if (!record) {
+    logWarn("slack_install_token.consume_miss", {
+      reason: "not-found-in-store",
+      tokenPrefix,
+      key,
+    });
+    return false;
+  }
   await store.deleteValue(key);
+  logInfo("slack_install_token.consumed", {
+    tokenPrefix,
+    key,
+    ageMs: record.issuedAt ? Date.now() - record.issuedAt : null,
+  });
   return true;
 }
 
