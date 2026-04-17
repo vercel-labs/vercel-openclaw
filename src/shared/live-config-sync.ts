@@ -1,7 +1,7 @@
 /**
  * Shared types and header constants for live config sync outcomes.
  *
- * Used by both server (route-factory, lifecycle) and client (admin-shell)
+ * Used by both server (route-factory, lifecycle) and client (admin UI)
  * to communicate whether a gateway config update took effect on the
  * running sandbox.
  */

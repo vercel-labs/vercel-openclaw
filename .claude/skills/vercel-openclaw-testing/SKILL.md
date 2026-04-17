@@ -2291,8 +2291,8 @@ Always use `pnpm test` — never `bun test`. The canonical verification sequence
 ```bash
 pnpm test          # 854 tests across all tiers
 pnpm typecheck     # tsc --noEmit
-pnpm lint          # eslint (1 pre-existing React warning-as-error)
+pnpm lint          # eslint
 pnpm build         # Next.js production build
 ```
 
-All four must pass before work is considered done. The lint error about `setState` in `admin-shell.tsx` is pre-existing and unrelated to test coverage.
+All four must pass before work is considered done.

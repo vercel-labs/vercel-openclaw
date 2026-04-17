@@ -9,7 +9,7 @@
 import {
   createAdminActionRequestId,
   emitAdminActionEvent,
-} from "@/components/admin-shell";
+} from "@/components/admin-action-core";
 
 export type ReadJsonResult<T> =
   | { ok: true; data: T }

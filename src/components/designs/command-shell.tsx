@@ -8,7 +8,7 @@ import type {
   ActionResult,
   StatusPayload,
 } from "@/components/admin-types";
-import { requestJsonCore } from "@/components/admin-shell";
+import { requestJsonCore } from "@/components/admin-action-core";
 import { ChannelsPanel } from "@/components/panels/channels-panel";
 import type { LogEntry, LogLevel, LogSource, SnapshotRecord } from "@/shared/types";
 import type { AdminFaqPayload } from "@/shared/admin-faq";
@@ -812,6 +812,7 @@ export function CommandShell({ initialStatus, initialView = "status" }: Props) {
             <span>User</span>
             <div className="user-cluster">
               <div className="pill">{status.user?.name ?? "admin"}</div>
+              {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- /api/auth/signout is a GET API route that issues a redirect, not a page */}
               <a
                 href="/api/auth/signout"
                 className="signout-link"

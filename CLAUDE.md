@@ -515,8 +515,9 @@ Notes:
 
 Main files:
 
-- `src/components/designs/command-shell.tsx` — production admin UI mounted at `/`
-- `src/components/admin-shell.tsx` — legacy control surface still mounted at `/admin` as a fallback
+- `src/components/designs/command-shell.tsx` — admin UI mounted at `/`
+- `src/components/admin-action-core.ts` — shared request/event helpers for admin client surfaces
+- `src/components/admin-request-core.ts` — shared GET helper for admin client surfaces
 
 The admin page is intentionally small. It is a control surface, not a dashboard framework.
 

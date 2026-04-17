@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { after, before, describe, test } from "node:test";
 
 import type { AdminActionEvent } from "@/components/admin-types";
-import { requestJsonCore, type RequestJsonDeps } from "./admin-shell";
+import { requestJsonCore, type RequestJsonDeps } from "./admin-action-core";
 
 // ---------------------------------------------------------------------------
 // Minimal window shim for CustomEvent dispatch in Node

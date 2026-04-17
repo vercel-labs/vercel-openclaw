@@ -115,10 +115,9 @@ Note: The `restoring` status from v1 snapshot-based flow has been removed. With 
 src/
 ├── app/
 │   ├── api/                    # Auth, admin, firewall, status, health
-│   ├── gateway/[[...path]]/    # Reverse proxy route
-│   └── admin/                  # Admin page
+│   └── gateway/[[...path]]/    # Reverse proxy route
 ├── components/
-│   └── admin-shell.tsx         # Admin UI
+│   └── designs/command-shell.tsx  # Admin UI (mounted at /)
 ├── server/
 │   ├── auth/                   # Session cookies and Vercel OAuth
 │   ├── channels/               # Channel adapters and workflow delivery

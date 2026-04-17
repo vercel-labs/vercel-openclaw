@@ -344,8 +344,8 @@ export function SlackPanel({
       <section className="channel-subwizard">
         <h4 style={{ margin: "0 0 4px" }}>Create a new Slack app</h4>
         <p className="muted-copy">
-          Paste a Slack App Configuration Token and we'll mint a workspace app
-          for you. Grab one at{" "}
+          Paste a Slack App Configuration Token and we&apos;ll mint a workspace
+          app for you. Grab one at{" "}
           <a
             href="https://api.slack.com/apps"
             target="_blank"
