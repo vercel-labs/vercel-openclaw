@@ -26,6 +26,14 @@ export function isProduction(): boolean {
   return process.env.NODE_ENV === "production";
 }
 
+/**
+ * @deprecated Use `resolveSessionSecret()` from `@/server/auth/session-secret`.
+ *
+ * This sync accessor remains for the deployment contract and test surface
+ * that need to observe the configured env var without touching the store.
+ * Runtime callers must use the async resolver so admin-secret mode can
+ * auto-generate and persist a session secret through Redis on first login.
+ */
 export function getSessionSecret(): string {
   const configured = process.env.SESSION_SECRET?.trim();
   if (configured) {
@@ -36,10 +44,6 @@ export function getSessionSecret(): string {
     throw new Error(
       "SESSION_SECRET is required for deployed sign-in-with-vercel mode.",
     );
-  }
-
-  if (isProduction()) {
-    throw new Error("SESSION_SECRET is required in production.");
   }
 
   return "openclaw-single-local-session-secret-change-me";

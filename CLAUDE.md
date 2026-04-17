@@ -577,7 +577,7 @@ These variables are checked by `buildDeploymentContract()` in `src/server/deploy
 | `OPENCLAW_SANDBOX_SLEEP_AFTER_MS` | All environments | Optional. How long the sandbox stays alive after last activity, in milliseconds (60000–2700000; default: 1800000 = 30 min). Heartbeat and touch-throttle intervals are derived proportionally. Existing running sandboxes cannot be shortened in place. If you increase this value, the next touch/heartbeat can top the sandbox timeout up to the new target. If you decrease it, the lower value becomes exact on the next create or restore. |
 | `NEXT_PUBLIC_VERCEL_APP_CLIENT_ID` | `sign-in-with-vercel` mode | Required for OAuth flow. |
 | `VERCEL_APP_CLIENT_SECRET` | `sign-in-with-vercel` mode | Required for OAuth flow. |
-| `SESSION_SECRET` | `sign-in-with-vercel` on Vercel | Required. Must be explicitly set. |
+| `SESSION_SECRET` | All environments | Optional in admin-secret mode — the app auto-generates a 32-byte value and persists it in Redis on first login (same pattern as `ADMIN_SECRET`). Required and must be explicitly set when `VERCEL_AUTH_MODE=sign-in-with-vercel` is used on a Vercel deployment. |
 | `SLACK_CLIENT_ID` | All environments | Optional. Slack app client ID. When all three `SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET`, and `SLACK_SIGNING_SECRET` are set, the admin panel offers one-click OAuth install instead of manual credential entry. |
 | `SLACK_CLIENT_SECRET` | All environments | Optional. Slack app client secret. Paired with `SLACK_CLIENT_ID`. |
 | `SLACK_SIGNING_SECRET` | All environments | Optional. Slack app signing secret. Used for webhook signature verification when the bot token is obtained via the OAuth install flow. |

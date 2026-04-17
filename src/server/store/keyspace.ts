@@ -55,6 +55,10 @@ export function adminSecretKey(): string {
   return buildKey("admin-secret");
 }
 
+export function sessionSecretKey(): string {
+  return buildKey("session-secret");
+}
+
 export function learningLockKey(): string {
   return buildKey("lock:learning-refresh");
 }
