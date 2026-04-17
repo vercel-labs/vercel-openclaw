@@ -64,7 +64,7 @@ export async function GET(request: Request): Promise<Response> {
     return redirectToAdmin(request, "code_missing", secure);
   }
 
-  const installConfig = getSlackInstallConfig();
+  const installConfig = await getSlackInstallConfig();
   if (!installConfig.enabled) {
     logWarn("slack_install.credentials_missing_at_callback");
     return redirectToAdmin(request, "missing_app_credentials", secure);

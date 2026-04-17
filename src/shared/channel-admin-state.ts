@@ -13,12 +13,20 @@ export type PublicSlackState = {
   hasBotToken: boolean;
   lastError: string | null;
   connectability: ChannelConnectability;
-  /** "oauth" when SLACK_CLIENT_ID/SECRET/SIGNING_SECRET env vars are set, "manual" otherwise. */
+  /** "oauth" when app credentials are present (env or Redis), "manual" otherwise. */
   installMethod: "oauth" | "manual";
   /** Install route URL when OAuth mode is available. */
   installUrl: string | null;
-  /** True when all three Slack app env vars are configured. */
+  /** True when client_id + client_secret + signing_secret are all resolved. */
   appCredentialsConfigured: boolean;
+  /** Where the resolved app credentials came from. */
+  appCredentialsSource: "redis" | "env" | "none";
+  /** Slack app ID (e.g. "A07ABC123") when the app was created via apps.manifest.create. */
+  appId: string | null;
+  /** Display name captured when the app was created. */
+  appName: string | null;
+  /** Unix-epoch ms when the stored app record was created. */
+  appCreatedAt: number | null;
 };
 
 export type PublicTelegramState = {

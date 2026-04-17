@@ -18,6 +18,7 @@ import {
   buildChannelDisplayWebhookUrl,
   buildChannelWebhookUrl,
 } from "@/server/channels/webhook-urls";
+import { getSlackAppConfig } from "@/server/channels/slack/app-config";
 import { getSlackInstallConfig } from "@/server/channels/slack/install-config";
 import { buildDeploymentContract } from "@/server/deployment-contract";
 import { logDebug } from "@/server/log";
@@ -70,14 +71,18 @@ export async function getPublicChannelState(
 
   // Single contract + single connectability map — no redundant builds.
   const contract = await buildDeploymentContract({ request });
-  const connectability = await buildChannelConnectabilityMap(request, {
-    shared: { contract },
-    webhookUrlOverrides: {
-      slack: slackDisplayUrl,
-      telegram: telegramDisplayUrl,
-      discord: discordDisplayUrl,
-    },
-  });
+  const [connectability, slackInstallConfig, slackApp] = await Promise.all([
+    buildChannelConnectabilityMap(request, {
+      shared: { contract },
+      webhookUrlOverrides: {
+        slack: slackDisplayUrl,
+        telegram: telegramDisplayUrl,
+        discord: discordDisplayUrl,
+      },
+    }),
+    getSlackInstallConfig(),
+    getSlackAppConfig().catch(() => null),
+  ]);
 
   logDebug("public_channel_state.built", {
     contractSource: "fresh",
@@ -91,6 +96,8 @@ export async function getPublicChannelState(
       resolvedMeta.channels.slack,
       slackDisplayUrl,
       connectability.slack,
+      slackInstallConfig,
+      slackApp,
     ),
     telegram: toPublicTelegramState(
       resolvedMeta.channels.telegram,
@@ -146,8 +153,9 @@ function toPublicSlackState(
   config: SlackChannelConfig | null,
   webhookUrl: string,
   connectability: ChannelConnectability,
+  installConfig: Awaited<ReturnType<typeof getSlackInstallConfig>>,
+  app: Awaited<ReturnType<typeof getSlackAppConfig>>,
 ): PublicSlackState {
-  const installConfig = getSlackInstallConfig();
   return {
     configured: config !== null,
     webhookUrl,
@@ -162,6 +170,10 @@ function toPublicSlackState(
     installMethod: installConfig.enabled ? "oauth" : "manual",
     installUrl: installConfig.enabled ? "/api/channels/slack/install" : null,
     appCredentialsConfigured: installConfig.enabled,
+    appCredentialsSource: installConfig.source,
+    appId: app?.appId ?? null,
+    appName: app?.appName ?? null,
+    appCreatedAt: app?.createdAt ?? null,
   };
 }
 

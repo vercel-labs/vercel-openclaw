@@ -52,10 +52,38 @@ export const SLACK_BOT_EVENTS = [
   "pin_removed",
 ] as const;
 
-export function buildSlackManifest(webhookUrl: string): Record<string, unknown> {
+export type SlackManifestUrls = {
+  webhookUrl: string;
+  /** Optional OAuth redirect — required for manifest-created apps that
+   *  install via `oauth.v2.access`. Safe to include for the paste-to-Slack
+   *  flow too; Slack just uses it as the default redirect. */
+  redirectUrl?: string;
+  /** Optional display name override (e.g. when vclaw auto-generates one). */
+  appName?: string;
+};
+
+export function buildSlackManifest(
+  urlsOrWebhook: string | SlackManifestUrls,
+): Record<string, unknown> {
+  const urls: SlackManifestUrls =
+    typeof urlsOrWebhook === "string"
+      ? { webhookUrl: urlsOrWebhook }
+      : urlsOrWebhook;
+  const { webhookUrl, redirectUrl, appName } = urls;
+  const name = appName ?? "VClaw";
+
+  const oauthConfig: Record<string, unknown> = {
+    scopes: {
+      bot: [...SLACK_BOT_SCOPES],
+    },
+  };
+  if (redirectUrl) {
+    oauthConfig.redirect_urls = [redirectUrl];
+  }
+
   return {
     display_information: {
-      name: "VClaw",
+      name,
       description: "VClaw — AI assistant powered by OpenClaw",
       background_color: "#0f172a",
     },
@@ -79,7 +107,7 @@ export function buildSlackManifest(webhookUrl: string): Record<string, unknown> 
         ],
       },
       bot_user: {
-        display_name: "VClaw",
+        display_name: name,
         always_online: true,
       },
       slash_commands: [
@@ -91,11 +119,7 @@ export function buildSlackManifest(webhookUrl: string): Record<string, unknown> 
         },
       ],
     },
-    oauth_config: {
-      scopes: {
-        bot: [...SLACK_BOT_SCOPES],
-      },
-    },
+    oauth_config: oauthConfig,
     settings: {
       event_subscriptions: {
         request_url: webhookUrl,

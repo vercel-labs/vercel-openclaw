@@ -108,6 +108,12 @@ export function SlackPanel({
   const [showToken, setShowToken] = useState(false);
   const [testResult, setTestResult] = useState<SlackTestPayload | null>(null);
   const [editing, setEditing] = useState(false);
+  const [configToken, setConfigToken] = useState("");
+  const [refreshToken, setRefreshToken] = useState("");
+  const [showConfigToken, setShowConfigToken] = useState(false);
+  const [showRefreshToken, setShowRefreshToken] = useState(false);
+  const [appName, setAppName] = useState("");
+  const [createAppBusy, setCreateAppBusy] = useState(false);
   const [panelError, setPanelError] = useState<string | null>(() => {
     if (typeof window === "undefined") return null;
     const params = new URLSearchParams(window.location.search);
@@ -206,16 +212,33 @@ export function SlackPanel({
   }
 
   async function handleCreateApp(): Promise<void> {
-    const result = await requestJson<{ createAppUrl: string }>(
-      "/api/channels/slack/manifest",
-      {
+    if (!configToken.trim()) return;
+    setPanelError(null);
+    setCreateAppBusy(true);
+    try {
+      const result = await requestJson<{
+        appId: string;
+        appName: string;
+        installUrl: string;
+      }>("/api/channels/slack/app", {
         label: "Create Slack app",
-        method: "GET",
-        refreshAfter: false,
-      },
-    );
-    if (result.ok && result.data?.createAppUrl) {
-      window.open(result.data.createAppUrl, "_blank", "noopener,noreferrer");
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          configToken: configToken.trim(),
+          refreshToken: refreshToken.trim() || undefined,
+          appName: appName.trim() || undefined,
+        }),
+      });
+      if (result.ok && result.data?.installUrl) {
+        window.location.href = result.data.installUrl;
+        return;
+      }
+      if (!result.ok) {
+        setPanelError(result.error);
+      }
+    } finally {
+      setCreateAppBusy(false);
     }
   }
 
@@ -314,34 +337,82 @@ export function SlackPanel({
     </div>
   );
 
+  // ── Create-new-app view (unconfigured, no credentials stored yet) ──
+  const createAppView = (
+    <div className="channel-wizard">
+      <p className="channel-wizard-title">Connect Slack</p>
+      <section className="channel-subwizard">
+        <h4 style={{ margin: "0 0 4px" }}>Create a new Slack app</h4>
+        <p className="muted-copy">
+          Paste a Slack App Configuration Token and we'll mint a workspace app
+          for you. Grab one at{" "}
+          <a
+            href="https://api.slack.com/apps"
+            target="_blank"
+            rel="noreferrer"
+          >
+            api.slack.com/apps
+          </a>{" "}
+          → Your Apps → Generate Token.
+        </p>
+        <ChannelSecretField
+          label="App Configuration Token"
+          value={configToken}
+          onChange={setConfigToken}
+          placeholder="xoxe.xoxp-..."
+          shown={showConfigToken}
+          onToggleShown={() => setShowConfigToken((v) => !v)}
+          help="Used once to call apps.manifest.create. Not stored."
+        />
+        <ChannelSecretField
+          label="Refresh Token (optional)"
+          value={refreshToken}
+          onChange={setRefreshToken}
+          placeholder="xoxe-1-..."
+          shown={showRefreshToken}
+          onToggleShown={() => setShowRefreshToken((v) => !v)}
+          help="Lets us auto-rotate the config token if it's expired."
+        />
+        <div className="stack">
+          <span className="field-label">App name (optional)</span>
+          <input
+            className="text-input"
+            type="text"
+            autoComplete="off"
+            value={appName}
+            onChange={(event) => setAppName(event.target.value)}
+            placeholder="VClaw"
+          />
+        </div>
+        <div className="inline-actions">
+          <button
+            type="button"
+            className="button primary"
+            disabled={busy || createAppBusy || !configToken.trim()}
+            onClick={() => void handleCreateApp()}
+          >
+            {createAppBusy ? "Creating app…" : "Create Slack app"}
+          </button>
+        </div>
+      </section>
+      <div className="inline-actions" style={{ marginTop: 12 }}>
+        <button
+          type="button"
+          className="button ghost"
+          onClick={() => setShowManualForm(true)}
+        >
+          or use an existing app
+        </button>
+      </div>
+    </div>
+  );
+
   // ── Manual credential form ──
   const manualForm = (
     <form className="channel-wizard" onSubmit={(e) => { e.preventDefault(); void handleConnect(); }}>
       <p className="channel-wizard-title">
         {editing ? "Update Credentials" : "Connect Slack"}
       </p>
-
-      {!editing ? (
-        <div className="inline-actions" style={{ marginBottom: 8 }}>
-          <button
-            type="button"
-            className="button secondary"
-            disabled={busy}
-            onClick={() => void handleCreateApp()}
-          >
-            Create Slack App
-          </button>
-          <span className="muted-copy">or</span>
-          <a
-            className="button ghost"
-            href="https://api.slack.com/apps"
-            target="_blank"
-            rel="noreferrer"
-          >
-            Open existing app
-          </a>
-        </div>
-      ) : null}
 
       <ChannelSecretField
         label="Signing Secret"
@@ -425,6 +496,20 @@ export function SlackPanel({
     content = manualForm;
   } else if (oauthAvailable && !showManualForm) {
     content = oauthInstallView;
+  } else if (!oauthAvailable && !showManualForm) {
+    content = (
+      <>
+        {createAppView}
+        <hr
+          style={{
+            margin: "16px 0",
+            border: "none",
+            borderTop: "1px solid var(--border-color, #ddd)",
+          }}
+        />
+        {manualForm}
+      </>
+    );
   } else {
     content = manualForm;
   }

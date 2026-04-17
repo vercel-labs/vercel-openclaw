@@ -132,3 +132,11 @@ export function discordReconcileKey(): string {
 export function channelForwardDiagnosticKey(): string {
   return buildKey("diag:channel-forward-latest");
 }
+
+export function slackAppConfigKey(): string {
+  return buildKey("slack:app-config");
+}
+
+export function slackInstallTokenKey(token: string): string {
+  return buildKey(`slack:install-token:${token}`);
+}

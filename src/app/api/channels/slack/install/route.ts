@@ -9,6 +9,7 @@ import {
   decryptPayload,
 } from "@/server/auth/session";
 import { buildChannelConnectability } from "@/server/channels/connectability";
+import { consumeSlackInstallToken } from "@/server/channels/slack/app-config";
 import { SLACK_BOT_SCOPES } from "@/server/channels/slack/app-definition";
 import { getSlackInstallConfig } from "@/server/channels/slack/install-config";
 import { logInfo, logWarn } from "@/server/log";
@@ -24,12 +25,28 @@ export type SlackOAuthContext = {
 };
 
 export async function GET(request: Request): Promise<Response> {
-  const auth = await requireAdminAuth(request);
-  if (auth instanceof Response) {
-    return auth;
+  // Accept EITHER an admin session/bearer OR a one-time install_token minted
+  // by POST /api/channels/slack/app. The latter is what `vclaw create --slack`
+  // opens in the browser so the operator doesn't have to sign into the
+  // admin panel just to start the OAuth install.
+  const url = new URL(request.url);
+  const installTokenParam = url.searchParams.get("install_token")?.trim();
+  let usedInstallToken = false;
+  if (installTokenParam) {
+    usedInstallToken = await consumeSlackInstallToken(installTokenParam);
+    if (!usedInstallToken) {
+      logWarn("slack_install.install_token_invalid");
+      return redirectToAdmin(request, "install_token_invalid");
+    }
+    logInfo("slack_install.install_token_consumed");
+  } else {
+    const auth = await requireAdminAuth(request);
+    if (auth instanceof Response) {
+      return auth;
+    }
   }
 
-  const installConfig = getSlackInstallConfig();
+  const installConfig = await getSlackInstallConfig();
   if (!installConfig.enabled) {
     logWarn("slack_install.missing_app_credentials");
     return redirectToAdmin(request, "missing_app_credentials");
@@ -47,15 +64,15 @@ export async function GET(request: Request): Promise<Response> {
   const secure = isSecureRequest(request);
   const redirectUri = `${getPublicOrigin(request)}/api/channels/slack/install/callback`;
 
-  const url = new URL(SLACK_AUTHORIZE_URL);
-  url.searchParams.set("client_id", installConfig.clientId!);
-  url.searchParams.set("scope", SLACK_BOT_SCOPES.join(","));
-  url.searchParams.set("redirect_uri", redirectUri);
-  url.searchParams.set("state", state);
+  const authorizeUrl = new URL(SLACK_AUTHORIZE_URL);
+  authorizeUrl.searchParams.set("client_id", installConfig.clientId!);
+  authorizeUrl.searchParams.set("scope", SLACK_BOT_SCOPES.join(","));
+  authorizeUrl.searchParams.set("redirect_uri", redirectUri);
+  authorizeUrl.searchParams.set("state", state);
 
-  logInfo("slack_install.authorize_redirect", { redirectUri });
+  logInfo("slack_install.authorize_redirect", { redirectUri, usedInstallToken });
 
-  const headers = new Headers({ Location: url.toString() });
+  const headers = new Headers({ Location: authorizeUrl.toString() });
   headers.append(
     "Set-Cookie",
     serializeCookie(SLACK_OAUTH_STATE_COOKIE, state, {

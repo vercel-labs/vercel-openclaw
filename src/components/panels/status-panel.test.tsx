@@ -44,6 +44,10 @@ const CHANNELS: StatusPayload["channels"] = {
     installMethod: "manual",
     installUrl: null,
     appCredentialsConfigured: false,
+    appCredentialsSource: "none",
+    appId: null,
+    appName: null,
+    appCreatedAt: null,
   },
   telegram: {
     configured: false,
