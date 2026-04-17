@@ -119,6 +119,7 @@ function extractSlackDedupId(payload: unknown): string | null {
 }
 
 export async function POST(request: Request): Promise<Response> {
+  const receivedAtMs = Date.now();
   const requestId = extractRequestId(request);
   const rawBody = await request.text().catch(() => "");
   const signatureHeader = request.headers.get("x-slack-signature");
@@ -355,11 +356,29 @@ export async function POST(request: Request): Promise<Response> {
     }
   }
 
+  // Capture Slack signature headers so the workflow wake path can replay the
+  // forward with signatures intact. OpenClaw's Slack Bolt HTTPReceiver
+  // re-verifies signatures and rejects with 401 when they're missing.
+  const slackForwardHeaders: Record<string, string> = {};
+  for (const h of SLACK_FORWARD_HEADERS) {
+    const v = request.headers.get(h);
+    if (v) slackForwardHeaders[h] = v;
+  }
+
   try {
     const origin = getPublicOrigin(request);
-    await slackWebhookWorkflowRuntime.start(drainChannelWorkflow, ["slack", payload, origin, requestId ?? null, bootMessageTs]);
+    await slackWebhookWorkflowRuntime.start(drainChannelWorkflow, [
+      "slack",
+      payload,
+      origin,
+      requestId ?? null,
+      bootMessageTs,
+      receivedAtMs,
+      { slackForwardHeaders },
+    ]);
     logInfo("channels.slack_workflow_started", withOperationContext(op, {
       ...eventInfo,
+      slackForwardHeaderKeys: Object.keys(slackForwardHeaders),
     }));
   } catch (error) {
     const dedupRelease = await releaseSlackWebhookDedupLockForRetry(dedupLock);

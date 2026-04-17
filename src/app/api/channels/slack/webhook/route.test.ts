@@ -122,6 +122,51 @@ test("Slack webhook: valid event enqueues job and returns 200", async () => {
   });
 });
 
+test("Slack webhook: forwards signature headers to the workflow handoff", async () => {
+  await withHarness(async (h) => {
+    await configureSlack(h);
+    const route = getSlackWebhookRoute();
+    const startMock = mock.method(slackWebhookWorkflowRuntime, "start", async () => {});
+    const req = buildSlackWebhook({ signingSecret: SLACK_SIGNING_SECRET });
+    try {
+      const result = await callRoute(route.POST, req);
+      assert.equal(result.status, 200);
+      assert.equal(startMock.mock.callCount(), 1);
+      // workflowApi.start(workflow, args) — we assert on args (the second arg).
+      const call = startMock.mock.calls[0];
+      const args = call.arguments?.[1] as unknown[] | undefined;
+      assert.ok(Array.isArray(args), "start must be called with args array");
+      assert.equal(args.length, 7, "drainChannelWorkflow expects 7 args including handoff");
+      const [channel, , , , , , handoff] = args as [
+        string,
+        unknown,
+        string,
+        string | null,
+        string | null,
+        number | null,
+        { slackForwardHeaders?: Record<string, string> } | null,
+      ];
+      assert.equal(channel, "slack");
+      assert.ok(handoff, "handoff must be present");
+      const headers = handoff.slackForwardHeaders ?? null;
+      assert.ok(headers, "slackForwardHeaders must be present on handoff");
+      assert.ok(
+        typeof headers["x-slack-signature"] === "string"
+          && headers["x-slack-signature"].length > 0,
+        "x-slack-signature must be captured",
+      );
+      assert.ok(
+        typeof headers["x-slack-request-timestamp"] === "string"
+          && headers["x-slack-request-timestamp"].length > 0,
+        "x-slack-request-timestamp must be captured",
+      );
+      resetAfterCallbacks();
+    } finally {
+      startMock.mock.restore();
+    }
+  });
+});
+
 // ===========================================================================
 // Dedup
 // ===========================================================================
