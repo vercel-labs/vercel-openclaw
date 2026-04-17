@@ -68,7 +68,7 @@
     },
     {
       "method": "GET",
-      "path": "/api/debug/upstash-timing"
+      "path": "/api/debug/store-timing"
     },
     {
       "method": "GET",

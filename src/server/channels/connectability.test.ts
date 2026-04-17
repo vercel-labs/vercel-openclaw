@@ -70,8 +70,7 @@ test("admin-secret mode does not require webhook bypass secret", async () => {
   process.env.VERCEL = "1";
   process.env.VERCEL_AUTH_MODE = "admin-secret";
   process.env.NEXT_PUBLIC_APP_URL = PUBLIC_ORIGIN;
-  process.env.UPSTASH_REDIS_REST_URL = "https://upstash.example";
-  process.env.UPSTASH_REDIS_REST_TOKEN = "token";
+  process.env.REDIS_URL = "redis://default:token@example.com:6379";
   delete process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
   _setAiGatewayTokenOverrideForTesting("oidc-token");
 
@@ -89,8 +88,7 @@ test("passes with public origin, bypass, durable store, and OIDC", async () => {
   process.env.VERCEL_AUTH_MODE = "admin-secret";
   process.env.NEXT_PUBLIC_APP_URL = PUBLIC_ORIGIN;
   process.env.VERCEL_AUTOMATION_BYPASS_SECRET = "bypass";
-  process.env.UPSTASH_REDIS_REST_URL = "https://upstash.example";
-  process.env.UPSTASH_REDIS_REST_TOKEN = "token";
+  process.env.REDIS_URL = "redis://default:token@example.com:6379";
   process.env.OPENCLAW_PACKAGE_SPEC = "openclaw@1.0.0";
   process.env.CRON_SECRET = "test-cron-secret";
   delete process.env.AI_GATEWAY_API_KEY;
@@ -108,8 +106,7 @@ test("passes with public origin, bypass, durable store, and OIDC", async () => {
 
 test("does not warn about missing CRON_SECRET", async () => {
   process.env.NEXT_PUBLIC_APP_URL = PUBLIC_ORIGIN;
-  process.env.UPSTASH_REDIS_REST_URL = "https://upstash.example";
-  process.env.UPSTASH_REDIS_REST_TOKEN = "token";
+  process.env.REDIS_URL = "redis://default:token@example.com:6379";
   delete process.env.CRON_SECRET;
   _setAiGatewayTokenOverrideForTesting("oidc-token");
 
@@ -122,16 +119,14 @@ test("does not warn about missing CRON_SECRET", async () => {
   assert.equal(result.canConnect, true);
 });
 
-test("warns when Upstash env vars are missing in non-Vercel environment", async () => {
+test("warns when Redis env vars are missing in non-Vercel environment", async () => {
   delete process.env.VERCEL;
   delete process.env.VERCEL_ENV;
   delete process.env.VERCEL_URL;
   delete process.env.VERCEL_PROJECT_PRODUCTION_URL;
   process.env.NEXT_PUBLIC_APP_URL = PUBLIC_ORIGIN;
-  delete process.env.UPSTASH_REDIS_REST_URL;
-  delete process.env.UPSTASH_REDIS_REST_TOKEN;
-  delete process.env.KV_REST_API_URL;
-  delete process.env.KV_REST_API_TOKEN;
+  delete process.env.REDIS_URL;
+  delete process.env.KV_URL;
   _setAiGatewayTokenOverrideForTesting("oidc-token");
 
   const result = await buildChannelConnectability(
@@ -145,13 +140,11 @@ test("warns when Upstash env vars are missing in non-Vercel environment", async 
   assert.equal(issue.status, "warn");
 });
 
-test("fails when Upstash env vars are missing on Vercel deployment", async () => {
+test("fails when Redis env vars are missing on Vercel deployment", async () => {
   process.env.VERCEL = "1";
   process.env.NEXT_PUBLIC_APP_URL = PUBLIC_ORIGIN;
-  delete process.env.UPSTASH_REDIS_REST_URL;
-  delete process.env.UPSTASH_REDIS_REST_TOKEN;
-  delete process.env.KV_REST_API_URL;
-  delete process.env.KV_REST_API_TOKEN;
+  delete process.env.REDIS_URL;
+  delete process.env.KV_URL;
   _setAiGatewayTokenOverrideForTesting("oidc-token");
 
   const result = await buildChannelConnectability(
@@ -170,10 +163,8 @@ test("fails with multiple issues when store and OIDC are missing on Vercel", asy
   process.env.VERCEL_AUTH_MODE = "admin-secret";
   process.env.NEXT_PUBLIC_APP_URL = PUBLIC_ORIGIN;
   delete process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
-  delete process.env.UPSTASH_REDIS_REST_URL;
-  delete process.env.UPSTASH_REDIS_REST_TOKEN;
-  delete process.env.KV_REST_API_URL;
-  delete process.env.KV_REST_API_TOKEN;
+  delete process.env.REDIS_URL;
+  delete process.env.KV_URL;
   delete process.env.AI_GATEWAY_API_KEY;
   _setAiGatewayTokenOverrideForTesting(undefined);
 
@@ -197,8 +188,7 @@ test("webhook URL never includes bypass secret even when bypass secret is set", 
   process.env.VERCEL_AUTH_MODE = "admin-secret";
   process.env.NEXT_PUBLIC_APP_URL = PUBLIC_ORIGIN;
   process.env.VERCEL_AUTOMATION_BYPASS_SECRET = "bypass-secret";
-  process.env.UPSTASH_REDIS_REST_URL = "https://upstash.example";
-  process.env.UPSTASH_REDIS_REST_TOKEN = "token";
+  process.env.REDIS_URL = "redis://default:token@example.com:6379";
   process.env.OPENCLAW_PACKAGE_SPEC = "openclaw@1.0.0";
   process.env.CRON_SECRET = "test-cron-secret";
   delete process.env.AI_GATEWAY_API_KEY;
@@ -224,8 +214,7 @@ test("webhook URL never includes bypass secret even when bypass secret is set", 
 test("fails when isVercelDeployment() and OIDC is unavailable", async () => {
   process.env.VERCEL = "1";
   process.env.NEXT_PUBLIC_APP_URL = PUBLIC_ORIGIN;
-  process.env.UPSTASH_REDIS_REST_URL = "https://upstash.example";
-  process.env.UPSTASH_REDIS_REST_TOKEN = "token";
+  process.env.REDIS_URL = "redis://default:token@example.com:6379";
   delete process.env.AI_GATEWAY_API_KEY;
   _setAiGatewayTokenOverrideForTesting(undefined);
 
@@ -242,8 +231,7 @@ test("fails when isVercelDeployment() and OIDC is unavailable", async () => {
 
 test("connectability delegates to prerequisite (no launch-verification gate)", async () => {
   process.env.NEXT_PUBLIC_APP_URL = PUBLIC_ORIGIN;
-  process.env.UPSTASH_REDIS_REST_URL = "https://upstash.example";
-  process.env.UPSTASH_REDIS_REST_TOKEN = "token";
+  process.env.REDIS_URL = "redis://default:token@example.com:6379";
   _setAiGatewayTokenOverrideForTesting("oidc-token");
 
   const req = makeRequest(PUBLIC_ORIGIN);
@@ -264,8 +252,7 @@ test("Vercel deployment missing OPENCLAW_PACKAGE_SPEC does not block channels", 
   process.env.VERCEL = "1";
   process.env.NEXT_PUBLIC_APP_URL = PUBLIC_ORIGIN;
   process.env.VERCEL_AUTOMATION_BYPASS_SECRET = "bypass";
-  process.env.UPSTASH_REDIS_REST_URL = "https://upstash.example";
-  process.env.UPSTASH_REDIS_REST_TOKEN = "token";
+  process.env.REDIS_URL = "redis://default:token@example.com:6379";
   process.env.CRON_SECRET = "test-cron-secret";
   delete process.env.OPENCLAW_PACKAGE_SPEC;
   delete process.env.AI_GATEWAY_API_KEY;
@@ -285,8 +272,7 @@ test("Vercel deployment with pinned OPENCLAW_PACKAGE_SPEC passes channel connect
   process.env.VERCEL = "1";
   process.env.NEXT_PUBLIC_APP_URL = PUBLIC_ORIGIN;
   process.env.VERCEL_AUTOMATION_BYPASS_SECRET = "bypass";
-  process.env.UPSTASH_REDIS_REST_URL = "https://upstash.example";
-  process.env.UPSTASH_REDIS_REST_TOKEN = "token";
+  process.env.REDIS_URL = "redis://default:token@example.com:6379";
   process.env.OPENCLAW_PACKAGE_SPEC = "openclaw@1.2.3";
   process.env.CRON_SECRET = "test-cron-secret";
   delete process.env.AI_GATEWAY_API_KEY;
@@ -326,8 +312,7 @@ const PARITY_MATRIX: ParityCase[] = [
     env: {
       VERCEL: "1",
       NEXT_PUBLIC_APP_URL: PUBLIC_ORIGIN,
-      UPSTASH_REDIS_REST_URL: "https://upstash.example",
-      UPSTASH_REDIS_REST_TOKEN: "token",
+      REDIS_URL: "redis://default:token@example.com:6379",
       OPENCLAW_PACKAGE_SPEC: "openclaw@1.0.0",
     },
     oidc: "oidc-token",
@@ -337,10 +322,8 @@ const PARITY_MATRIX: ParityCase[] = [
     env: {
       VERCEL: "1",
       NEXT_PUBLIC_APP_URL: PUBLIC_ORIGIN,
-      UPSTASH_REDIS_REST_URL: undefined,
-      UPSTASH_REDIS_REST_TOKEN: undefined,
-      KV_REST_API_URL: undefined,
-      KV_REST_API_TOKEN: undefined,
+      REDIS_URL: undefined,
+      KV_URL: undefined,
       OPENCLAW_PACKAGE_SPEC: "openclaw@1.0.0",
     },
     oidc: "oidc-token",
@@ -350,8 +333,7 @@ const PARITY_MATRIX: ParityCase[] = [
     env: {
       VERCEL: "1",
       NEXT_PUBLIC_APP_URL: PUBLIC_ORIGIN,
-      UPSTASH_REDIS_REST_URL: "https://upstash.example",
-      UPSTASH_REDIS_REST_TOKEN: "token",
+      REDIS_URL: "redis://default:token@example.com:6379",
       AI_GATEWAY_API_KEY: undefined,
       OPENCLAW_PACKAGE_SPEC: "openclaw@1.0.0",
     },
@@ -362,10 +344,8 @@ const PARITY_MATRIX: ParityCase[] = [
     env: {
       VERCEL: "1",
       NEXT_PUBLIC_APP_URL: PUBLIC_ORIGIN,
-      UPSTASH_REDIS_REST_URL: undefined,
-      UPSTASH_REDIS_REST_TOKEN: undefined,
-      KV_REST_API_URL: undefined,
-      KV_REST_API_TOKEN: undefined,
+      REDIS_URL: undefined,
+      KV_URL: undefined,
       AI_GATEWAY_API_KEY: undefined,
       OPENCLAW_PACKAGE_SPEC: "openclaw@1.0.0",
     },
@@ -379,10 +359,8 @@ const PARITY_MATRIX: ParityCase[] = [
       VERCEL_URL: undefined,
       VERCEL_PROJECT_PRODUCTION_URL: undefined,
       NEXT_PUBLIC_APP_URL: PUBLIC_ORIGIN,
-      UPSTASH_REDIS_REST_URL: undefined,
-      UPSTASH_REDIS_REST_TOKEN: undefined,
-      KV_REST_API_URL: undefined,
-      KV_REST_API_TOKEN: undefined,
+      REDIS_URL: undefined,
+      KV_URL: undefined,
     },
     oidc: "oidc-token",
   },
@@ -394,8 +372,7 @@ const PARITY_MATRIX: ParityCase[] = [
       VERCEL_URL: undefined,
       VERCEL_PROJECT_PRODUCTION_URL: undefined,
       NEXT_PUBLIC_APP_URL: PUBLIC_ORIGIN,
-      UPSTASH_REDIS_REST_URL: "https://upstash.example",
-      UPSTASH_REDIS_REST_TOKEN: "token",
+      REDIS_URL: "redis://default:token@example.com:6379",
       AI_GATEWAY_API_KEY: undefined,
     },
     oidc: undefined,
@@ -474,8 +451,7 @@ for (const { name, env, oidc } of PARITY_MATRIX) {
 
 test("buildChannelConnectabilityMap returns all four channels", async () => {
   process.env.NEXT_PUBLIC_APP_URL = PUBLIC_ORIGIN;
-  process.env.UPSTASH_REDIS_REST_URL = "https://upstash.example";
-  process.env.UPSTASH_REDIS_REST_TOKEN = "token";
+  process.env.REDIS_URL = "redis://default:token@example.com:6379";
   _setAiGatewayTokenOverrideForTesting("oidc-token");
 
   const request = makeRequest(PUBLIC_ORIGIN);
@@ -525,8 +501,7 @@ test("telegram webhook URL stays on the display URL path", () => {
 
 test("prerequisite and connectability report wrappers are behaviorally identical", async () => {
   process.env.NEXT_PUBLIC_APP_URL = PUBLIC_ORIGIN;
-  process.env.UPSTASH_REDIS_REST_URL = "https://upstash.example";
-  process.env.UPSTASH_REDIS_REST_TOKEN = "token";
+  process.env.REDIS_URL = "redis://default:token@example.com:6379";
   _setAiGatewayTokenOverrideForTesting("oidc-token");
 
   const request = makeRequest(PUBLIC_ORIGIN);
@@ -567,8 +542,7 @@ test("buildChannelConnectabilityMap respects webhookUrlOverrides", async () => {
 
 test("whatsapp connectability uses webhook-proxied mode with a webhook URL", async () => {
   process.env.NEXT_PUBLIC_APP_URL = PUBLIC_ORIGIN;
-  process.env.UPSTASH_REDIS_REST_URL = "https://upstash.example";
-  process.env.UPSTASH_REDIS_REST_TOKEN = "token";
+  process.env.REDIS_URL = "redis://default:token@example.com:6379";
   _setAiGatewayTokenOverrideForTesting("oidc-token");
 
   const result = await buildChannelConnectability(
@@ -603,10 +577,8 @@ test("whatsapp connectability requires a public webhook URL", async () => {
 test("whatsapp surfaces contract issues (store, ai-gateway)", async () => {
   process.env.VERCEL = "1";
   process.env.NEXT_PUBLIC_APP_URL = PUBLIC_ORIGIN;
-  delete process.env.UPSTASH_REDIS_REST_URL;
-  delete process.env.UPSTASH_REDIS_REST_TOKEN;
-  delete process.env.KV_REST_API_URL;
-  delete process.env.KV_REST_API_TOKEN;
+  delete process.env.REDIS_URL;
+  delete process.env.KV_URL;
   delete process.env.AI_GATEWAY_API_KEY;
   _setAiGatewayTokenOverrideForTesting(undefined);
 

@@ -26,39 +26,20 @@ export function isProduction(): boolean {
   return process.env.NODE_ENV === "production";
 }
 
-/**
- * Session encryption key used for cookie encryption.
- * In production without an env var, a deterministic fallback derived from
- * UPSTASH_REDIS_REST_TOKEN is used so the key survives cold starts without
- * extra configuration. Local dev uses a static placeholder.
- */
 export function getSessionSecret(): string {
   const configured = process.env.SESSION_SECRET?.trim();
   if (configured) {
     return configured;
   }
 
-  // Deployed sign-in-with-vercel mode requires an explicit session secret.
-  // Do not silently derive from the Upstash token — the deployment contract
-  // hard-fails this scenario, and runtime must agree.
   if (getAuthMode() === "sign-in-with-vercel" && isVercelDeployment()) {
     throw new Error(
       "SESSION_SECRET is required for deployed sign-in-with-vercel mode.",
     );
   }
 
-  // Derive from the Upstash token for admin-secret mode or local dev.
-  const upstashToken =
-    process.env.UPSTASH_REDIS_REST_TOKEN?.trim() ??
-    process.env.KV_REST_API_TOKEN?.trim();
-  if (upstashToken) {
-    return `openclaw-session-derived-${upstashToken}`;
-  }
-
   if (isProduction()) {
-    throw new Error(
-      "SESSION_SECRET or UPSTASH_REDIS_REST_TOKEN is required in production.",
-    );
+    throw new Error("SESSION_SECRET is required in production.");
   }
 
   return "openclaw-single-local-session-secret-change-me";
@@ -80,23 +61,15 @@ export function getOauthClientSecret(): string {
   return clientSecret;
 }
 
-export function getStoreEnv():
-  | { url: string; token: string }
-  | null {
+export function getStoreEnv(): { url: string } | null {
   const url =
-    process.env.UPSTASH_REDIS_REST_URL?.trim() ??
-    process.env.KV_REST_API_URL?.trim() ??
-    "";
-  const token =
-    process.env.UPSTASH_REDIS_REST_TOKEN?.trim() ??
-    process.env.KV_REST_API_TOKEN?.trim() ??
-    "";
+    process.env.REDIS_URL?.trim() ?? process.env.KV_URL?.trim() ?? "";
 
-  if (!url || !token) {
+  if (!url) {
     return null;
   }
 
-  return { url, token };
+  return { url };
 }
 
 let _instanceIdOverrideForTesting: string | null = null;
@@ -276,7 +249,7 @@ export function isVercelDeployment(): boolean {
 }
 
 /**
- * Single shared rule: durable store (Upstash) is required on Vercel deployments.
+ * Single shared rule: a durable Redis store is required on Vercel deployments.
  * Consumed by both runtime (getStore) and preflight (store check).
  */
 export function requiresDurableStore(): boolean {

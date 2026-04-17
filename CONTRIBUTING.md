@@ -70,7 +70,7 @@ See `CLAUDE.md` for the full list of smoke test flags.
 
 The app has two planes:
 
-- **Control plane** — a single metadata record in Upstash Redis (or in-memory for local dev). Tracks sandbox name, lifecycle status, firewall state, and the OpenClaw gateway token.
+- **Control plane** — a single metadata record in Redis (or in-memory for local dev). Tracks sandbox name, lifecycle status, firewall state, and the OpenClaw gateway token.
 - **Enforcement plane** — the `@vercel/sandbox` v2 beta SDK creates, resumes, stops, and updates the sandbox network policy. Sandboxes are persistent (auto-snapshot on stop, auto-resume on get).
 
 ### Request flow
@@ -126,7 +126,7 @@ src/
 │   ├── openclaw/               # Config generation and bootstrap
 │   ├── proxy/                  # HTML injection, waiting page
 │   ├── sandbox/                # Lifecycle orchestration
-│   └── store/                  # Upstash and in-memory backends
+│   └── store/                  # Redis and in-memory backends
 └── shared/
     └── types.ts                # Metadata and firewall types
 ```
@@ -137,8 +137,8 @@ Full reference:
 
 | Variable | Required | Purpose |
 | -------- | -------- | ------- |
-| `UPSTASH_REDIS_REST_URL` | Required on Vercel | Persistent store endpoint. Local dev uses the in-memory store. |
-| `UPSTASH_REDIS_REST_TOKEN` | Required on Vercel | Persistent store token. Paired with the URL above. |
+| `REDIS_URL` | Required on Vercel | Persistent store endpoint. Provision via the Vercel Marketplace (Redis Cloud) or point at any Redis-wire-protocol endpoint. Local dev uses the in-memory store when unset. |
+| `KV_URL` | No | Legacy alias for `REDIS_URL` (set by the Vercel KV integration). The app prefers `REDIS_URL` but falls back to `KV_URL`. |
 | `ADMIN_SECRET` | Required (`admin-secret` mode) | Secret exchanged for an encrypted session cookie via `/api/auth/login`. Auto-generated locally if unset. |
 | `CRON_SECRET` | Required on Vercel | Authenticates `/api/cron/watchdog` (every 5 min, wakes stopped sandboxes for cron jobs). Missing on Vercel is a hard failure in the deployment contract. |
 | `VERCEL_AUTH_MODE` | No | `admin-secret` (default) or `sign-in-with-vercel` |
@@ -146,7 +146,7 @@ Full reference:
 | `VERCEL_APP_CLIENT_SECRET` | Sign-in mode | OAuth client secret |
 | `SESSION_SECRET` | Required on Vercel (`sign-in-with-vercel` mode) | Cookie encryption secret. Must be explicitly set on deployed Vercel environments. |
 | `AI_GATEWAY_API_KEY` | No | Optional fallback when Vercel OIDC is unavailable (e.g. local dev without `vercel env pull`). OIDC is the default on deployed Vercel. |
-| `OPENCLAW_INSTANCE_ID` | No | Optional Redis key namespace. Defaults to `openclaw-single`. Required when multiple deployments share one Upstash database. Changing it later points the app at a new namespace and does not migrate existing state. |
+| `OPENCLAW_INSTANCE_ID` | No | Optional Redis key namespace. Defaults to `openclaw-single`. Required when multiple deployments share one Redis database. Changing it later points the app at a new namespace and does not migrate existing state. |
 | `OPENCLAW_PACKAGE_SPEC` | No | OpenClaw version to install. When unset, the runtime falls back to a pinned known-good version (currently `openclaw@2026.4.12`). On Vercel deployments, the deployment contract **warns** — it does not fail — when unset or unpinned. Pin to an exact version like `openclaw@1.2.3` for deterministic sandbox resumes. |
 | `OPENCLAW_SANDBOX_VCPUS` | No | vCPU count for sandbox create and resume (valid: 1, 2, 4, 8; default: 1). Keep fixed during benchmarks. |
 | `OPENCLAW_SANDBOX_SLEEP_AFTER_MS` | No | How long the sandbox stays alive after last activity, in milliseconds (60000–2700000; default: 1800000 = 30 min). Heartbeat and touch-throttle intervals are derived proportionally. Existing running sandboxes cannot be shortened in place. If you increase this value, the next touch/heartbeat can top the sandbox timeout up to the new target. If you decrease it, the lower value becomes exact on the next create or restore. |
@@ -154,8 +154,6 @@ Full reference:
 | `NEXT_PUBLIC_APP_URL` | No | Base origin override |
 | `NEXT_PUBLIC_BASE_DOMAIN` | No | Preferred external host for webhook URLs |
 | `BASE_DOMAIN` | No | Legacy alias for `NEXT_PUBLIC_BASE_DOMAIN` |
-| `KV_REST_API_URL` | No | Alias for Upstash REST URL |
-| `KV_REST_API_TOKEN` | No | Alias for Upstash REST token |
 
 When you add or change Redis keys, route every key through `src/server/store/keyspace.ts`. Do not hardcode the `openclaw-single` prefix anywhere else.
 

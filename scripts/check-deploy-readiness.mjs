@@ -44,7 +44,7 @@ const { values } = parseArgs({
     "timeout-ms": { type: "string", default: "180000" },
     mode: { type: "string", default: "safe" },
     "preflight-only": { type: "boolean", default: false },
-    "expect-store": { type: "string", default: "upstash" },
+    "expect-store": { type: "string", default: "redis" },
     "expect-ai-gateway-auth": { type: "string", default: "oidc" },
     "expect-ok": { type: "boolean", default: true },
     "json-only": { type: "boolean", default: false },

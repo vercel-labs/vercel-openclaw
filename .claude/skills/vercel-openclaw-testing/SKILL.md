@@ -25,7 +25,7 @@ Full testing playbook for `vercel-openclaw` — a single Next.js 16 App Router p
 
 ## Agent Environment File (`.env.agent`)
 
-The file `.env.agent` in the repo root contains non-secret configuration for remote testing. It is gitignored (`.env*` pattern) and intentionally separate from `.env.local` (which has real production secrets like Upstash tokens).
+The file `.env.agent` in the repo root contains non-secret configuration for remote testing. It is gitignored (`.env*` pattern) and intentionally separate from `.env.local` (which has real production secrets like Redis connection strings).
 
 **Read this file before running any remote commands.** It provides:
 
@@ -49,7 +49,7 @@ node scripts/check-deploy-readiness.mjs --base-url "$OPENCLAW_BASE_URL" --admin-
 npm run smoke:remote -- --base-url "$OPENCLAW_BASE_URL" --destructive
 ```
 
-**Important:** `.env.agent` should only contain values safe for AI agents to read. Never put Upstash tokens, OIDC secrets, session secrets, or channel signing keys here — those belong in `.env.local`.
+**Important:** `.env.agent` should only contain values safe for AI agents to read. Never put Redis URLs, OIDC secrets, session secrets, or channel signing keys here — those belong in `.env.local`.
 
 ## Running Instance Investigation
 
@@ -305,7 +305,7 @@ node scripts/benchmark-restore.mjs --base-url "$OPENCLAW_BASE_URL" --cycles 5 --
 node scripts/bench-sandbox-direct.mjs --cycles 5 --vcpus 1,2,4
 
 # Operational
-node scripts/reset-meta.mjs                                 # reset Upstash metadata to uninitialized
+node scripts/reset-meta.mjs                                 # reset Redis metadata to uninitialized
 node scripts/check-queue-consumers.mjs                      # verify vercel.json queue consumer routes
 node scripts/audit-verifier-surface.mjs                     # audit protected route manifest
 ```
@@ -349,7 +349,7 @@ node scripts/check-deploy-readiness.mjs \
 - `--protection-bypass` — Vercel deployment protection bypass secret
 - `--mode safe|destructive` — `safe` (default) or `destructive` (includes sandbox lifecycle)
 - `--preflight-only` — skip launch-verify, only check `/api/admin/preflight`
-- `--expect-store upstash` — expected store backend (default: `upstash`)
+- `--expect-store redis` — expected store backend (default: `redis`)
 - `--expect-ai-gateway-auth oidc` — expected auth mode (default: `oidc`)
 - `--timeout-ms` — overall timeout in ms (default: 180000)
 - `--json-only` — suppress stderr, JSON to stdout only
@@ -450,7 +450,7 @@ All debug routes require the `ENABLE_DEBUG_ROUTES` env var to be set. They retur
 | `/api/debug/pre-create-timing` | Measures config/policy building time before sandbox creation (gateway config, asset manifest, network policy) | Investigating whether pre-create overhead is contributing to restore latency |
 | `/api/debug/sandbox-timing` | Direct `@vercel/sandbox` SDK timing (create, echo, sh-exit, sh-sleep, snapshot). Requires `snapshotId` query param or `DEBUG_SANDBOX_SNAPSHOT_ID` env | Isolating platform-level latency from app-level overhead |
 | `/api/debug/cold-start` | Detects cold start vs warm start, measures module-to-handler time | Investigating intermittent slowness that could be cold start related |
-| `/api/debug/upstash-timing` | Measures Upstash Redis read/write latency | Investigating store-related slowness (metadata reads, queue operations) |
+| `/api/debug/store-timing` | Measures Redis store read/write latency | Investigating store-related slowness (metadata reads, queue operations) |
 | `/api/debug/oidc-timing` | Measures AI Gateway OIDC token acquisition time | Investigating gateway auth latency or token fetch failures |
 | `/api/debug/lock-timing` | Tests distributed lock acquisition/release latency | Investigating queue drain contention or concurrent lifecycle operations |
 | `/api/debug/sdk-import-timing` | Measures `import("@vercel/sandbox")` time | Investigating cold start — SDK import is a significant contributor |
@@ -626,7 +626,7 @@ df -h
 | `scripts/check-deploy-readiness.mjs` | Machine-readable deployment readiness gate | See [Remote Deployment Readiness Gate](#remote-deployment-readiness-gate) |
 | `scripts/benchmark-restore.mjs` | Repeated snapshot/stop → ensure cycles with per-phase waterfall timings | `node scripts/benchmark-restore.mjs --base-url "$URL" --cycles 5 --vcpus 1,2,4` |
 | `scripts/bench-sandbox-direct.mjs` | Direct `@vercel/sandbox` SDK benchmark (no HTTP layer) — create → install → snapshot → restore loop | `node scripts/bench-sandbox-direct.mjs --cycles 5 --vcpus 1,2,4` |
-| `scripts/reset-meta.mjs` | Reset Upstash metadata to `uninitialized` — clears sandboxId, snapshotId, status, lastError, portUrls | `node scripts/reset-meta.mjs` (reads `.env.local` for Upstash creds) |
+| `scripts/reset-meta.mjs` | Reset Redis metadata to `uninitialized` — clears sandboxId, snapshotId, status, lastError, portUrls | `node scripts/reset-meta.mjs` (reads `.env.local` for `REDIS_URL`) |
 | `scripts/check-queue-consumers.mjs` | Verify Vercel Queue consumer routes are declared in `vercel.json` | `node scripts/check-queue-consumers.mjs` |
 | `scripts/audit-verifier-surface.mjs` | Audit that protected route manifest is consistent | `node scripts/audit-verifier-surface.mjs` |
 | `scripts/check-verifier-contract.mjs` | Ensure deployment contract env vars are documented in README, CLAUDE.md, CONTRIBUTING.md, .env.example | `node scripts/check-verifier-contract.mjs` |
@@ -1499,7 +1499,7 @@ Every source module and its corresponding test file(s). Status indicates coverag
 | **Store** | | | |
 | `src/server/store/store.ts` | `src/server/store/store.test.ts` | Tested | Backend selection, metadata shape |
 | `src/server/store/memory-store.ts` | `src/server/store/store.test.ts` | Tested | Used by all test harnesses |
-| `src/server/store/upstash-store.ts` | — | Untested | Production-only; same interface as memory |
+| `src/server/store/redis-store.ts` | — | Untested | Production-only; same interface as memory |
 | **Other** | | | |
 | `src/server/env.ts` | `src/server/env.test.ts` | Tested | Env variable validation |
 | `src/server/log.ts` | `src/server/log.test.ts` | Tested | Structured logger contract |
@@ -1523,7 +1523,7 @@ All source modules now have direct test coverage. The only remaining indirectly-
 
 | Module | Risk | Status |
 |--------|------|--------|
-| `src/server/store/upstash-store.ts` | Low | Same interface as memory-store; integration-tested via `store.test.ts`. Network behavior requires live Upstash. |
+| `src/server/store/redis-store.ts` | Low | Same interface as memory-store; integration-tested via `store.test.ts`. Network behavior requires a live Redis. |
 
 Previously listed gaps that are now covered:
 
@@ -1694,8 +1694,8 @@ Tests can be run under different auth modes and store backends to verify behavio
 
 | Backend | Env Setup | When to Use |
 |---------|-----------|-------------|
-| Memory (default in tests) | No `UPSTASH_REDIS_REST_URL` set | All unit/route/integration tests |
-| Upstash | `UPSTASH_REDIS_REST_URL` + `UPSTASH_REDIS_REST_TOKEN` set | Manual smoke testing against real store |
+| Memory (default in tests) | No `REDIS_URL` set | All unit/route/integration tests |
+| Redis | `REDIS_URL` set | Manual smoke testing against real store |
 
 ### Running Tests
 
@@ -2051,7 +2051,7 @@ npm build
 | Package | Purpose |
 |---------|---------|
 | `@vercel/sandbox` | Sandbox VM lifecycle (create, stop, snapshot, restore) |
-| `@upstash/redis` | Persistent state store |
+| `ioredis` | Persistent state store (Redis wire protocol) |
 | `@vercel/oidc` | Vercel OAuth token exchange |
 | `jose` | JWT signing/verification for session cookies |
 | `next` 16 | App Router framework |
@@ -2075,7 +2075,7 @@ npm build
 - **Teardown is mandatory** — leaking harness state corrupts subsequent tests
 - **Lazy route loading** — always use `getXxxRoute()` helpers or dynamic `import()` after harness setup
 - **`snapshot()` is DESTRUCTIVE** — calling snapshot stops the sandbox; never use as diagnostic
-- **Store defaults to memory** — without `UPSTASH_REDIS_REST_URL`, data is lost on redeploy
+- **Store defaults to memory** — without `REDIS_URL`, data is lost on redeploy
 - **No `export const runtime`** — explicit runtime exports break the Next.js 16 build with `cacheComponents: true`
 - **`globalThis.fetch` swap** — the harness installs fakeFetch as `globalThis.fetch` for its full lifetime with default-deny on unmatched requests, restored in teardown
 - **Command responders** — return `undefined` to fall through to default behavior; first non-undefined wins
@@ -2089,7 +2089,7 @@ The following subsystems fail closed in test mode to prevent accidental producti
 | Subsystem | Guard behavior | What would go wrong without it |
 |-----------|---------------|-------------------------------|
 | **Sandbox controller** | `getSandboxController()` throws unless `_setSandboxControllerForTesting()` was called. `_setSandboxControllerForTesting()` throws if `NODE_ENV !== "test"`. In production, always returns the real SDK wrapper — no mutable singleton. | Tests would create real Vercel Sandbox VMs; production would use fake controllers if singleton leaked |
-| **Upstash store** | Upstash only connects on deployed Vercel runtimes (`isVercelDeployment()`). Tests and local dev always use memory store, even if Upstash env vars are present. | Fake sandbox IDs (`sbx-fake-*`) would corrupt production metadata |
+| **Redis store** | Redis only connects on deployed Vercel runtimes (`isVercelDeployment()`). Tests and local dev always use memory store, even if `REDIS_URL` is present. | Fake sandbox IDs (`sbx-fake-*`) would corrupt production metadata |
 | **Workflow DevKit** | Channel webhooks call `start(drainChannelWorkflow)` from `workflow/api`. In tests, `start()` is not available (no workflow runtime), so webhook routes catch the error and return 200 gracefully. | Tests would start real workflow runs on Vercel's infrastructure |
 | **OIDC token** | `resolveAiGatewayCredentialOptional()` skips real OIDC fetch, falls back to API key or undefined | Tests would call Vercel's OIDC provider |
 | **Vercel markers** | Harness clears `VERCEL_ENV`, `VERCEL_URL`, `VERCEL_PROJECT_PRODUCTION_URL`, `VERCEL` | `isVercelDeployment()` would return true, triggering Vercel-only code paths |
@@ -2214,7 +2214,7 @@ Every source file mapped to its test file(s). Files marked with ✅ have direct 
 |--------|------|----------|
 | `store.ts` | `store.test.ts` | ✅ Store selection, singleton, mutateMeta CAS |
 | `memory-store.ts` | `memory-store.test.ts` | ✅ Full contract: meta, KV, queues, leases, locks |
-| `upstash-store.ts` | — | 🔥 Same interface as memory-store; integration-tested via store.test.ts |
+| `redis-store.ts` | — | 🔥 Same interface as memory-store; integration-tested via store.test.ts |
 
 ### `src/server/proxy/`
 | Source | Test | Coverage |

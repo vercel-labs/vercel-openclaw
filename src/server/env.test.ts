@@ -189,8 +189,6 @@ test("deployed sign-in-with-vercel requires explicit session secret", () => {
       VERCEL: "1",
       VERCEL_AUTH_MODE: "sign-in-with-vercel",
       SESSION_SECRET: undefined,
-      UPSTASH_REDIS_REST_TOKEN: undefined,
-      KV_REST_API_TOKEN: undefined,
     },
     () => {
       assert.throws(
@@ -201,34 +199,19 @@ test("deployed sign-in-with-vercel requires explicit session secret", () => {
   );
 });
 
-test("deployed sign-in-with-vercel with upstash token still throws without SESSION_SECRET", () => {
-  withEnv(
-    {
-      VERCEL: "1",
-      VERCEL_AUTH_MODE: "sign-in-with-vercel",
-      SESSION_SECRET: undefined,
-      UPSTASH_REDIS_REST_TOKEN: "some-upstash-token",
-    },
-    () => {
-      assert.throws(
-        () => getSessionSecret(),
-        /SESSION_SECRET is required for deployed sign-in-with-vercel mode/,
-      );
-    },
-  );
-});
-
-test("admin-secret mode on Vercel can derive from upstash token", () => {
+test("admin-secret mode on Vercel requires explicit SESSION_SECRET in production", () => {
   withEnv(
     {
       VERCEL: "1",
       VERCEL_AUTH_MODE: "admin-secret",
       SESSION_SECRET: undefined,
-      UPSTASH_REDIS_REST_TOKEN: "upstash-token-value",
+      NODE_ENV: "production",
     },
     () => {
-      const secret = getSessionSecret();
-      assert.ok(secret.includes("upstash-token-value"));
+      assert.throws(
+        () => getSessionSecret(),
+        /SESSION_SECRET is required in production/,
+      );
     },
   );
 });
@@ -242,8 +225,6 @@ test("local dev returns placeholder session secret", () => {
       VERCEL_PROJECT_PRODUCTION_URL: undefined,
       VERCEL_AUTH_MODE: undefined,
       SESSION_SECRET: undefined,
-      UPSTASH_REDIS_REST_TOKEN: undefined,
-      KV_REST_API_TOKEN: undefined,
       NODE_ENV: "development",
     },
     () => {

@@ -113,10 +113,8 @@ const ENV_OVERRIDES: Record<string, string | undefined> = {
   VERCEL_ENV: undefined,
   VERCEL_URL: undefined,
   VERCEL_PROJECT_PRODUCTION_URL: undefined,
-  UPSTASH_REDIS_REST_URL: undefined,
-  UPSTASH_REDIS_REST_TOKEN: undefined,
-  KV_REST_API_URL: undefined,
-  KV_REST_API_TOKEN: undefined,
+  REDIS_URL: undefined,
+  KV_URL: undefined,
   // Prevent OIDC token fetching during tests
   AI_GATEWAY_API_KEY: "test-ai-gateway-key",
 };

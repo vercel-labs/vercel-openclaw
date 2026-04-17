@@ -639,7 +639,7 @@ export default function GridDesign() {
 
       <footer>
         <div className="footer-items">
-          <span>STORE: UPSTASH</span>
+          <span>STORE: REDIS</span>
           <span>AUTH: ADMIN-SECRET</span>
           <span>AI GATEWAY: OIDC</span>
         </div>

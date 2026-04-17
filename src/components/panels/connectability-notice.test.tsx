@@ -17,8 +17,8 @@ const connectability: ChannelConnectability = {
       id: "store",
       status: "fail",
       message: "Slack cannot be connected without durable state.",
-      remediation: "Add Upstash Redis from the Vercel Marketplace.",
-      env: ["UPSTASH_REDIS_REST_URL", "UPSTASH_REDIS_REST_TOKEN"],
+      remediation: "Set REDIS_URL or install a Redis integration from the Vercel Marketplace.",
+      env: ["REDIS_URL", "KV_URL"],
     },
   ],
 };
@@ -37,11 +37,11 @@ test("ConnectabilityNotice shows issues when IDs do not match", () => {
   const html = renderToStaticMarkup(
     <ConnectabilityNotice
       connectability={connectability}
-      suppressedIds={new Set(["configure-upstash"])}
+      suppressedIds={new Set(["configure-redis"])}
     />,
   );
   assert.match(html, /Slack cannot be connected without durable state\./);
-  assert.match(html, /Add Upstash Redis from the Vercel Marketplace\./);
+  assert.match(html, /Set REDIS_URL or install a Redis integration from the Vercel Marketplace\./);
 });
 
 test("ConnectabilityNotice shows all issues when no suppression", () => {

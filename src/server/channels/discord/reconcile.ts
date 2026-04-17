@@ -8,9 +8,9 @@ import {
   setDiscordChannelConfig,
 } from "@/server/channels/state";
 import { logInfo, logWarn } from "@/server/log";
+import { discordReconcileKey } from "@/server/store/keyspace";
 import { getInitializedMeta, getStore } from "@/server/store/store";
 
-export const DISCORD_RECONCILE_KEY = "discord:integration:last-reconciled-at";
 export const DISCORD_RECONCILE_INTERVAL_MS = 5 * 60 * 1000;
 
 export type DiscordReconcileResult = {
@@ -34,7 +34,7 @@ export async function reconcileDiscordIntegration(options: {
 
   if (!options.force) {
     const lastReconciledAt = await getStore().getValue<number>(
-      DISCORD_RECONCILE_KEY,
+      discordReconcileKey(),
     );
     if (
       lastReconciledAt &&
@@ -85,7 +85,7 @@ export async function reconcileDiscordIntegration(options: {
         ? config.commandRegisteredAt ?? checkedAt
         : config.commandRegisteredAt,
     });
-    await getStore().setValue(DISCORD_RECONCILE_KEY, checkedAt);
+    await getStore().setValue(discordReconcileKey(), checkedAt);
 
     logInfo("channels.discord_integration_reconciled", {
       desiredUrl,

@@ -102,6 +102,14 @@ export function launchVerifyReadinessKey(): string {
   return buildKey("launch-verify:channel-readiness");
 }
 
+export function launchVerifyQueueResultKey(probeId: string): string {
+  return buildKey(`launch-verify:queue-result:${probeId}`);
+}
+
+export function discordReconcileKey(): string {
+  return buildKey("discord:integration:last-reconciled-at");
+}
+
 export function channelForwardDiagnosticKey(): string {
   return buildKey("diag:channel-forward-latest");
 }

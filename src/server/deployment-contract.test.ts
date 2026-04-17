@@ -107,7 +107,7 @@ test("vercel deployment with openclaw@latest warns but does not fail contract", 
   assert.ok(specReq, "expected openclaw-package-spec requirement");
   assert.equal(specReq.status, "warn");
   assert.ok(specReq.message.includes("not a pinned version"));
-  // contract.ok may still be false due to other requirements (e.g. missing Upstash),
+  // contract.ok may still be false due to other requirements (e.g. missing Redis),
   // but the package-spec requirement itself should only be a warning.
 });
 
@@ -188,8 +188,7 @@ test("sign-in-with-vercel on Vercel with all config passes", async () => {
   process.env.SESSION_SECRET = "a-good-random-secret-value";
   process.env.OPENCLAW_PACKAGE_SPEC = "openclaw@2.0.0";
   process.env.NEXT_PUBLIC_APP_URL = "https://test.example.com";
-  process.env.UPSTASH_REDIS_REST_URL = "https://test.upstash.io";
-  process.env.UPSTASH_REDIS_REST_TOKEN = "test-upstash-token";
+  process.env.REDIS_URL = "redis://default:token@example.com:6379";
   process.env.VERCEL_AUTOMATION_BYPASS_SECRET = "bypass-secret";
   process.env.CRON_SECRET = "test-cron-secret";
   _setAiGatewayTokenOverrideForTesting("test-token");
@@ -213,10 +212,8 @@ test("sign-in-with-vercel on Vercel with all config passes", async () => {
 
 test("ok is false when any requirement has status fail", async () => {
   process.env.VERCEL = "1";
-  delete process.env.UPSTASH_REDIS_REST_URL;
-  delete process.env.UPSTASH_REDIS_REST_TOKEN;
-  delete process.env.KV_REST_API_URL;
-  delete process.env.KV_REST_API_TOKEN;
+  delete process.env.REDIS_URL;
+  delete process.env.KV_URL;
   _setAiGatewayTokenOverrideForTesting("test-token");
 
   const contract = await buildDeploymentContract();
@@ -274,7 +271,7 @@ test("contract exposes expected metadata fields", async () => {
       contract.authMode,
     ),
   );
-  assert.ok(["upstash", "memory"].includes(contract.storeBackend));
+  assert.ok(["redis", "memory"].includes(contract.storeBackend));
   assert.ok(
     ["oidc", "api-key", "unavailable"].includes(contract.aiGatewayAuth),
   );
@@ -292,10 +289,8 @@ test("deployed protected env fails store when missing (pinned spec passes)", asy
   process.env.VERCEL_AUTH_MODE = "admin-secret";
   process.env.NEXT_PUBLIC_APP_URL = "https://public-host.test";
   process.env.OPENCLAW_PACKAGE_SPEC = "openclaw@1.2.3";
-  delete process.env.UPSTASH_REDIS_REST_URL;
-  delete process.env.UPSTASH_REDIS_REST_TOKEN;
-  delete process.env.KV_REST_API_URL;
-  delete process.env.KV_REST_API_TOKEN;
+  delete process.env.REDIS_URL;
+  delete process.env.KV_URL;
   delete process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
   delete process.env.AI_GATEWAY_API_KEY;
   process.env.CRON_SECRET = "test-cron-secret";
@@ -363,10 +358,8 @@ test("store warns on non-Vercel when missing", async () => {
   delete process.env.VERCEL_ENV;
   delete process.env.VERCEL_URL;
   delete process.env.VERCEL_PROJECT_PRODUCTION_URL;
-  delete process.env.UPSTASH_REDIS_REST_URL;
-  delete process.env.UPSTASH_REDIS_REST_TOKEN;
-  delete process.env.KV_REST_API_URL;
-  delete process.env.KV_REST_API_TOKEN;
+  delete process.env.REDIS_URL;
+  delete process.env.KV_URL;
   _setAiGatewayTokenOverrideForTesting("test-token");
 
   const contract = await buildDeploymentContract();
@@ -377,10 +370,8 @@ test("store warns on non-Vercel when missing", async () => {
 
 test("store fails on Vercel when missing", async () => {
   process.env.VERCEL = "1";
-  delete process.env.UPSTASH_REDIS_REST_URL;
-  delete process.env.UPSTASH_REDIS_REST_TOKEN;
-  delete process.env.KV_REST_API_URL;
-  delete process.env.KV_REST_API_TOKEN;
+  delete process.env.REDIS_URL;
+  delete process.env.KV_URL;
   _setAiGatewayTokenOverrideForTesting("oidc-token");
 
   const contract = await buildDeploymentContract();

@@ -35,7 +35,7 @@ async function loadOrCreateAdminSecret(secretKey: string): Promise<string | null
     }
 
     const generated = randomBytes(GENERATED_ADMIN_SECRET_BYTES).toString("hex");
-    // Use setValue — the store handles persistence. For Upstash this is
+    // Use setValue — the store handles persistence. For Redis this is
     // idempotent across concurrent cold-starts because the first writer wins
     // and subsequent reads return the persisted value.
     await store.setValue(secretKey, generated);

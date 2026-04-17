@@ -22,9 +22,9 @@ It does not handle:
 
 ### Control plane
 
-The control plane is a single metadata record stored in Upstash Redis (or an in-memory store for local dev). It tracks the sandbox name, lifecycle status, firewall state, gateway token, and channel configuration.
+The control plane is a single metadata record stored in Redis (or an in-memory store for local dev). It tracks the sandbox name, lifecycle status, firewall state, gateway token, and channel configuration.
 
-The store backend is selected at startup. Upstash is required for production because channels, cron wake, and durable state all depend on persistent storage.
+The store backend is selected at startup. Redis is required for production because channels, cron wake, and durable state all depend on persistent storage. Any Redis-wire-protocol endpoint works (Redis Cloud, self-hosted, etc.).
 
 ### Enforcement plane
 

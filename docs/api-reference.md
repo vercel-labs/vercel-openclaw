@@ -255,7 +255,7 @@ The response is a flat JSON object with several logical areas described below. E
 | Field | Type | Description |
 | --- | --- | --- |
 | `authMode` | `"admin-secret"` \| `"sign-in-with-vercel"` | Active auth mode for the deployment |
-| `storeBackend` | `"upstash"` \| `"memory"` | Which persistence backend is in use |
+| `storeBackend` | `"redis"` \| `"memory"` | Which persistence backend is in use |
 | `persistentStore` | boolean | `true` when `storeBackend` is not `"memory"` |
 | `status` | string | Sandbox lifecycle state: `uninitialized`, `creating`, `setup`, `booting`, `running`, `stopped`, or `error` |
 | `sandboxId` | string \| null | Current sandbox ID, if one exists. With v2, this is preserved across stop/resume cycles. |
@@ -376,7 +376,7 @@ When `status` is `running` or `stopped`, `setupProgress` is always `null` regard
 ```json
 {
   "authMode": "admin-secret",
-  "storeBackend": "upstash",
+  "storeBackend": "redis",
   "persistentStore": true,
   "status": "running",
   "sandboxId": "oc-prj-abc123",
@@ -470,7 +470,7 @@ When `status` is `running` or `stopped`, `setupProgress` is always `null` regard
 ```json
 {
   "authMode": "admin-secret",
-  "storeBackend": "upstash",
+  "storeBackend": "redis",
   "persistentStore": true,
   "status": "running",
   "sandboxId": "oc-prj-abc123",

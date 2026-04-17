@@ -24,10 +24,8 @@ async function withTestEnv(fn: () => Promise<void>): Promise<void> {
   const keys = [
     "NODE_ENV",
     "VERCEL",
-    "UPSTASH_REDIS_REST_URL",
-    "UPSTASH_REDIS_REST_TOKEN",
-    "KV_REST_API_URL",
-    "KV_REST_API_TOKEN",
+    "REDIS_URL",
+    "KV_URL",
   ];
   const originals: Record<string, string | undefined> = {};
 
@@ -37,11 +35,8 @@ async function withTestEnv(fn: () => Promise<void>): Promise<void> {
 
   (process.env as Record<string, string | undefined>)["NODE_ENV"] = "test";
   delete process.env.VERCEL;
-  delete process.env.UPSTASH_REDIS_REST_URL;
-  delete process.env.UPSTASH_REDIS_REST_TOKEN;
-  delete process.env.KV_REST_API_URL;
-  delete process.env.KV_REST_API_TOKEN;
-
+  delete process.env.REDIS_URL;
+  delete process.env.KV_URL;
   _resetStoreForTesting();
 
   try {

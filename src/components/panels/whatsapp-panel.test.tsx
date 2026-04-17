@@ -35,7 +35,7 @@ function makeStatus(
 ): StatusPayload {
   return {
     authMode: "admin-secret",
-    storeBackend: "upstash",
+    storeBackend: "redis",
     persistentStore: true,
     status: "running",
     sandboxId: "sbx-test",

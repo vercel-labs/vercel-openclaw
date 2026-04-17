@@ -88,7 +88,7 @@ function friendlyError(raw: string): { headline: string; detail: string } {
   if (lower.includes("snapshot storage") || lower.includes("snapshot_not_found")) {
     return {
       headline: "Snapshot unavailable",
-      detail: "The snapshot could not be loaded. Check your Upstash connection or create a new sandbox.",
+      detail: "The snapshot could not be loaded. Check your Redis connection or create a new sandbox.",
     };
   }
   if (lower.includes("oidc") || lower.includes("token") || lower.includes("ai gateway")) {

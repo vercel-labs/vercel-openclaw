@@ -29,10 +29,8 @@ async function withFirewallTestStore(fn: () => Promise<void>): Promise<void> {
   const overrides: Record<string, string | undefined> = {
     NODE_ENV: "test",
     VERCEL: undefined,
-    UPSTASH_REDIS_REST_URL: undefined,
-    UPSTASH_REDIS_REST_TOKEN: undefined,
-    KV_REST_API_URL: undefined,
-    KV_REST_API_TOKEN: undefined,
+    REDIS_URL: undefined,
+    KV_URL: undefined,
   };
   const originals: Record<string, string | undefined> = {};
 

@@ -105,7 +105,7 @@ const REQUEST_JSON: RequestJson = async () => ({
 function makeStatus(overrides: Partial<StatusPayload> = {}): StatusPayload {
   return {
     authMode: "admin-secret",
-    storeBackend: "upstash",
+    storeBackend: "redis",
     persistentStore: true,
     status: "running",
     sandboxId: "sbx-test",

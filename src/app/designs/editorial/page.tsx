@@ -624,7 +624,7 @@ export default function EditorialDesign() {
         <footer className="footer">
           <div className="footer-item">
             <span>Store backend</span>
-            <span className="footer-val">upstash</span>
+            <span className="footer-val">redis</span>
           </div>
           <div className="footer-item">
             <span>Auth mode</span>

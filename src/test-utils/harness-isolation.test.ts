@@ -160,20 +160,19 @@ test("harness teardown: restores env vars to pre-harness values", () => {
 
 test("harness teardown: vars that were undefined before are undefined after", () => {
   // Ensure these are unset before harness
-  delete process.env.UPSTASH_REDIS_REST_URL;
-  delete process.env.UPSTASH_REDIS_REST_TOKEN;
-
+  delete process.env.REDIS_URL;
+  delete process.env.KV_URL;
   const h = createScenarioHarness();
 
   // Harness deletes them (they map to undefined in ENV_OVERRIDES)
-  assert.equal(process.env.UPSTASH_REDIS_REST_URL, undefined);
-  assert.equal(process.env.UPSTASH_REDIS_REST_TOKEN, undefined);
+  assert.equal(process.env.REDIS_URL, undefined);
+  assert.equal(process.env.KV_URL, undefined);
 
   h.teardown();
 
   // Should still be undefined after teardown
-  assert.equal(process.env.UPSTASH_REDIS_REST_URL, undefined);
-  assert.equal(process.env.UPSTASH_REDIS_REST_TOKEN, undefined);
+  assert.equal(process.env.REDIS_URL, undefined);
+  assert.equal(process.env.KV_URL, undefined);
 });
 
 test("harness installs fakeFetch for the full harness lifetime and restores it on teardown", async () => {
