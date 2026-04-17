@@ -31,14 +31,34 @@ export async function GET(request: Request): Promise<Response> {
   // admin panel just to start the OAuth install.
   const url = new URL(request.url);
   const installTokenParam = url.searchParams.get("install_token")?.trim();
+  const userAgent = request.headers.get("user-agent") ?? "";
+  const clientKind = classifyInstallCaller(userAgent);
   let usedInstallToken = false;
   if (installTokenParam) {
+    // Log BEFORE consuming so we can attribute a later consume_miss to the
+    // exact caller that burned the token. If this log shows a non-browser
+    // UA (node-fetch, undici, curl, go-http-client, …) between mint and
+    // the browser arriving, something is pre-consuming one-time tokens —
+    // that was the `provisionSlack.installUrl.probe` bug in vclaw < 0.2.1.
+    logInfo("slack_install.request_received", {
+      tokenPrefix: installTokenParam.slice(0, 6),
+      clientKind,
+      userAgent: userAgent.slice(0, 160),
+      referer: request.headers.get("referer")?.slice(0, 160) ?? null,
+    });
     usedInstallToken = await consumeSlackInstallToken(installTokenParam);
     if (!usedInstallToken) {
-      logWarn("slack_install.install_token_invalid");
+      logWarn("slack_install.install_token_invalid", {
+        tokenPrefix: installTokenParam.slice(0, 6),
+        clientKind,
+        userAgent: userAgent.slice(0, 160),
+      });
       return redirectToAdmin(request, "install_token_invalid");
     }
-    logInfo("slack_install.install_token_consumed");
+    logInfo("slack_install.install_token_consumed", {
+      tokenPrefix: installTokenParam.slice(0, 6),
+      clientKind,
+    });
   } else {
     const auth = await requireAdminAuth(request);
     if (auth instanceof Response) {
@@ -98,6 +118,25 @@ function redirectToAdmin(request: Request, error: string): Response {
     status: 302,
     headers: { Location: url.toString() },
   });
+}
+
+/**
+ * Classify the HTTP client based on User-Agent so a `consume_miss` can be
+ * attributed to the exact caller that burned the token first.
+ */
+function classifyInstallCaller(userAgent: string): string {
+  const ua = userAgent.toLowerCase();
+  if (!ua) return "unknown";
+  if (ua.includes("mozilla") || ua.includes("chrome") || ua.includes("safari") || ua.includes("firefox") || ua.includes("edge")) {
+    return "browser";
+  }
+  if (ua.includes("node") || ua.includes("undici")) return "node-fetch";
+  if (ua.includes("curl")) return "curl";
+  if (ua.includes("wget")) return "wget";
+  if (ua.includes("go-http-client")) return "go-http";
+  if (ua.includes("python")) return "python";
+  if (ua.includes("bot") || ua.includes("crawler") || ua.includes("spider")) return "bot";
+  return "other";
 }
 
 // ── Cookie helpers ──
