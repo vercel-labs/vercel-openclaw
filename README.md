@@ -66,9 +66,9 @@ See [docs/environment-variables.md](docs/environment-variables.md) for the full 
 ## Local development
 
 ```bash
-npm install
+pnpm install
 vercel link && vercel env pull   # pulls OIDC credentials for AI Gateway
-npm run dev                      # http://localhost:3000
+pnpm dev                         # http://localhost:3000
 ```
 
 ## Documentation

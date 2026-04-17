@@ -24,11 +24,12 @@
     "test:preflight": "node --import tsx --test src/server/deploy-preflight.test.ts",
     "test:deploy-requirements": "node --import tsx --test src/server/deploy-requirements.test.ts",
     "test:lifecycle": "node --import tsx --test src/server/sandbox/lifecycle.test.ts",
-    "verify:observability-pass": "npm run test:launch-verify && npm run test:preflight && npm run test:deploy-requirements && npm run test:lifecycle",
+    "verify:observability-pass": "pnpm run test:launch-verify && pnpm run test:preflight && pnpm run test:deploy-requirements && pnpm run test:lifecycle",
     "prepare": "husky"
   },
   "dependencies": {
     "@vercel/oidc": "^3.2.0",
+    "@vercel/queue": "^0.1.4",
     "@vercel/sandbox": "^2.0.0-beta.10",
     "geist": "^1.7.0",
     "ioredis": "^5.4.2",
@@ -46,9 +47,9 @@
   },
   "engines": {
     "node": "24.x",
-    "npm": ">=10"
+    "pnpm": ">=10"
   },
-  "packageManager": "npm@11.6.4",
+  "packageManager": "pnpm@10.33.0",
   "devDependencies": {
     "@types/node": "^20",
     "@types/react": "^19",
@@ -58,5 +59,13 @@
     "husky": "^9.1.7",
     "tsx": "^4.20.6",
     "typescript": "^5"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@swc/core",
+      "esbuild",
+      "sharp",
+      "unrs-resolver"
+    ]
   }
 }

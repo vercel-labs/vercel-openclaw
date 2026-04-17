@@ -9,10 +9,10 @@ metadata:
     - "**/vercel-openclaw/src/test-utils/**"
     - "**/vercel-openclaw/scripts/**"
   bashPattern:
-    - "npm test"
-    - "npm run test:watch"
+    - "pnpm test"
+    - "pnpm test:watch"
     - "node scripts/verify.mjs"
-    - "npm run smoke:remote"
+    - "pnpm smoke:remote"
     - "node scripts/check-deploy-readiness.mjs"
     - "node scripts/benchmark-restore.mjs"
     - "node scripts/bench-sandbox-direct.mjs"
@@ -46,7 +46,7 @@ source .env.agent
 
 # Then use in commands
 node scripts/check-deploy-readiness.mjs --base-url "$OPENCLAW_BASE_URL" --admin-secret "$ADMIN_SECRET"
-npm run smoke:remote -- --base-url "$OPENCLAW_BASE_URL" --destructive
+pnpm smoke:remote --base-url "$OPENCLAW_BASE_URL" --destructive
 ```
 
 **Important:** `.env.agent` should only contain values safe for AI agents to read. Never put Redis URLs, OIDC secrets, session secrets, or channel signing keys here — those belong in `.env.local`.
@@ -278,20 +278,20 @@ node scripts/verify.mjs --steps=typecheck                   # typecheck only
 node scripts/verify.mjs --steps=build                       # build only
 node scripts/verify.mjs --steps=test,typecheck              # multiple steps
 
-# Direct npm shortcuts (convenience only — prefer verify.mjs for automation)
-npm test                                                    # all tests
-npm run test:watch                                          # watch mode
+# Direct pnpm shortcuts (convenience only — prefer verify.mjs for automation)
+pnpm test                                                    # all tests
+pnpm test:watch                                              # watch mode
 
 # Remote diagnostics (read .env.agent first for OPENCLAW_BASE_URL and ADMIN_SECRET)
 # source .env.agent
 node scripts/check-deploy-readiness.mjs --base-url "$OPENCLAW_BASE_URL" --admin-secret "$ADMIN_SECRET"
 node scripts/check-deploy-readiness.mjs --base-url "$OPENCLAW_BASE_URL" --admin-secret "$ADMIN_SECRET" --mode destructive
-npm run smoke:remote -- --base-url "$OPENCLAW_BASE_URL" --destructive --timeout 180
+pnpm smoke:remote --base-url "$OPENCLAW_BASE_URL" --destructive --timeout 180
 node scripts/test-telegram-wake.mjs --base-url "$OPENCLAW_BASE_URL" --admin-secret "$ADMIN_SECRET"
 
 # Local public-webhook reproduction with vgrok
 # Uses a sanitized .env.local, unique OPENCLAW_INSTANCE_ID, next dev, vgrok, and the same Telegram wake script via the public tunnel
-npm run test:telegram-wake-local -- --timeout 180
+pnpm test:telegram-wake-local -- --timeout 180
 
 # Ad-hoc endpoint checks
 vercel curl /api/health --deployment "$OPENCLAW_BASE_URL"
@@ -364,18 +364,18 @@ Run smoke tests only after the readiness gate passes. All secrets must come from
 
 ```bash
 # Safe read-only smoke test
-npm run smoke:remote -- \
+pnpm smoke:remote \
   --base-url "$OPENCLAW_BASE_URL" \
   --protection-bypass "$VERCEL_AUTOMATION_BYPASS_SECRET"
 
 # Destructive smoke test (includes ensure, snapshot, restore, self-heal — use with caution)
-npm run smoke:remote -- \
+pnpm smoke:remote \
   --base-url "$OPENCLAW_BASE_URL" \
   --protection-bypass "$VERCEL_AUTOMATION_BYPASS_SECRET" \
   --destructive --timeout 180
 
 # JSON-only output (for CI)
-npm run smoke:remote -- \
+pnpm smoke:remote \
   --base-url "$OPENCLAW_BASE_URL" \
   --protection-bypass "$VERCEL_AUTOMATION_BYPASS_SECRET" \
   --json-only
@@ -402,7 +402,7 @@ What the local harness does:
 Command:
 
 ```bash
-npm run test:telegram-wake-local -- --timeout 180
+pnpm test:telegram-wake-local -- --timeout 180
 ```
 
 Important notes:
@@ -703,7 +703,7 @@ These patterns are distilled from 100+ commits of production fixes. When investi
 
 **Key files:** `src/server/openclaw/bootstrap.ts` (startup script generation), `src/server/openclaw/restore-assets.ts`
 
-**How to test for this:** The build gate (`npm run build`) catches template literal issues. Bootstrap tests in `bootstrap.test.ts` verify generated script content.
+**How to test for this:** The build gate (`pnpm build`) catches template literal issues. Bootstrap tests in `bootstrap.test.ts` verify generated script content.
 
 ### 6. Gateway Configuration Drift
 
@@ -783,7 +783,7 @@ Step-by-step investigation playbooks for common production issues.
 - **Assertions:** `node:assert/strict`
 - **Transpiler:** `tsx` (TypeScript execution)
 - **NO Jest, NO Vitest** — native Node testing only
-- **Test command:** `npm test` or `node scripts/verify.mjs --steps=test`
+- **Test command:** `pnpm test` or `node scripts/verify.mjs --steps=test`
 - **Imports:** `@/` path alias (mapped to `src/` in tsconfig)
 
 Tests are **colocated** with source files. Route tests live next to route files. Server tests live next to server modules. The full smoke test lives at `src/server/smoke/full-smoke.test.ts`.
@@ -1701,7 +1701,7 @@ Tests can be run under different auth modes and store backends to verify behavio
 
 ```bash
 # All tests (memory store, deployment-protection auth)
-npm test
+pnpm test
 
 # All gates via verifier
 node scripts/verify.mjs
@@ -1989,10 +1989,10 @@ A test suite achieves "complete verification" when all four categories are satis
 All four gates must pass before work is considered complete:
 
 ```bash
-npm run lint        # Gate 1: formatting + imports
-npm test        # Gate 2: all tests pass
-npm run typecheck   # Gate 3: no type errors
-npm build       # Gate 4: production build succeeds
+pnpm lint        # Gate 1: formatting + imports
+pnpm test        # Gate 2: all tests pass
+pnpm typecheck   # Gate 3: no type errors
+pnpm build       # Gate 4: production build succeeds
 ```
 
 ---
@@ -2020,16 +2020,16 @@ Before marking any work complete, pass ALL gates in order:
 
 ```bash
 # Gate 1: Lint — catches formatting and import issues
-npm run lint
+pnpm lint
 
 # Gate 2: Tests — all tests pass (including smoke)
-npm test
+pnpm test
 
 # Gate 3: Type check — no type errors
-npm run typecheck
+pnpm typecheck
 
 # Gate 4: Build — production build succeeds
-npm build
+pnpm build
 ```
 
 ### Verification Checklist
@@ -2080,7 +2080,7 @@ npm build
 - **`globalThis.fetch` swap** — the harness installs fakeFetch as `globalThis.fetch` for its full lifetime with default-deny on unmatched requests, restored in teardown
 - **Command responders** — return `undefined` to fall through to default behavior; first non-undefined wins
 - **Smoke test is sequential** — phases depend on each other; don't reorder without understanding the state flow
-- **`npm test` is the canonical runner** — never use `bun test` (different resolver, different globals, will produce false failures)
+- **`pnpm test` is the canonical runner** — never use `bun test` (different resolver, different globals, will produce false failures)
 
 ### Test Isolation Guards (`NODE_ENV=test`)
 
@@ -2286,13 +2286,13 @@ Every source file mapped to its test file(s). Files marked with ✅ have direct 
 
 ## Verification Protocol (Updated)
 
-Always use `npm test` — never `bun test`. The canonical verification sequence:
+Always use `pnpm test` — never `bun test`. The canonical verification sequence:
 
 ```bash
-npm test          # 854 tests across all tiers
-npm run typecheck     # tsc --noEmit
-npm run lint          # eslint (1 pre-existing React warning-as-error)
-npm build         # Next.js production build
+pnpm test          # 854 tests across all tiers
+pnpm typecheck     # tsc --noEmit
+pnpm lint          # eslint (1 pre-existing React warning-as-error)
+pnpm build         # Next.js production build
 ```
 
 All four must pass before work is considered done. The lint error about `setState` in `admin-shell.tsx` is pre-existing and unrelated to test coverage.

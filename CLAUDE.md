@@ -25,23 +25,23 @@ The app does not handle:
 Run these from the repository root:
 
 ```bash
-npm install
-npm run dev
-npm run lint
-npm test
-npm run typecheck
-npm run build
+pnpm install
+pnpm dev
+pnpm lint
+pnpm test
+pnpm typecheck
+pnpm build
 ```
 
-Tests use `node:test`. Run `npm test` or use `node scripts/verify.mjs --steps=test`.
+Tests use `node:test`. Run `pnpm test` or use `node scripts/verify.mjs --steps=test`.
 
 ### Remote smoke testing
 
 ```bash
-npm run smoke:remote -- --base-url https://my-app.vercel.app
-npm run smoke:remote -- --base-url https://my-app.vercel.app --destructive --timeout 180
-npm run smoke:remote -- --base-url https://my-app.vercel.app --json-only --auth-cookie "session=..."
-npm run smoke:remote -- --base-url https://my-app.vercel.app --request-timeout 10
+pnpm smoke:remote --base-url https://my-app.vercel.app
+pnpm smoke:remote --base-url https://my-app.vercel.app --destructive --timeout 180
+pnpm smoke:remote --base-url https://my-app.vercel.app --json-only --auth-cookie "session=..."
+pnpm smoke:remote --base-url https://my-app.vercel.app --request-timeout 10
 ```
 
 Flags:
@@ -549,7 +549,7 @@ node scripts/verify.mjs --steps=test,typecheck
 For docs-only changes that touch operator instructions or env names, also run locally:
 
 ```bash
-npm run check:verify-contract
+pnpm check:verify-contract
 ```
 
 This guards the documented deployment contract across `README.md`, `CLAUDE.md`, `CONTRIBUTING.md`, and `.env.example`.
