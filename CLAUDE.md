@@ -35,6 +35,19 @@ pnpm build
 
 Tests use `node:test`. Run `pnpm test` or use `node scripts/verify.mjs --steps=test`.
 
+### Local dev against prod env
+
+To tweak the admin UI locally while reading real production data:
+
+1. `vercel link && vercel env pull .env.local --environment=production`
+2. Edit `.env.local`:
+   - set `VERCEL_ENV=development` (flips `isVercelDeployment()` so Redis connects — see `src/server/store/store.ts:57`)
+   - set `LOCAL_READ_ONLY=1` (blocks every admin mutation route at the auth boundary with `403 { error: "LOCAL_READ_ONLY" }`; see `src/server/auth/route-auth.ts`)
+   - unset `VERCEL_AUTH_MODE` so admin-secret mode works locally (no OAuth redirect to prod)
+3. `pnpm dev`, then `POST /api/auth/login` with the pulled `ADMIN_SECRET` to get the session cookie
+
+`getSandboxController()` returns the real `@vercel/sandbox` v2 SDK whenever `NODE_ENV !== "test"` (`src/server/sandbox/controller.ts:201-211`). Without `LOCAL_READ_ONLY`, a `POST /api/admin/stop` from localhost will stop the prod sandbox. Keep the guard on unless you mean it.
+
 ### Remote smoke testing
 
 ```bash

@@ -161,11 +161,41 @@ export async function POST(request: Request): Promise<Response> {
     rawBody,
   });
   if (!signatureValid) {
+    // Lenient parse on failure so we can tell a stale-secret rotation from a
+    // second Slack app install. If two apps subscribe to the same webhook URL,
+    // api_app_id / team_id will differ between accepted and rejected requests.
+    let failDiag: {
+      apiAppId: string | null;
+      teamId: string | null;
+      eventType: string | null;
+      configuredSecretPreview: string | null;
+    } = {
+      apiAppId: null,
+      teamId: null,
+      eventType: null,
+      configuredSecretPreview: null,
+    };
+    try {
+      const parsed = rawBody.length > 0 ? JSON.parse(rawBody) : null;
+      if (parsed && typeof parsed === "object") {
+        const p = parsed as Record<string, unknown>;
+        failDiag.apiAppId = typeof p.api_app_id === "string" ? p.api_app_id : null;
+        failDiag.teamId = typeof p.team_id === "string" ? p.team_id : null;
+        const ev = p.event as Record<string, unknown> | undefined;
+        failDiag.eventType = typeof ev?.type === "string" ? ev.type : null;
+      }
+    } catch {
+      // ignore — payload was not JSON
+    }
+    failDiag.configuredSecretPreview = config.signingSecret
+      ? `${config.signingSecret.slice(0, 4)}…${config.signingSecret.slice(-2)}`
+      : null;
     logWarn("channels.slack_webhook_rejected", {
       reason: "invalid_signature",
       requestId,
       timestampHeader,
       bodyLength: rawBody.length,
+      ...failDiag,
     });
     return unauthorizedResponse();
   }
@@ -291,11 +321,22 @@ export async function POST(request: Request): Promise<Response> {
     status: meta.status,
   });
 
+  const payloadRoot = payload as Record<string, unknown> | null;
+  const apiAppId =
+    payloadRoot && typeof payloadRoot.api_app_id === "string"
+      ? payloadRoot.api_app_id
+      : null;
+  const teamId =
+    payloadRoot && typeof payloadRoot.team_id === "string"
+      ? payloadRoot.team_id
+      : null;
   logInfo("channels.slack_webhook_accepted", withOperationContext(op, {
     ...eventInfo,
     retryNum: retryNum ? Number(retryNum) : null,
     retryReason,
     bodyLength: rawBody.length,
+    apiAppId,
+    teamId,
   }));
 
   // --- Fast path: forward to OpenClaw's native Slack handler ---

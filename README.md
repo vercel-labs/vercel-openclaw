@@ -178,6 +178,21 @@ vercel link && vercel env pull   # pulls OIDC credentials for AI Gateway
 pnpm dev                         # http://localhost:3000
 ```
 
+### Running locally against production data
+
+To tweak the admin UI against real prod Redis/metadata without risking accidental mutations:
+
+```bash
+vercel env pull .env.local --environment=production
+# then in .env.local:
+#   VERCEL_ENV=development     # flips the Vercel-deployment gate so Redis connects
+#   LOCAL_READ_ONLY=1          # blocks every admin mutation route with 403 LOCAL_READ_ONLY
+#   unset VERCEL_AUTH_MODE     # use admin-secret auth locally
+pnpm dev
+```
+
+With `LOCAL_READ_ONLY=1`, `POST /api/admin/stop`, `/ensure`, `/reset`, `/snapshot`, and channel config writes all return `403 { error: "LOCAL_READ_ONLY" }` before touching the sandbox SDK. Reads (`/api/status`, `/api/admin/preflight`, `/api/admin/logs`) still work. Unset the variable when you actually want to test a mutation.
+
 ## Documentation
 
 | Document | Contents |
