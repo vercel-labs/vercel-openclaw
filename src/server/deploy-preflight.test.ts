@@ -60,8 +60,7 @@ test("preflight passes when bypass secret is absent in admin-secret mode", async
       VERCEL_AUTH_MODE: "admin-secret",
       NEXT_PUBLIC_APP_URL: "https://openclaw.example.com",
       VERCEL_AUTOMATION_BYPASS_SECRET: undefined,
-      UPSTASH_REDIS_REST_URL: "https://example.upstash.io",
-      UPSTASH_REDIS_REST_TOKEN: "token",
+      REDIS_URL: "redis://default:token@example.com:6379",
       OPENCLAW_PACKAGE_SPEC: "openclaw@1.0.0",
       CRON_SECRET: "cron-secret",
     },
@@ -74,7 +73,7 @@ test("preflight passes when bypass secret is absent in admin-secret mode", async
 
       assert.equal(payload.ok, true);
       assert.equal(payload.aiGatewayAuth, "oidc");
-      assert.equal(payload.storeBackend, "upstash");
+      assert.equal(payload.storeBackend, "redis");
       assert.equal(
         payload.checks.find((check) => check.id === "webhook-bypass")?.status,
         "pass",
@@ -89,8 +88,7 @@ test("preflight passes when bypass secret is configured", async () => {
       VERCEL_AUTH_MODE: "admin-secret",
       NEXT_PUBLIC_APP_URL: "https://openclaw.example.com",
       VERCEL_AUTOMATION_BYPASS_SECRET: "bypass-secret",
-      UPSTASH_REDIS_REST_URL: "https://example.upstash.io",
-      UPSTASH_REDIS_REST_TOKEN: "token",
+      REDIS_URL: "redis://default:token@example.com:6379",
       CRON_SECRET: "cron-secret",
     },
     async () => {
@@ -116,8 +114,7 @@ test("preflight warns (not fails) bypass check in sign-in-with-vercel mode witho
       VERCEL_AUTH_MODE: "sign-in-with-vercel",
       NEXT_PUBLIC_APP_URL: "https://openclaw.example.com",
       VERCEL_AUTOMATION_BYPASS_SECRET: undefined,
-      UPSTASH_REDIS_REST_URL: "https://example.upstash.io",
-      UPSTASH_REDIS_REST_TOKEN: "token",
+      REDIS_URL: "redis://default:token@example.com:6379",
       CRON_SECRET: undefined,
     },
     async () => {
@@ -141,10 +138,8 @@ test("preflight fails when AI Gateway auth and store are missing", async () => {
       VERCEL: "1",
       VERCEL_AUTH_MODE: "admin-secret",
       VERCEL_AUTOMATION_BYPASS_SECRET: undefined,
-      UPSTASH_REDIS_REST_URL: undefined,
-      UPSTASH_REDIS_REST_TOKEN: undefined,
-      KV_REST_API_URL: undefined,
-      KV_REST_API_TOKEN: undefined,
+      REDIS_URL: undefined,
+      KV_URL: undefined,
       AI_GATEWAY_API_KEY: undefined,
       CRON_SECRET: undefined,
       ADMIN_SECRET: undefined,
@@ -190,8 +185,7 @@ test("preflight reports oidc when token is available even if AI_GATEWAY_API_KEY 
       VERCEL_AUTOMATION_BYPASS_SECRET: "bypass-secret",
       AI_GATEWAY_API_KEY: "static-key",
       NEXT_PUBLIC_APP_URL: "https://app.example.com",
-      UPSTASH_REDIS_REST_URL: "https://example.upstash.io",
-      UPSTASH_REDIS_REST_TOKEN: "token",
+      REDIS_URL: "redis://default:token@example.com:6379",
       CRON_SECRET: "cron-secret",
     },
     async () => {
@@ -213,10 +207,8 @@ test("preflight includes channels with discord connectability", async () => {
       VERCEL_AUTH_MODE: "admin-secret",
       NEXT_PUBLIC_APP_URL: "https://app.example.com",
       VERCEL_AUTOMATION_BYPASS_SECRET: undefined,
-      UPSTASH_REDIS_REST_URL: undefined,
-      UPSTASH_REDIS_REST_TOKEN: undefined,
-      KV_REST_API_URL: undefined,
-      KV_REST_API_TOKEN: undefined,
+      REDIS_URL: undefined,
+      KV_URL: undefined,
       AI_GATEWAY_API_KEY: undefined,
       CRON_SECRET: undefined,
     },
@@ -236,15 +228,14 @@ test("preflight includes channels with discord connectability", async () => {
   );
 });
 
-test("preflight ok is true when Upstash and OIDC are configured without bypass secret", async () => {
+test("preflight ok is true when Redis and OIDC are configured without bypass secret", async () => {
   await withEnv(
     {
       VERCEL: "1",
       VERCEL_AUTH_MODE: "admin-secret",
       NEXT_PUBLIC_APP_URL: "https://app.example.com",
       VERCEL_AUTOMATION_BYPASS_SECRET: undefined,
-      UPSTASH_REDIS_REST_URL: "https://example.upstash.io",
-      UPSTASH_REDIS_REST_TOKEN: "token",
+      REDIS_URL: "redis://default:token@example.com:6379",
       OPENCLAW_PACKAGE_SPEC: "openclaw@1.0.0",
       CRON_SECRET: "cron-secret",
     },
@@ -261,13 +252,12 @@ test("preflight ok is true when Upstash and OIDC are configured without bypass s
   );
 });
 
-test("preflight passes all checks with Upstash, bypass, OIDC, and cron secret", async () => {
+test("preflight passes all checks with Redis, bypass, OIDC, and cron secret", async () => {
   await withEnv(
     {
       VERCEL_AUTH_MODE: "admin-secret",
       VERCEL_AUTOMATION_BYPASS_SECRET: "bypass-secret",
-      UPSTASH_REDIS_REST_URL: "https://example.upstash.io",
-      UPSTASH_REDIS_REST_TOKEN: "token",
+      REDIS_URL: "redis://default:token@example.com:6379",
       CRON_SECRET: "cron-secret",
       NEXT_PUBLIC_APP_URL: "https://app.example.com",
       AI_GATEWAY_API_KEY: undefined,
@@ -283,7 +273,7 @@ test("preflight passes all checks with Upstash, bypass, OIDC, and cron secret", 
       assert.equal(payload.authMode, "admin-secret");
       assert.equal(payload.publicOrigin, "https://app.example.com");
       assert.equal(payload.webhookBypassEnabled, true);
-      assert.equal(payload.storeBackend, "upstash");
+      assert.equal(payload.storeBackend, "redis");
       assert.equal(payload.aiGatewayAuth, "oidc");
       assert.equal(payload.cronSecretConfigured, true);
       assert.equal(payload.cronSecretExplicitlyConfigured, true);
@@ -317,10 +307,8 @@ test("preflight nextSteps includes resolve-blockers when not ok", async () => {
       VERCEL_AUTH_MODE: "admin-secret",
       NEXT_PUBLIC_APP_URL: "https://app.example.com",
       VERCEL_AUTOMATION_BYPASS_SECRET: undefined,
-      UPSTASH_REDIS_REST_URL: undefined,
-      UPSTASH_REDIS_REST_TOKEN: undefined,
-      KV_REST_API_URL: undefined,
-      KV_REST_API_TOKEN: undefined,
+      REDIS_URL: undefined,
+      KV_URL: undefined,
       AI_GATEWAY_API_KEY: undefined,
       CRON_SECRET: undefined,
     },
@@ -348,10 +336,8 @@ test("preflight fails when durable store is missing", async () => {
       VERCEL: "1",
       VERCEL_ENV: "production",
       VERCEL_AUTOMATION_BYPASS_SECRET: "bypass-secret",
-      UPSTASH_REDIS_REST_URL: undefined,
-      UPSTASH_REDIS_REST_TOKEN: undefined,
-      KV_REST_API_URL: undefined,
-      KV_REST_API_TOKEN: undefined,
+      REDIS_URL: undefined,
+      KV_URL: undefined,
       AI_GATEWAY_API_KEY: undefined,
     },
     async () => {
@@ -370,7 +356,7 @@ test("preflight fails when durable store is missing", async () => {
       );
       assert.ok(
         payload.actions.some(
-          (a) => a.id === "configure-upstash" && a.status === "required",
+          (a) => a.id === "configure-redis" && a.status === "required",
         ),
       );
     },
@@ -384,8 +370,7 @@ test("preflight fails when a Vercel deployment has OIDC unavailable", async () =
       VERCEL: "1",
       VERCEL_ENV: "production",
       VERCEL_AUTOMATION_BYPASS_SECRET: "bypass-secret",
-      UPSTASH_REDIS_REST_URL: "redis-url",
-      UPSTASH_REDIS_REST_TOKEN: "redis-token",
+      REDIS_URL: "redis://default:token@example.com:6379",
       AI_GATEWAY_API_KEY: undefined,
     },
     async () => {
@@ -396,7 +381,7 @@ test("preflight fails when a Vercel deployment has OIDC unavailable", async () =
       );
 
       assert.equal(payload.ok, false);
-      assert.equal(payload.storeBackend, "upstash");
+      assert.equal(payload.storeBackend, "redis");
       assert.equal(payload.aiGatewayAuth, "unavailable");
       assert.equal(
         payload.checks.find((c) => c.id === "ai-gateway")?.status,
@@ -412,7 +397,7 @@ test("preflight fails when a Vercel deployment has OIDC unavailable", async () =
   );
 });
 
-test("preflight passes when Upstash is configured and AI Gateway auth resolves to OIDC on Vercel", async () => {
+test("preflight passes when Redis is configured and AI Gateway auth resolves to OIDC on Vercel", async () => {
   await withEnv(
     {
       VERCEL_AUTH_MODE: "admin-secret",
@@ -420,8 +405,7 @@ test("preflight passes when Upstash is configured and AI Gateway auth resolves t
       VERCEL: "1",
       VERCEL_ENV: "production",
       VERCEL_AUTOMATION_BYPASS_SECRET: "bypass-secret",
-      UPSTASH_REDIS_REST_URL: "redis-url",
-      UPSTASH_REDIS_REST_TOKEN: "redis-token",
+      REDIS_URL: "redis://default:token@example.com:6379",
       AI_GATEWAY_API_KEY: undefined,
       OPENCLAW_PACKAGE_SPEC: "openclaw@1.0.0",
       CRON_SECRET: "cron-secret",
@@ -435,7 +419,7 @@ test("preflight passes when Upstash is configured and AI Gateway auth resolves t
 
       // Checks must all pass — channels may fail for unrelated reasons
       // (e.g. missing channel credentials), so assert checks independently.
-      assert.equal(payload.storeBackend, "upstash");
+      assert.equal(payload.storeBackend, "redis");
       assert.equal(payload.aiGatewayAuth, "oidc");
       for (const check of payload.checks) {
         assert.notEqual(
@@ -455,10 +439,8 @@ test("preflight actions include remediation text", async () => {
       VERCEL_AUTH_MODE: "admin-secret",
       NEXT_PUBLIC_APP_URL: "https://app.example.com",
       VERCEL_AUTOMATION_BYPASS_SECRET: undefined,
-      UPSTASH_REDIS_REST_URL: undefined,
-      UPSTASH_REDIS_REST_TOKEN: undefined,
-      KV_REST_API_URL: undefined,
-      KV_REST_API_TOKEN: undefined,
+      REDIS_URL: undefined,
+      KV_URL: undefined,
       AI_GATEWAY_API_KEY: undefined,
       CRON_SECRET: undefined,
     },
@@ -484,10 +466,8 @@ test("preflight actions do not contain launch-verification remediation items", a
       VERCEL_AUTH_MODE: "admin-secret",
       NEXT_PUBLIC_APP_URL: "https://app.example.com",
       VERCEL_AUTOMATION_BYPASS_SECRET: undefined,
-      UPSTASH_REDIS_REST_URL: undefined,
-      UPSTASH_REDIS_REST_TOKEN: undefined,
-      KV_REST_API_URL: undefined,
-      KV_REST_API_TOKEN: undefined,
+      REDIS_URL: undefined,
+      KV_URL: undefined,
       AI_GATEWAY_API_KEY: undefined,
       CRON_SECRET: undefined,
     },
@@ -525,8 +505,7 @@ test("preflight checks do not include launch-verification (config-only guarantee
     {
       VERCEL_AUTH_MODE: "admin-secret",
       VERCEL_AUTOMATION_BYPASS_SECRET: "bypass-secret",
-      UPSTASH_REDIS_REST_URL: "https://example.upstash.io",
-      UPSTASH_REDIS_REST_TOKEN: "token",
+      REDIS_URL: "redis://default:token@example.com:6379",
       CRON_SECRET: "cron-secret",
       NEXT_PUBLIC_APP_URL: "https://app.example.com",
       AI_GATEWAY_API_KEY: undefined,
@@ -565,8 +544,7 @@ test("preflight warns when OPENCLAW_PACKAGE_SPEC is missing on Vercel (fallback 
       VERCEL: "1",
       VERCEL_AUTH_MODE: "admin-secret",
       NEXT_PUBLIC_APP_URL: "https://app.example.com",
-      UPSTASH_REDIS_REST_URL: "https://example.upstash.io",
-      UPSTASH_REDIS_REST_TOKEN: "token",
+      REDIS_URL: "redis://default:token@example.com:6379",
       OPENCLAW_PACKAGE_SPEC: undefined,
       CRON_SECRET: "cron-secret",
     },
@@ -596,8 +574,7 @@ test("preflight has no package-spec check when pinned on Vercel", async () => {
       VERCEL: "1",
       VERCEL_AUTH_MODE: "admin-secret",
       NEXT_PUBLIC_APP_URL: "https://app.example.com",
-      UPSTASH_REDIS_REST_URL: "https://example.upstash.io",
-      UPSTASH_REDIS_REST_TOKEN: "token",
+      REDIS_URL: "redis://default:token@example.com:6379",
       OPENCLAW_PACKAGE_SPEC: "openclaw@2.0.0",
       CRON_SECRET: "cron-secret",
     },
@@ -636,8 +613,7 @@ test("cross-surface: unpinned package-spec is a warning, not a blocker", async (
       VERCEL: "1",
       VERCEL_AUTH_MODE: "admin-secret",
       NEXT_PUBLIC_APP_URL: "https://app.example.com",
-      UPSTASH_REDIS_REST_URL: "https://example.upstash.io",
-      UPSTASH_REDIS_REST_TOKEN: "token",
+      REDIS_URL: "redis://default:token@example.com:6379",
       OPENCLAW_PACKAGE_SPEC: "openclaw@latest",
       CRON_SECRET: "cron-secret",
     },
@@ -699,8 +675,7 @@ test("cross-surface: no surfaces emit package-spec blocker when non-Vercel", asy
       VERCEL_PROJECT_PRODUCTION_URL: undefined,
       VERCEL_AUTH_MODE: "admin-secret",
       NEXT_PUBLIC_APP_URL: "https://app.example.com",
-      UPSTASH_REDIS_REST_URL: "https://example.upstash.io",
-      UPSTASH_REDIS_REST_TOKEN: "token",
+      REDIS_URL: "redis://default:token@example.com:6379",
       OPENCLAW_PACKAGE_SPEC: undefined,
       CRON_SECRET: "cron-secret",
     },
@@ -767,8 +742,7 @@ test("parity: local missing public-origin env vars is warn in contract (no reque
       NEXT_PUBLIC_APP_URL: undefined,
       NEXT_PUBLIC_BASE_DOMAIN: undefined,
       BASE_DOMAIN: undefined,
-      UPSTASH_REDIS_REST_URL: "https://example.upstash.io",
-      UPSTASH_REDIS_REST_TOKEN: "token",
+      REDIS_URL: "redis://default:token@example.com:6379",
     },
     async () => {
       _setAiGatewayTokenOverrideForTesting("oidc-token");
@@ -815,8 +789,7 @@ test("parity: Vercel missing public-origin is fail in contract (no request)", as
       VERCEL_PROJECT_PRODUCTION_URL: undefined,
       VERCEL_BRANCH_URL: undefined,
       VERCEL_URL: undefined,
-      UPSTASH_REDIS_REST_URL: "https://example.upstash.io",
-      UPSTASH_REDIS_REST_TOKEN: "token",
+      REDIS_URL: "redis://default:token@example.com:6379",
       OPENCLAW_PACKAGE_SPEC: "openclaw@1.0.0",
     },
     async () => {
@@ -855,8 +828,7 @@ test("parity: local missing OIDC is warn (not fail) in both contract and preflig
       VERCEL_URL: undefined,
       VERCEL_PROJECT_PRODUCTION_URL: undefined,
       NEXT_PUBLIC_APP_URL: "https://local.example.com",
-      UPSTASH_REDIS_REST_URL: "https://example.upstash.io",
-      UPSTASH_REDIS_REST_TOKEN: "token",
+      REDIS_URL: "redis://default:token@example.com:6379",
       AI_GATEWAY_API_KEY: undefined,
     },
     async () => {
@@ -892,8 +864,7 @@ test("parity: Vercel missing OIDC is fail in both contract and preflight", async
     {
       VERCEL: "1",
       NEXT_PUBLIC_APP_URL: "https://app.example.com",
-      UPSTASH_REDIS_REST_URL: "https://example.upstash.io",
-      UPSTASH_REDIS_REST_TOKEN: "token",
+      REDIS_URL: "redis://default:token@example.com:6379",
       AI_GATEWAY_API_KEY: undefined,
       OPENCLAW_PACKAGE_SPEC: "openclaw@1.0.0",
     },
@@ -929,10 +900,8 @@ test("parity: local missing store is warn in both contract and preflight", async
       VERCEL_URL: undefined,
       VERCEL_PROJECT_PRODUCTION_URL: undefined,
       NEXT_PUBLIC_APP_URL: "https://local.example.com",
-      UPSTASH_REDIS_REST_URL: undefined,
-      UPSTASH_REDIS_REST_TOKEN: undefined,
-      KV_REST_API_URL: undefined,
-      KV_REST_API_TOKEN: undefined,
+      REDIS_URL: undefined,
+      KV_URL: undefined,
     },
     async () => {
       _setAiGatewayTokenOverrideForTesting("oidc-token");
@@ -967,10 +936,8 @@ test("parity: Vercel missing store is fail in both contract and preflight", asyn
     {
       VERCEL: "1",
       NEXT_PUBLIC_APP_URL: "https://app.example.com",
-      UPSTASH_REDIS_REST_URL: undefined,
-      UPSTASH_REDIS_REST_TOKEN: undefined,
-      KV_REST_API_URL: undefined,
-      KV_REST_API_TOKEN: undefined,
+      REDIS_URL: undefined,
+      KV_URL: undefined,
       OPENCLAW_PACKAGE_SPEC: "openclaw@1.0.0",
     },
     async () => {
@@ -1007,10 +974,8 @@ test("parity: local env action severity is recommended for store and ai-gateway"
       NEXT_PUBLIC_APP_URL: undefined,
       NEXT_PUBLIC_BASE_DOMAIN: undefined,
       BASE_DOMAIN: undefined,
-      UPSTASH_REDIS_REST_URL: undefined,
-      UPSTASH_REDIS_REST_TOKEN: undefined,
-      KV_REST_API_URL: undefined,
-      KV_REST_API_TOKEN: undefined,
+      REDIS_URL: undefined,
+      KV_URL: undefined,
       AI_GATEWAY_API_KEY: undefined,
     },
     async () => {
@@ -1021,9 +986,9 @@ test("parity: local env action severity is recommended for store and ai-gateway"
       );
 
       const storeAction = payload.actions.find(
-        (a) => a.id === "configure-upstash",
+        (a) => a.id === "configure-redis",
       );
-      assert.ok(storeAction, "expected configure-upstash action");
+      assert.ok(storeAction, "expected configure-redis action");
       assert.equal(
         storeAction.status,
         "recommended",
@@ -1057,10 +1022,8 @@ test("parity: Vercel env action severity is required for store and ai-gateway", 
     {
       VERCEL: "1",
       NEXT_PUBLIC_APP_URL: "https://app.example.com",
-      UPSTASH_REDIS_REST_URL: undefined,
-      UPSTASH_REDIS_REST_TOKEN: undefined,
-      KV_REST_API_URL: undefined,
-      KV_REST_API_TOKEN: undefined,
+      REDIS_URL: undefined,
+      KV_URL: undefined,
       AI_GATEWAY_API_KEY: undefined,
     },
     async () => {
@@ -1071,9 +1034,9 @@ test("parity: Vercel env action severity is required for store and ai-gateway", 
       );
 
       const storeAction = payload.actions.find(
-        (a) => a.id === "configure-upstash",
+        (a) => a.id === "configure-redis",
       );
-      assert.ok(storeAction, "expected configure-upstash action");
+      assert.ok(storeAction, "expected configure-redis action");
       assert.equal(
         storeAction.status,
         "required",
@@ -1100,8 +1063,7 @@ test("preflight is config-only: passes on a fresh deployment before launch-verif
     {
       VERCEL_AUTH_MODE: "admin-secret",
       VERCEL_AUTOMATION_BYPASS_SECRET: "bypass-secret",
-      UPSTASH_REDIS_REST_URL: "https://example.upstash.io",
-      UPSTASH_REDIS_REST_TOKEN: "token",
+      REDIS_URL: "redis://default:token@example.com:6379",
       CRON_SECRET: "cron-secret",
       NEXT_PUBLIC_APP_URL: "https://app.example.com",
       AI_GATEWAY_API_KEY: undefined,
@@ -1145,8 +1107,7 @@ test("getLaunchVerifyBlocking returns not blocking when all checks pass", async 
     {
       VERCEL_AUTH_MODE: "admin-secret",
       VERCEL_AUTOMATION_BYPASS_SECRET: "bypass-secret",
-      UPSTASH_REDIS_REST_URL: "https://example.upstash.io",
-      UPSTASH_REDIS_REST_TOKEN: "token",
+      REDIS_URL: "redis://default:token@example.com:6379",
       CRON_SECRET: "cron-secret",
       NEXT_PUBLIC_APP_URL: "https://app.example.com",
     },
@@ -1168,10 +1129,8 @@ test("getLaunchVerifyBlocking returns blocking with skip phase IDs when checks f
       VERCEL: "1",
       VERCEL_AUTH_MODE: "admin-secret",
       NEXT_PUBLIC_APP_URL: "https://app.example.com",
-      UPSTASH_REDIS_REST_URL: undefined,
-      UPSTASH_REDIS_REST_TOKEN: undefined,
-      KV_REST_API_URL: undefined,
-      KV_REST_API_TOKEN: undefined,
+      REDIS_URL: undefined,
+      KV_URL: undefined,
     },
     async () => {
       _setAiGatewayTokenOverrideForTesting(undefined);
@@ -1214,8 +1173,7 @@ test("webhook-bypass check is never 'fail' — missing bypass is warn, not a blo
       VERCEL_AUTH_MODE: "admin-secret",
       NEXT_PUBLIC_APP_URL: "https://app.example.com",
       VERCEL_AUTOMATION_BYPASS_SECRET: undefined,
-      UPSTASH_REDIS_REST_URL: "https://example.upstash.io",
-      UPSTASH_REDIS_REST_TOKEN: "token",
+      REDIS_URL: "redis://default:token@example.com:6379",
       OPENCLAW_PACKAGE_SPEC: "openclaw@1.0.0",
       CRON_SECRET: "cron-secret",
     },
@@ -1269,7 +1227,7 @@ test("getLaunchVerifyBlocking: synthetic webhook-bypass warn does not block", ()
     webhookBypassEnabled: false,
     webhookBypassRecommended: true,
     deploymentProtectionDetected: false,
-    storeBackend: "upstash" as const,
+    storeBackend: "redis" as const,
     aiGatewayAuth: "oidc" as const,
     cronSecretConfigured: true,
     cronSecretExplicitlyConfigured: true,
@@ -1301,8 +1259,7 @@ test("preflight warns but does not fail when bypass is required and missing", as
       VERCEL_APP_CLIENT_SECRET: "client-secret",
       SESSION_SECRET: "session-secret",
       VERCEL_AUTOMATION_BYPASS_SECRET: undefined,
-      UPSTASH_REDIS_REST_URL: "https://example.upstash.io",
-      UPSTASH_REDIS_REST_TOKEN: "token",
+      REDIS_URL: "redis://default:token@example.com:6379",
       OPENCLAW_PACKAGE_SPEC: "openclaw@1.0.0",
       CRON_SECRET: "cron-secret",
     },
@@ -1338,10 +1295,8 @@ test("getLaunchVerifyBlocking treats warn-only checks as non-blocking", async ()
       VERCEL_PROJECT_PRODUCTION_URL: undefined,
       VERCEL_AUTH_MODE: "admin-secret",
       NEXT_PUBLIC_APP_URL: "https://local.example.com",
-      UPSTASH_REDIS_REST_URL: undefined,
-      UPSTASH_REDIS_REST_TOKEN: undefined,
-      KV_REST_API_URL: undefined,
-      KV_REST_API_TOKEN: undefined,
+      REDIS_URL: undefined,
+      KV_URL: undefined,
     },
     async () => {
       _setAiGatewayTokenOverrideForTesting(undefined);
@@ -1368,8 +1323,7 @@ test("preflight fails on Vercel when CRON_SECRET is missing", async () => {
       VERCEL_AUTH_MODE: "admin-secret",
       ADMIN_SECRET: undefined,
       NEXT_PUBLIC_APP_URL: "https://app.example.com",
-      UPSTASH_REDIS_REST_URL: "https://example.upstash.io",
-      UPSTASH_REDIS_REST_TOKEN: "token",
+      REDIS_URL: "redis://default:token@example.com:6379",
       OPENCLAW_PACKAGE_SPEC: "openclaw@1.0.0",
       CRON_SECRET: undefined,
     },
@@ -1402,8 +1356,7 @@ test("getLaunchVerifyBlocking blocks when cron-secret is failing on Vercel", asy
       VERCEL_AUTH_MODE: "admin-secret",
       ADMIN_SECRET: undefined,
       NEXT_PUBLIC_APP_URL: "https://app.example.com",
-      UPSTASH_REDIS_REST_URL: "https://example.upstash.io",
-      UPSTASH_REDIS_REST_TOKEN: "token",
+      REDIS_URL: "redis://default:token@example.com:6379",
       OPENCLAW_PACKAGE_SPEC: "openclaw@1.0.0",
       CRON_SECRET: undefined,
     },
@@ -1442,8 +1395,7 @@ test("preflight does not hard-fail on cron-secret outside Vercel", async () => {
       VERCEL_PROJECT_PRODUCTION_URL: undefined,
       VERCEL_AUTH_MODE: "admin-secret",
       NEXT_PUBLIC_APP_URL: "https://local.example.com",
-      UPSTASH_REDIS_REST_URL: "https://example.upstash.io",
-      UPSTASH_REDIS_REST_TOKEN: "token",
+      REDIS_URL: "redis://default:token@example.com:6379",
       CRON_SECRET: undefined,
     },
     async () => {
@@ -1482,8 +1434,7 @@ test("preflight reports api-key when AI_GATEWAY_API_KEY is used without OIDC", a
       VERCEL_AUTH_MODE: "admin-secret",
       NEXT_PUBLIC_APP_URL: "https://app.example.com",
       VERCEL_AUTOMATION_BYPASS_SECRET: "bypass-secret",
-      UPSTASH_REDIS_REST_URL: "https://example.upstash.io",
-      UPSTASH_REDIS_REST_TOKEN: "token",
+      REDIS_URL: "redis://default:token@example.com:6379",
       CRON_SECRET: "cron-secret",
       AI_GATEWAY_API_KEY: "static-api-key",
     },
@@ -1524,8 +1475,7 @@ test("preflight bypass remediation text mentions all channels", async () => {
       VERCEL_APP_CLIENT_SECRET: "client-secret",
       SESSION_SECRET: "session-secret",
       VERCEL_AUTOMATION_BYPASS_SECRET: undefined,
-      UPSTASH_REDIS_REST_URL: "https://example.upstash.io",
-      UPSTASH_REDIS_REST_TOKEN: "token",
+      REDIS_URL: "redis://default:token@example.com:6379",
       OPENCLAW_PACKAGE_SPEC: "openclaw@1.0.0",
       CRON_SECRET: "cron-secret",
     },
@@ -1562,8 +1512,7 @@ test("preflight accepts AI_GATEWAY_API_KEY fallback on Vercel when OIDC is unava
       VERCEL: "1",
       VERCEL_AUTH_MODE: "admin-secret",
       NEXT_PUBLIC_APP_URL: "https://app.example.com",
-      UPSTASH_REDIS_REST_URL: "https://example.upstash.io",
-      UPSTASH_REDIS_REST_TOKEN: "token",
+      REDIS_URL: "redis://default:token@example.com:6379",
       OPENCLAW_PACKAGE_SPEC: "openclaw@1.0.0",
       CRON_SECRET: "cron-secret",
       AI_GATEWAY_API_KEY: "static-key",
@@ -1598,8 +1547,7 @@ test("preflight passes cron-secret check when CRON_SECRET is configured on Verce
       VERCEL: "1",
       VERCEL_AUTH_MODE: "admin-secret",
       NEXT_PUBLIC_APP_URL: "https://app.example.com",
-      UPSTASH_REDIS_REST_URL: "https://example.upstash.io",
-      UPSTASH_REDIS_REST_TOKEN: "token",
+      REDIS_URL: "redis://default:token@example.com:6379",
       OPENCLAW_PACKAGE_SPEC: "openclaw@1.0.0",
       CRON_SECRET: "my-secret",
     },
@@ -1628,8 +1576,7 @@ test("preflight cron fields reflect ADMIN_SECRET fallback on Vercel", async () =
       VERCEL: "1",
       VERCEL_AUTH_MODE: "admin-secret",
       NEXT_PUBLIC_APP_URL: "https://app.example.com",
-      UPSTASH_REDIS_REST_URL: "https://example.upstash.io",
-      UPSTASH_REDIS_REST_TOKEN: "token",
+      REDIS_URL: "redis://default:token@example.com:6379",
       OPENCLAW_PACKAGE_SPEC: "openclaw@1.0.0",
       CRON_SECRET: undefined,
       ADMIN_SECRET: "admin-secret-for-fallback",
@@ -1658,8 +1605,7 @@ test("preflight treats missing webhook bypass as warning and mentions channels",
       VERCEL: "1",
       VERCEL_AUTH_MODE: "sign-in-with-vercel",
       CRON_SECRET: "cron-secret",
-      UPSTASH_REDIS_REST_URL: "https://example.upstash.io",
-      UPSTASH_REDIS_REST_TOKEN: "token",
+      REDIS_URL: "redis://default:token@example.com:6379",
       VERCEL_AUTOMATION_BYPASS_SECRET: undefined,
       NEXT_PUBLIC_APP_URL: "https://app.example.com",
       NEXT_PUBLIC_VERCEL_APP_CLIENT_ID: "client-id",
@@ -1703,8 +1649,7 @@ test("preflight accepts AI_GATEWAY_API_KEY fallback on Vercel", async () => {
     {
       VERCEL: "1",
       CRON_SECRET: "cron-secret",
-      UPSTASH_REDIS_REST_URL: "https://example.upstash.io",
-      UPSTASH_REDIS_REST_TOKEN: "token",
+      REDIS_URL: "redis://default:token@example.com:6379",
       NEXT_PUBLIC_APP_URL: "https://app.example.com",
     },
     async () => {

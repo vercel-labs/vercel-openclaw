@@ -19,7 +19,7 @@ import {
   mutateMeta,
   _resetStoreForTesting,
 } from "@/server/store/store";
-import { UpstashStore } from "@/server/store/upstash-store";
+import { RedisStore } from "@/server/store/redis-store";
 
 type EvalHandler = (keys: string[], args: string[]) => unknown;
 
@@ -28,18 +28,29 @@ class FakeRedis {
 
   evalHandler: EvalHandler | null = null;
 
-  async get<T>(key: string): Promise<T | null> {
-    return (this.values.get(key) as T | undefined) ?? null;
+  async get(key: string): Promise<string | null> {
+    return this.values.get(key) ?? null;
   }
 
   async set(
     key: string,
     value: string,
-    options?: { nx?: boolean; ex?: number },
+    ...args: Array<string | number>
   ): Promise<"OK" | null> {
-    if (options?.nx && this.values.has(key)) {
+    // ioredis set supports positional modifiers: "NX" / "XX", "EX" <n>, "PX" <n>, "KEEPTTL"
+    let nxOnly = false;
+    for (let i = 0; i < args.length; i += 1) {
+      const token = String(args[i]).toUpperCase();
+      if (token === "NX") nxOnly = true;
+      if (token === "EX" || token === "PX") {
+        i += 1; // skip TTL value
+      }
+    }
+
+    if (nxOnly && this.values.has(key)) {
       return null;
     }
+
     this.values.set(key, value);
     return "OK";
   }
@@ -48,15 +59,17 @@ class FakeRedis {
     return this.values.delete(key) ? 1 : 0;
   }
 
-  async eval<TKeys extends string[], TResult>(
+  async eval(
     _script: string,
-    keys: TKeys,
-    args: string[],
-  ): Promise<TResult> {
+    numKeys: number,
+    ...rest: string[]
+  ): Promise<unknown> {
     if (!this.evalHandler) {
       throw new Error("Missing eval handler");
     }
-    return this.evalHandler(keys, args) as TResult;
+    const keys = rest.slice(0, numKeys);
+    const args = rest.slice(numKeys);
+    return this.evalHandler(keys, args);
   }
 }
 
@@ -111,10 +124,8 @@ test("getStore: allows memory store when NODE_ENV=production without Vercel mark
       VERCEL_ENV: undefined,
       VERCEL_URL: undefined,
       VERCEL_PROJECT_PRODUCTION_URL: undefined,
-      UPSTASH_REDIS_REST_URL: undefined,
-      UPSTASH_REDIS_REST_TOKEN: undefined,
-      KV_REST_API_URL: undefined,
-      KV_REST_API_TOKEN: undefined,
+      REDIS_URL: undefined,
+      KV_URL: undefined,
       OPENCLAW_INSTANCE_ID: undefined,
     },
     () => {
@@ -123,7 +134,7 @@ test("getStore: allows memory store when NODE_ENV=production without Vercel mark
   );
 });
 
-test("getStore: throws when Upstash missing and VERCEL=1", () => {
+test("getStore: throws when Redis missing and VERCEL=1", () => {
   withEnv(
     {
       NODE_ENV: "development",
@@ -131,14 +142,15 @@ test("getStore: throws when Upstash missing and VERCEL=1", () => {
       VERCEL_ENV: undefined,
       VERCEL_URL: undefined,
       VERCEL_PROJECT_PRODUCTION_URL: undefined,
-      UPSTASH_REDIS_REST_URL: undefined,
-      UPSTASH_REDIS_REST_TOKEN: undefined,
-      KV_REST_API_URL: undefined,
-      KV_REST_API_TOKEN: undefined,
+      REDIS_URL: undefined,
+      KV_URL: undefined,
       OPENCLAW_INSTANCE_ID: undefined,
     },
     () => {
-      assert.throws(() => getStore(), /Upstash Redis is required on Vercel deployments/);
+      assert.throws(
+        () => getStore(),
+        /Redis is required on Vercel deployments/,
+      );
     },
   );
 });
@@ -148,10 +160,8 @@ test("getStore: falls back to MemoryStore in development", () => {
     {
       NODE_ENV: "development",
       VERCEL: undefined,
-      UPSTASH_REDIS_REST_URL: undefined,
-      UPSTASH_REDIS_REST_TOKEN: undefined,
-      KV_REST_API_URL: undefined,
-      KV_REST_API_TOKEN: undefined,
+      REDIS_URL: undefined,
+      KV_URL: undefined,
       OPENCLAW_INSTANCE_ID: undefined,
     },
     () => {
@@ -166,10 +176,8 @@ test("getStore: falls back to MemoryStore when NODE_ENV is test", () => {
     {
       NODE_ENV: "test",
       VERCEL: undefined,
-      UPSTASH_REDIS_REST_URL: undefined,
-      UPSTASH_REDIS_REST_TOKEN: undefined,
-      KV_REST_API_URL: undefined,
-      KV_REST_API_TOKEN: undefined,
+      REDIS_URL: undefined,
+      KV_URL: undefined,
       OPENCLAW_INSTANCE_ID: undefined,
     },
     () => {
@@ -179,41 +187,13 @@ test("getStore: falls back to MemoryStore when NODE_ENV is test", () => {
   );
 });
 
-test("getStore: Upstash initialization does not warn when instance id is explicitly scoped", () => {
-  withEnv(
-    {
-      NODE_ENV: "production",
-      VERCEL: "1",
-      VERCEL_ENV: "production",
-      VERCEL_URL: "preview-123.vercel.app",
-      VERCEL_PROJECT_PRODUCTION_URL: undefined,
-      UPSTASH_REDIS_REST_URL: "https://example.upstash.io",
-      UPSTASH_REDIS_REST_TOKEN: "token",
-      KV_REST_API_URL: undefined,
-      KV_REST_API_TOKEN: undefined,
-      OPENCLAW_INSTANCE_ID: "fork-a",
-    },
-    () => {
-      _resetLogBuffer();
-      const store = getStore();
-      assert.equal(store.name, "upstash");
-      assert.equal(
-        getServerLogs().some((entry) => entry.message === "store.default_instance_id"),
-        false,
-      );
-    },
-  );
-});
-
 test("getStore: compareAndSetMeta rejects stale versions and accepts current", async () => {
   await withEnv(
     {
       NODE_ENV: "test",
       VERCEL: undefined,
-      UPSTASH_REDIS_REST_URL: undefined,
-      UPSTASH_REDIS_REST_TOKEN: undefined,
-      KV_REST_API_URL: undefined,
-      KV_REST_API_TOKEN: undefined,
+      REDIS_URL: undefined,
+      KV_URL: undefined,
       OPENCLAW_INSTANCE_ID: undefined,
     },
     async () => {
@@ -248,10 +228,8 @@ test("mutateMeta: increments persisted version after initialization", async () =
     {
       NODE_ENV: "test",
       VERCEL: undefined,
-      UPSTASH_REDIS_REST_URL: undefined,
-      UPSTASH_REDIS_REST_TOKEN: undefined,
-      KV_REST_API_URL: undefined,
-      KV_REST_API_TOKEN: undefined,
+      REDIS_URL: undefined,
+      KV_URL: undefined,
       OPENCLAW_INSTANCE_ID: undefined,
     },
     async () => {
@@ -537,10 +515,8 @@ test("ensureMetaShape: produces clean default for deeply corrupted input", () =>
 const TEST_ENV: Record<string, string | undefined> = {
   NODE_ENV: "test",
   VERCEL: undefined,
-  UPSTASH_REDIS_REST_URL: undefined,
-  UPSTASH_REDIS_REST_TOKEN: undefined,
-  KV_REST_API_URL: undefined,
-  KV_REST_API_TOKEN: undefined,
+  REDIS_URL: undefined,
+  KV_URL: undefined,
   OPENCLAW_INSTANCE_ID: undefined,
 };
 
@@ -943,7 +919,7 @@ test("[store] concurrent mutateMeta calls are serializable", async () => {
   });
 });
 
-test("[upstash-store] low-level redis methods reject unscoped keys", async () => {
+test("[redis-store] low-level redis methods reject unscoped keys", async () => {
   await withEnv(
     {
       NODE_ENV: "test",
@@ -951,7 +927,7 @@ test("[upstash-store] low-level redis methods reject unscoped keys", async () =>
     },
     async () => {
       const redis = new FakeRedis();
-      const store = new UpstashStore(redis as never);
+      const store = new RedisStore(redis as never);
 
       await assert.rejects(() => store.getValue("fork-b:key"), /outside instance prefix "fork-a:"/);
       await assert.rejects(() => store.setValue("plain-key", "value"), /outside instance prefix "fork-a:"/);
@@ -963,7 +939,7 @@ test("[upstash-store] low-level redis methods reject unscoped keys", async () =>
   );
 });
 
-test("[upstash-store] getMeta rejects persisted meta for a different instance", async () => {
+test("[redis-store] getMeta rejects persisted meta for a different instance", async () => {
   await withEnv(
     {
       NODE_ENV: "test",
@@ -972,7 +948,7 @@ test("[upstash-store] getMeta rejects persisted meta for a different instance", 
     async () => {
       const redis = new FakeRedis();
       redis.values.set(metaKey(), JSON.stringify(createDefaultMeta(Date.now(), "gateway-token", "fork-b")));
-      const store = new UpstashStore(redis as never);
+      const store = new RedisStore(redis as never);
 
       await assert.rejects(
         () => store.getMeta(),
@@ -982,7 +958,7 @@ test("[upstash-store] getMeta rejects persisted meta for a different instance", 
   );
 });
 
-test("[upstash-store] write-side meta operations reject mismatched instance ids", async () => {
+test("[redis-store] write-side meta operations reject mismatched instance ids", async () => {
   await withEnv(
     {
       NODE_ENV: "test",
@@ -991,7 +967,7 @@ test("[upstash-store] write-side meta operations reject mismatched instance ids"
     async () => {
       const redis = new FakeRedis();
       redis.evalHandler = () => 1;
-      const store = new UpstashStore(redis as never);
+      const store = new RedisStore(redis as never);
       const wrongMeta = createDefaultMeta(Date.now(), "gateway-token", "fork-b");
 
       await assert.rejects(
@@ -1010,7 +986,7 @@ test("[upstash-store] write-side meta operations reject mismatched instance ids"
   );
 });
 
-test("[upstash-store] configuredMetaKey stays test-only and must still be scoped", async () => {
+test("[redis-store] configuredMetaKey stays test-only and must still be scoped", async () => {
   await withEnv(
     {
       NODE_ENV: "test",
@@ -1018,10 +994,10 @@ test("[upstash-store] configuredMetaKey stays test-only and must still be scoped
     },
     async () => {
       const redis = new FakeRedis();
-      const scopedStore = new UpstashStore(redis as never, "fork-a:meta:test");
+      const scopedStore = new RedisStore(redis as never, "fork-a:meta:test");
       await scopedStore.setMeta(createDefaultMeta(Date.now(), "gateway-token", "fork-a"));
 
-      const unscopedStore = new UpstashStore(redis as never, "meta:test");
+      const unscopedStore = new RedisStore(redis as never, "meta:test");
       await assert.rejects(
         () => unscopedStore.getMeta(),
         /outside instance prefix "fork-a:"/,
@@ -1036,7 +1012,7 @@ test("[upstash-store] configuredMetaKey stays test-only and must still be scoped
     },
     async () => {
       const redis = new FakeRedis();
-      const store = new UpstashStore(redis as never, "fork-a:meta:test");
+      const store = new RedisStore(redis as never, "fork-a:meta:test");
       await assert.rejects(
         () => store.getMeta(),
         /configuredMetaKey is only supported in test mode/,

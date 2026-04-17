@@ -14,7 +14,7 @@ import {
 import { logInfo, logWarn } from "@/server/log";
 import { initLockKey } from "@/server/store/keyspace";
 import { MemoryStore } from "@/server/store/memory-store";
-import { UpstashStore } from "@/server/store/upstash-store";
+import { RedisStore } from "@/server/store/redis-store";
 
 const INIT_LOCK_TTL_SECONDS = 10;
 const INIT_READ_RETRY_COUNT = 20;
@@ -43,8 +43,8 @@ export function getStore(): Store {
     return singletonStore;
   }
 
-  // Only deployed Vercel runtimes may use Upstash. Tests and local/CI paths
-  // must stay on memory store even when Upstash env vars leak in.
+  // Only deployed Vercel runtimes may use Redis. Tests and local/CI paths
+  // must stay on memory store even when Redis env vars leak in.
   if (process.env.NODE_ENV === "test") {
     logWarn("store.memory_fallback", {
       message: "Using in-memory store — data will not persist across restarts.",
@@ -55,15 +55,15 @@ export function getStore(): Store {
   }
 
   if (isVercelDeployment()) {
-    const upstash = UpstashStore.fromEnv();
-    if (upstash) {
-      singletonStore = upstash;
+    const redis = RedisStore.fromEnv();
+    if (redis) {
+      singletonStore = redis;
       if (getOpenclawInstanceId() === DEFAULT_OPENCLAW_INSTANCE_ID) {
         logWarn("store.default_instance_id", {
           backend: singletonStore.name,
           instanceId: DEFAULT_OPENCLAW_INSTANCE_ID,
           message:
-            "Using default OPENCLAW_INSTANCE_ID with Upstash. Shared Redis deployments should set a unique instance id.",
+            "Using default OPENCLAW_INSTANCE_ID. Shared Redis deployments should set a unique instance id.",
         });
       }
       logInfo("store.initialized", { backend: singletonStore.name });
@@ -73,9 +73,8 @@ export function getStore(): Store {
 
   if (requiresDurableStore()) {
     throw new Error(
-      "Upstash Redis is required on Vercel deployments. " +
-        "Set UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN, " +
-        "or install the Upstash integration from the Vercel Marketplace.",
+      "Redis is required on Vercel deployments. " +
+        "Set REDIS_URL, or install a Redis integration from the Vercel Marketplace.",
     );
   }
 

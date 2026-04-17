@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import { Redis } from "@upstash/redis";
+import Redis from "ioredis";
 
 import type { SingleMeta } from "@/shared/types";
 import { getOpenclawInstanceId, getStoreEnv } from "@/server/env";
@@ -58,8 +58,20 @@ function toNumber(value: unknown): number {
   return 0;
 }
 
-export class UpstashStore {
-  readonly name = "upstash";
+let sharedClient: Redis | null = null;
+
+function getSharedClient(url: string): Redis {
+  if (sharedClient) return sharedClient;
+  sharedClient = new Redis(url, {
+    lazyConnect: false,
+    maxRetriesPerRequest: 3,
+    enableAutoPipelining: true,
+  });
+  return sharedClient;
+}
+
+export class RedisStore {
+  readonly name = "redis";
 
   constructor(
     private readonly redis: Redis,
@@ -85,28 +97,19 @@ export class UpstashStore {
     return meta;
   }
 
-  static fromEnv(): UpstashStore | null {
+  static fromEnv(): RedisStore | null {
     const env = getStoreEnv();
     if (!env) {
       return null;
     }
 
-    return new UpstashStore(
-      new Redis({
-        url: env.url,
-        token: env.token,
-      }),
-    );
+    return new RedisStore(getSharedClient(env.url));
   }
 
   async getMeta(): Promise<SingleMeta | null> {
-    const raw = await this.redis.get<SingleMeta | string>(this.getMetaKey());
+    const raw = await this.redis.get(this.getMetaKey());
     if (!raw) {
       return null;
-    }
-
-    if (typeof raw === "object") {
-      return this.validateMetaOwnership(raw as SingleMeta);
     }
 
     let parsed: SingleMeta;
@@ -126,16 +129,25 @@ export class UpstashStore {
 
   async createMetaIfAbsent(meta: SingleMeta): Promise<boolean> {
     this.validateMetaOwnership(meta);
-    const result = await this.redis.set(this.getMetaKey(), JSON.stringify(meta), { nx: true });
+    const result = await this.redis.set(
+      this.getMetaKey(),
+      JSON.stringify(meta),
+      "NX",
+    );
     return result === "OK";
   }
 
-  async compareAndSetMeta(expectedVersion: number, next: SingleMeta): Promise<boolean> {
+  async compareAndSetMeta(
+    expectedVersion: number,
+    next: SingleMeta,
+  ): Promise<boolean> {
     this.validateMetaOwnership(next);
-    const result = await this.redis.eval<[string, string], number>(
+    const result = await this.redis.eval(
       CAS_META_LUA,
-      [this.getMetaKey()],
-      [String(expectedVersion), JSON.stringify(next)],
+      1,
+      this.getMetaKey(),
+      String(expectedVersion),
+      JSON.stringify(next),
     );
 
     return toNumber(result) === 1;
@@ -143,17 +155,13 @@ export class UpstashStore {
 
   async getValue<T>(key: string): Promise<T | null> {
     assertScopedRedisKey(key);
-    const raw = await this.redis.get<T | string>(key);
+    const raw = await this.redis.get(key);
     if (!raw) {
       return null;
     }
 
-    if (typeof raw === "object") {
-      return raw as T;
-    }
-
     try {
-      return JSON.parse(String(raw)) as T;
+      return JSON.parse(raw) as T;
     } catch {
       return null;
     }
@@ -163,7 +171,7 @@ export class UpstashStore {
     assertScopedRedisKey(key);
     const payload = JSON.stringify(value);
     if (typeof ttlSeconds === "number") {
-      await this.redis.set(key, payload, { ex: ttlSeconds });
+      await this.redis.set(key, payload, "EX", ttlSeconds);
       return;
     }
 
@@ -178,20 +186,23 @@ export class UpstashStore {
   async acquireLock(key: string, ttlSeconds: number): Promise<string | null> {
     assertScopedRedisKey(key);
     const token = randomUUID();
-    const result = await this.redis.set(key, token, {
-      nx: true,
-      ex: ttlSeconds,
-    });
+    const result = await this.redis.set(key, token, "EX", ttlSeconds, "NX");
 
     return result === "OK" ? token : null;
   }
 
-  async renewLock(key: string, token: string, ttlSeconds: number): Promise<boolean> {
+  async renewLock(
+    key: string,
+    token: string,
+    ttlSeconds: number,
+  ): Promise<boolean> {
     assertScopedRedisKey(key);
-    const result = await this.redis.eval<[string, string], number>(
+    const result = await this.redis.eval(
       RENEW_LOCK_LUA,
-      [key],
-      [token, String(ttlSeconds)],
+      1,
+      key,
+      token,
+      String(ttlSeconds),
     );
 
     return toNumber(result) > 0;
@@ -199,6 +210,6 @@ export class UpstashStore {
 
   async releaseLock(key: string, token: string): Promise<void> {
     assertScopedRedisKey(key);
-    await this.redis.eval(RELEASE_LOCK_LUA, [key], [token]);
+    await this.redis.eval(RELEASE_LOCK_LUA, 1, key, token);
   }
 }

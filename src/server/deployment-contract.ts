@@ -36,7 +36,7 @@ export type DeploymentRequirement = {
 export type DeploymentContract = {
   ok: boolean;
   authMode: "admin-secret" | "sign-in-with-vercel";
-  storeBackend: "upstash" | "memory";
+  storeBackend: "redis" | "memory";
   aiGatewayAuth: "oidc" | "api-key" | "unavailable";
   openclawPackageSpec: string | null;
   openclawPackageSpecSource: "explicit" | "fallback";
@@ -147,7 +147,7 @@ function checkStore(onVercel: boolean): DeploymentRequirement {
       status: "pass",
       message: "Durable store is configured.",
       remediation: "",
-      env: ["UPSTASH_REDIS_REST_URL", "UPSTASH_REDIS_REST_TOKEN"],
+      env: ["REDIS_URL", "KV_URL"],
     };
   }
 
@@ -155,11 +155,11 @@ function checkStore(onVercel: boolean): DeploymentRequirement {
     id: "store",
     status: onVercel ? "fail" : "warn",
     message: onVercel
-      ? "Upstash Redis is required on Vercel deployments."
+      ? "Redis is required on Vercel deployments."
       : "Using in-memory store in a non-Vercel environment.",
     remediation:
-      "Add Upstash Redis so sandbox metadata, queue state, and channel/session history survive restarts.",
-    env: ["UPSTASH_REDIS_REST_URL", "UPSTASH_REDIS_REST_TOKEN"],
+      "Set REDIS_URL or install a Redis integration from the Vercel Marketplace so sandbox metadata, queue state, and channel/session history survive restarts.",
+    env: ["REDIS_URL", "KV_URL"],
   };
 }
 
@@ -341,7 +341,7 @@ function checkSessionSecret(
       message:
         "SESSION_SECRET is required for deployed sign-in-with-vercel mode.",
       remediation:
-        "Set SESSION_SECRET to a random 32+ character string and redeploy. Do not rely on silent derivation from the Upstash token.",
+        "Set SESSION_SECRET to a random 32+ character string and redeploy.",
       env: ["SESSION_SECRET"],
     };
   }
@@ -365,7 +365,7 @@ export async function buildDeploymentContract(
   const onVercel = isVercelDeployment();
   const authMode = getAuthMode();
   const storeEnv = getStoreEnv();
-  const storeBackend = storeEnv ? "upstash" : "memory";
+  const storeBackend = storeEnv ? "redis" : "memory";
 
   let aiGatewayAuth: Awaited<ReturnType<typeof getAiGatewayAuthMode>>;
   try {

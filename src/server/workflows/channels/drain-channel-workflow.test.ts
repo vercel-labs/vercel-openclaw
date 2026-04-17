@@ -125,10 +125,8 @@ const WORKFLOW_TEST_ENV_KEYS = [
   "VERCEL_ENV",
   "VERCEL_URL",
   "VERCEL_PROJECT_PRODUCTION_URL",
-  "UPSTASH_REDIS_REST_URL",
-  "UPSTASH_REDIS_REST_TOKEN",
-  "KV_REST_API_URL",
-  "KV_REST_API_TOKEN",
+  "REDIS_URL",
+    "KV_URL",
 ] as const;
 
 let workflowTestEnvOriginals: Record<string, string | undefined> = {};
@@ -143,10 +141,8 @@ test.beforeEach(async () => {
   delete process.env.VERCEL_ENV;
   delete process.env.VERCEL_URL;
   delete process.env.VERCEL_PROJECT_PRODUCTION_URL;
-  delete process.env.UPSTASH_REDIS_REST_URL;
-  delete process.env.UPSTASH_REDIS_REST_TOKEN;
-  delete process.env.KV_REST_API_URL;
-  delete process.env.KV_REST_API_TOKEN;
+  delete process.env.REDIS_URL;
+  delete process.env.KV_URL;
   _resetStoreForTesting();
   _resetLogBuffer();
 });

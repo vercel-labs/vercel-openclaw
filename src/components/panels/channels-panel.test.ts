@@ -48,11 +48,11 @@ test("summarizePreflight keeps blocker ids separate from required action ids", (
     ],
     actions: [
       {
-        id: "configure-upstash",
+        id: "configure-redis",
         status: "required",
         message: "Add a durable store.",
-        remediation: "Set UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN.",
-        env: ["UPSTASH_REDIS_REST_URL", "UPSTASH_REDIS_REST_TOKEN"],
+        remediation: "Set REDIS_URL or install a Redis integration from the Vercel Marketplace.",
+        env: ["REDIS_URL", "KV_URL"],
       },
       {
         id: "configure-ai-gateway-auth",
@@ -76,11 +76,11 @@ test("summarizePreflight keeps blocker ids separate from required action ids", (
     "OIDC token is not available.",
   ]);
   assert.deepEqual(summary.requiredActionIds, [
-    "configure-upstash",
+    "configure-redis",
     "configure-ai-gateway-auth",
   ]);
   assert.deepEqual(summary.requiredRemediations, [
-    "Set UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN.",
+    "Set REDIS_URL or install a Redis integration from the Vercel Marketplace.",
     "Enable OIDC or set AI_GATEWAY_API_KEY.",
   ]);
 });

@@ -137,12 +137,12 @@ function parseStoredCronRecord(
   if (typeof raw === "object" && raw !== null && "version" in raw && "jobsJson" in raw) {
     return raw as StoredCronRecord;
   }
-  // Legacy: raw string or Upstash-deserialized object without version field
+  // Legacy: raw string or object without version field
   let jobsJson: string;
   if (typeof raw === "string") {
     jobsJson = raw;
   } else if (typeof raw === "object" && raw !== null && "jobs" in raw) {
-    // Upstash double-deserialized the old raw string into an object
+    // Object form (legacy deserialization of raw jobs JSON)
     jobsJson = JSON.stringify(raw);
   } else {
     return null;
@@ -1714,7 +1714,7 @@ export async function touchRunningSandbox(): Promise<SingleMeta> {
     if (rawJobs) {
       const record = buildCronRecord(rawJobs, "heartbeat");
       if (record) {
-        // Only write if the hash changed — avoids redundant Upstash writes.
+        // Only write if the hash changed — avoids redundant Redis writes.
         const existing = parseStoredCronRecord(
           await getStore().getValue<unknown>(cronJobsKey()),
         );
@@ -2708,10 +2708,10 @@ async function createAndBootstrapSandboxWithinLifecycleLock(
       let telegramListenerStatus: number | null = null;
       let telegramListenerWaitMs: number | null = null;
       let telegramListenerError: string | null = null;
-      let telegramReconcileMs: number | null = null;
-      let telegramSecretSyncMs: number | null = null;
-      let telegramReconcileBlocking = false;
-      let telegramSecretSyncBlocking = false;
+      const telegramReconcileMs: number | null = null;
+      const telegramSecretSyncMs: number | null = null;
+      const telegramReconcileBlocking = false;
+      const telegramSecretSyncBlocking = false;
       try {
         const stdout = await restoreResult.output("stdout");
         const parsed = JSON.parse(stdout.trim()) as {

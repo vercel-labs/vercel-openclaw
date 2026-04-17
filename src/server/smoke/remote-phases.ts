@@ -944,7 +944,7 @@ export async function chatCompletions(baseUrl: string, opts?: PhaseOptions): Pro
       "Content-Type": "application/json",
     };
     const body = JSON.stringify({
-      model: "default",
+      model: "openclaw",
       messages: [{ role: "user", content: "Reply with exactly: smoke-ok" }],
       stream: false,
     });
@@ -1330,7 +1330,7 @@ export async function selfHealTokenRefresh(
       {
         method: "POST",
         headers: { ...authHeaders({ mutation: true }), "Content-Type": "application/json" },
-        body: JSON.stringify({ model: "default", messages: [{ role: "user", content: "say smoke-ok" }], stream: false }),
+        body: JSON.stringify({ model: "openclaw", messages: [{ role: "user", content: "say smoke-ok" }], stream: false }),
       },
       HEAL_GATEWAY_TIMEOUT_MS,
     );
@@ -1390,7 +1390,7 @@ export async function selfHealTokenRefresh(
         {
           method: "POST",
           headers: { ...authHeaders({ mutation: true }), "Content-Type": "application/json" },
-          body: JSON.stringify({ model: "default", messages: [{ role: "user", content: "say smoke-ok" }], stream: false }),
+          body: JSON.stringify({ model: "openclaw", messages: [{ role: "user", content: "say smoke-ok" }], stream: false }),
         },
         HEAL_GATEWAY_TIMEOUT_MS,
       ).catch(() => null);

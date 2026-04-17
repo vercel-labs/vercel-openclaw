@@ -62,7 +62,7 @@ function makeDeps(overrides: Partial<Parameters<typeof runSandboxWatchdog>[1]> =
     buildContract: async () => ({
       ok: true,
       authMode: "admin-secret" as const,
-      storeBackend: "upstash" as const,
+      storeBackend: "redis" as const,
       aiGatewayAuth: "oidc" as const,
       openclawPackageSpec: "openclaw@1.2.3",
       openclawPackageSpecSource: "explicit" as const,

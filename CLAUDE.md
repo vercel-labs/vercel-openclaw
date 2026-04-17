@@ -156,7 +156,7 @@ Checks: `public-origin`, `webhook-bypass` (diagnostic only: pass or warn, never 
 
 The authoritative readiness check is `POST /api/admin/launch-verify` (`src/app/api/admin/launch-verify/route.ts`), which runs preflight as its first phase and then verifies runtime behavior: queue loopback delivery via `/api/queues/launch-verify`, sandbox ensure, gateway chat completions, and wake-from-sleep recovery (destructive mode). `scripts/check-deploy-readiness.mjs` consumes launch-verify by default.
 
-Store requirement policy: missing Upstash is a hard fail (`status: "fail"`) on Vercel deployments but a warning (`status: "warn"`) in non-Vercel/local environments. This applies to both connectability and preflight checks.
+Store requirement policy: missing Redis is a hard fail (`status: "fail"`) on Vercel deployments but a warning (`status: "warn"`) in non-Vercel/local environments. This applies to both connectability and preflight checks.
 
 Observability notes:
 
@@ -175,7 +175,7 @@ Observability notes:
   publicOrigin: string | null;
   webhookBypassEnabled: boolean;
   webhookBypassRecommended: boolean;
-  storeBackend: "upstash" | "memory";
+  storeBackend: "redis" | "memory";
   aiGatewayAuth: "oidc" | "api-key" | "unavailable";
   cronSecretConfigured: boolean;
   cronSecretExplicitlyConfigured: boolean;
@@ -213,14 +213,14 @@ Channel config is stored in that same metadata record. Durable webhook queues an
 
 Backends:
 
-- `src/server/store/upstash-store.ts`
+- `src/server/store/redis-store.ts`
 - `src/server/store/memory-store.ts`
 
 Selection happens in `src/server/store/store.ts`.
 
 Rules:
 
-- prefer the Upstash REST backend for persistent behavior
+- prefer the Redis backend (via `ioredis`) for persistent behavior
 - the memory backend is for local development only
 - any change to metadata shape should be reflected in `ensureMetaShape`
 
@@ -437,11 +437,11 @@ Hard blockers (cause `canConnect: false`):
 
 - canonical public HTTPS webhook URL cannot be resolved
 - AI Gateway auth is not OIDC on a Vercel deployment (`unavailable`)
-- missing Upstash store on a Vercel deployment (durable state required for channel reliability)
+- missing Redis store on a Vercel deployment (durable state required for channel reliability)
 
 Warnings only (do not block connect):
 
-- missing Upstash store in local/non-Vercel environments
+- missing Redis store in local/non-Vercel environments
 
 `buildChannelConnectability()` and `buildChannelConnectabilityReport()` are **async** — all call sites must use `await` or `await Promise.all([...])`.
 
@@ -524,8 +524,8 @@ When adding new `logInfo` calls to code that runs on every request (status polli
 - If you change metadata shape, update tests and migration logic in `ensureMetaShape`.
 - All new Redis keys must go through `src/server/store/keyspace.ts` — never hardcode the `openclaw-single` prefix.
 - Telegram `webhookSecret` must flow through ALL config paths: `buildGatewayConfig()`, `buildDynamicResumeFiles()`, `syncRestoreAssetsIfNeeded()`, and `computeGatewayConfigHash()`. Missing it causes OpenClaw config validation failure ("webhookUrl requires webhookSecret").
-- `_setSandboxControllerForTesting()` only works when `NODE_ENV=test`. In production, `getSandboxController()` always returns the real `@vercel/sandbox` v2 beta SDK wrapper. This prevents fake sandbox names from contaminating Upstash metadata.
-- Upstash store only connects on deployed Vercel runtimes (`isVercelDeployment()`). Local dev and CI always use the memory store, even if Upstash env vars are present.
+- `_setSandboxControllerForTesting()` only works when `NODE_ENV=test`. In production, `getSandboxController()` always returns the real `@vercel/sandbox` v2 beta SDK wrapper. This prevents fake sandbox names from contaminating Redis metadata.
+- Redis store only connects on deployed Vercel runtimes (`isVercelDeployment()`). Local dev and CI always use the memory store, even if `REDIS_URL`/`KV_URL` env vars are present.
 
 ## Verification
 
@@ -569,15 +569,15 @@ These variables are checked by `buildDeploymentContract()` in `src/server/deploy
 | Variable | Context | Policy |
 | -------- | ------- | ------ |
 | `CRON_SECRET` | Recommended on Vercel | Authenticates `/api/cron/watchdog`. When unset, the runtime falls back to `ADMIN_SECRET`. The deployment contract **warns** (not fails) on Vercel when only `ADMIN_SECRET` is available. Set `CRON_SECRET` separately if you want independent rotation for cron authentication. Missing both `CRON_SECRET` and `ADMIN_SECRET` on Vercel is a hard failure. |
-| `UPSTASH_REDIS_REST_URL` | All deployments | Required for persistent state. Provision via Vercel Marketplace. |
-| `UPSTASH_REDIS_REST_TOKEN` | All deployments | Required for persistent state. Paired with the URL above. |
+| `REDIS_URL` | All deployments | Required for persistent state. Redis Cloud Marketplace integration injects this automatically; otherwise point at any Redis-wire-protocol URL (`redis://` or `rediss://`). |
+| `KV_URL` | All deployments | Optional alias for `REDIS_URL`. The legacy Vercel KV integration exposes this name; the app prefers `REDIS_URL` but falls back to `KV_URL`. |
 | `OPENCLAW_INSTANCE_ID` | All environments | Optional. Namespace token for Redis key isolation. On Vercel deployments, automatically uses `VERCEL_PROJECT_ID` when unset, giving each project its own namespace. Falls back to `openclaw-single` in local/non-Vercel environments. Can be set explicitly to override auto-detection. Changing it later points the app at a new namespace; it does not migrate existing state. |
 | `OPENCLAW_PACKAGE_SPEC` | All environments | Optional locally, recommended on Vercel. When unset, the runtime falls back to a pinned known-good version (currently `openclaw@2026.4.12`). On Vercel deployments, the deployment contract **warns** — it does not fail — when unset or unpinned. Pin to an exact version like `openclaw@1.2.3` for deterministic sandbox resumes. |
 | `OPENCLAW_SANDBOX_VCPUS` | All environments | Optional. vCPU count for sandbox create and resume (valid: 1, 2, 4, 8; default: 1). Keep this fixed during benchmarks so resume timings stay comparable. |
 | `OPENCLAW_SANDBOX_SLEEP_AFTER_MS` | All environments | Optional. How long the sandbox stays alive after last activity, in milliseconds (60000–2700000; default: 1800000 = 30 min). Heartbeat and touch-throttle intervals are derived proportionally. Existing running sandboxes cannot be shortened in place. If you increase this value, the next touch/heartbeat can top the sandbox timeout up to the new target. If you decrease it, the lower value becomes exact on the next create or restore. |
 | `NEXT_PUBLIC_VERCEL_APP_CLIENT_ID` | `sign-in-with-vercel` mode | Required for OAuth flow. |
 | `VERCEL_APP_CLIENT_SECRET` | `sign-in-with-vercel` mode | Required for OAuth flow. |
-| `SESSION_SECRET` | `sign-in-with-vercel` on Vercel | Required. Must be explicitly set — do not rely on silent derivation from the Upstash token. |
+| `SESSION_SECRET` | `sign-in-with-vercel` on Vercel | Required. Must be explicitly set. |
 | `SLACK_CLIENT_ID` | All environments | Optional. Slack app client ID. When all three `SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET`, and `SLACK_SIGNING_SECRET` are set, the admin panel offers one-click OAuth install instead of manual credential entry. |
 | `SLACK_CLIENT_SECRET` | All environments | Optional. Slack app client secret. Paired with `SLACK_CLIENT_ID`. |
 | `SLACK_SIGNING_SECRET` | All environments | Optional. Slack app signing secret. Used for webhook signature verification when the bot token is obtained via the OAuth install flow. |
@@ -588,7 +588,7 @@ These variables are checked by `buildDeploymentContract()` in `src/server/deploy
 
 - The memory store is not safe for production persistence.
 - Firewall learning is based on shell command observation, not full traffic inspection.
-- Channel webhook durability depends on the store backend. Use Upstash when channels matter.
+- Channel webhook durability depends on the store backend. Use Redis when channels matter.
 
 ## Design Context
 

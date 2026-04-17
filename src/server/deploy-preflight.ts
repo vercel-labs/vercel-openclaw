@@ -44,7 +44,7 @@ export type PreflightCheckId =
 export type PreflightActionId =
   | "configure-public-origin"
   | "configure-webhook-bypass"
-  | "configure-upstash"
+  | "configure-redis"
   | "configure-ai-gateway-auth"
   | "configure-openclaw-package-spec"
   | "configure-oauth"
@@ -83,7 +83,7 @@ export type PreflightPayload = {
   webhookBypassEnabled: boolean;
   webhookBypassRecommended: boolean;
   deploymentProtectionDetected: boolean;
-  storeBackend: "upstash" | "memory";
+  storeBackend: "redis" | "memory";
   aiGatewayAuth: "oidc" | "api-key" | "unavailable";
   cronSecretConfigured: boolean;
   cronSecretExplicitlyConfigured: boolean;
@@ -256,7 +256,7 @@ function buildActions(input: {
   const byId = indexRequirements(input.contract);
 
   pushRequirementAction(actions, byId.get("public-origin"), "configure-public-origin");
-  pushRequirementAction(actions, byId.get("store"), "configure-upstash");
+  pushRequirementAction(actions, byId.get("store"), "configure-redis");
   pushRequirementAction(actions, byId.get("ai-gateway"), "configure-ai-gateway-auth");
   pushRequirementAction(actions, byId.get("cron-secret"), "configure-cron-secret");
 
@@ -589,7 +589,7 @@ export async function buildDeployPreflight(
       id: "store",
       status: (contractStoreReq?.status ?? "warn") as PreflightStatus,
       message: contractStoreReq?.message ??
-        "Using in-memory state. Channel reliability requires Upstash in production.",
+        "Using in-memory state. Channel reliability requires Redis in production.",
     },
     // ai-gateway — derived from contract (warn locally, fail on Vercel)
     {

@@ -6,6 +6,7 @@ import { callGatewayWithAuthRecovery } from "@/server/gateway/auth-recovery";
 import { logInfo, logWarn } from "@/server/log";
 import { OPENCLAW_OPERATOR_SCOPES } from "@/server/openclaw/config";
 import { ensureFreshGatewayToken } from "@/server/sandbox/lifecycle";
+import { launchVerifyQueueResultKey } from "@/server/store/keyspace";
 import { getInitializedMeta, getStore } from "@/server/store/store";
 
 const RESULT_TTL_SECONDS = 15 * 60;
@@ -52,7 +53,7 @@ export type LaunchVerifyQueueResult = {
 };
 
 function resultKey(probeId: string): string {
-  return `launch-verify:queue-result:${probeId}`;
+  return launchVerifyQueueResultKey(probeId);
 }
 
 type ProbeInput =
@@ -242,7 +243,7 @@ export async function runLaunchVerifyCompletion(options: {
               "x-openclaw-scopes": OPENCLAW_OPERATOR_SCOPES,
             },
             body: JSON.stringify({
-              model: "default",
+              model: "openclaw",
               messages: [{ role: "user", content: options.prompt }],
               stream: false,
             }),

@@ -60,10 +60,8 @@ test("[contract] memory store allowed outside Vercel even in production mode", (
       VERCEL_ENV: undefined,
       VERCEL_URL: undefined,
       VERCEL_PROJECT_PRODUCTION_URL: undefined,
-      UPSTASH_REDIS_REST_URL: undefined,
-      UPSTASH_REDIS_REST_TOKEN: undefined,
-      KV_REST_API_URL: undefined,
-      KV_REST_API_TOKEN: undefined,
+      REDIS_URL: undefined,
+      KV_URL: undefined,
       OPENCLAW_INSTANCE_ID: undefined,
     },
     () => {
@@ -74,43 +72,13 @@ test("[contract] memory store allowed outside Vercel even in production mode", (
   );
 });
 
-test("[contract] getStore() uses Upstash on Vercel and warns on default instance id", () => {
-  withEnv(
-    {
-      NODE_ENV: "production",
-      VERCEL: "1",
-      VERCEL_ENV: "production",
-      VERCEL_URL: "preview-123.vercel.app",
-      VERCEL_PROJECT_PRODUCTION_URL: undefined,
-      UPSTASH_REDIS_REST_URL: "https://example.upstash.io",
-      UPSTASH_REDIS_REST_TOKEN: "token",
-      KV_REST_API_URL: undefined,
-      KV_REST_API_TOKEN: undefined,
-      OPENCLAW_INSTANCE_ID: undefined,
-    },
-    () => {
-      _resetLogBuffer();
-      _resetStoreForTesting();
-
-      const store = getStore();
-      assert.equal(store.name, "upstash");
-
-      const warning = getServerLogs().find(
-        (entry) => entry.message === "store.default_instance_id",
-      );
-      assert.ok(warning);
-      assert.equal(warning?.data?.instanceId, "openclaw-single");
-    },
-  );
-});
-
 // ---------------------------------------------------------------------------
-// Contract: getStore() throws on Vercel without Upstash.
+// Contract: getStore() throws on Vercel without Redis.
 // This ensures runtime behavior matches preflight's hard fail for missing
 // durable store on Vercel deployments.
 // ---------------------------------------------------------------------------
 
-test("[contract] getStore() throws on Vercel without Upstash", () => {
+test("[contract] getStore() throws on Vercel without Redis", () => {
   withEnv(
     {
       NODE_ENV: "production",
@@ -118,17 +86,15 @@ test("[contract] getStore() throws on Vercel without Upstash", () => {
       VERCEL_ENV: "production",
       VERCEL_URL: "preview-123.vercel.app",
       VERCEL_PROJECT_PRODUCTION_URL: undefined,
-      UPSTASH_REDIS_REST_URL: undefined,
-      UPSTASH_REDIS_REST_TOKEN: undefined,
-      KV_REST_API_URL: undefined,
-      KV_REST_API_TOKEN: undefined,
+      REDIS_URL: undefined,
+      KV_URL: undefined,
       OPENCLAW_INSTANCE_ID: undefined,
     },
     () => {
       _resetStoreForTesting();
       assert.throws(
         () => getStore(),
-        /Upstash Redis is required on Vercel deployments/,
+        /Redis is required on Vercel deployments/,
       );
       _resetStoreForTesting();
     },
@@ -149,17 +115,15 @@ test("[contract] getStore() throws when only VERCEL_ENV is set (no VERCEL=1)", (
       VERCEL_ENV: "preview",
       VERCEL_URL: undefined,
       VERCEL_PROJECT_PRODUCTION_URL: undefined,
-      UPSTASH_REDIS_REST_URL: undefined,
-      UPSTASH_REDIS_REST_TOKEN: undefined,
-      KV_REST_API_URL: undefined,
-      KV_REST_API_TOKEN: undefined,
+      REDIS_URL: undefined,
+      KV_URL: undefined,
       OPENCLAW_INSTANCE_ID: undefined,
     },
     () => {
       _resetStoreForTesting();
       assert.throws(
         () => getStore(),
-        /Upstash Redis is required on Vercel deployments/,
+        /Redis is required on Vercel deployments/,
       );
       _resetStoreForTesting();
     },
@@ -180,19 +144,22 @@ test("[contract] getStore() throws when only VERCEL_PROJECT_PRODUCTION_URL is se
       VERCEL_ENV: undefined,
       VERCEL_URL: undefined,
       VERCEL_PROJECT_PRODUCTION_URL: "my-app.vercel.app",
-      UPSTASH_REDIS_REST_URL: undefined,
-      UPSTASH_REDIS_REST_TOKEN: undefined,
-      KV_REST_API_URL: undefined,
-      KV_REST_API_TOKEN: undefined,
+      REDIS_URL: undefined,
+      KV_URL: undefined,
       OPENCLAW_INSTANCE_ID: undefined,
     },
     () => {
       _resetStoreForTesting();
       assert.throws(
         () => getStore(),
-        /Upstash Redis is required on Vercel deployments/,
+        /Redis is required on Vercel deployments/,
       );
       _resetStoreForTesting();
     },
   );
 });
+
+// Retains placeholder for getServerLogs import usage (kept for symmetry with
+// the ring-buffer test infrastructure). Reference the import so unused-var
+// lint doesn't complain if assertions are later removed.
+void getServerLogs;

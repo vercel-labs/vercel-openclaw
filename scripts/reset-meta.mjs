@@ -1,4 +1,4 @@
-import { Redis } from "@upstash/redis";
+import IORedis from "ioredis";
 import { readFileSync } from "fs";
 
 const lines = readFileSync(".env.local", "utf8").split("\n");
@@ -26,12 +26,14 @@ function getOpenclawInstanceId() {
   return trimmed;
 }
 
+const url = env.REDIS_URL ?? env.KV_URL;
+if (!url) {
+  throw new Error("Set REDIS_URL (or KV_URL) in .env.local to reset meta.");
+}
+
 const targetMetaKey = `${getOpenclawInstanceId()}:meta`;
 
-const redis = new Redis({
-  url: env.UPSTASH_REDIS_REST_URL ?? env.KV_REST_API_URL,
-  token: env.UPSTASH_REDIS_REST_TOKEN ?? env.KV_REST_API_TOKEN,
-});
+const redis = new IORedis(url, { lazyConnect: false });
 console.log("Target key:", targetMetaKey);
 const raw = await redis.get(targetMetaKey);
 console.log("Raw type:", typeof raw);
@@ -40,6 +42,7 @@ console.log("Raw value (first 200):", JSON.stringify(raw).slice(0, 200));
 const meta = typeof raw === "string" ? JSON.parse(raw) : raw;
 if (!meta) {
   console.log("No metadata found — nothing to reset");
+  await redis.quit();
   process.exit(0);
 }
 
@@ -55,3 +58,4 @@ meta.portUrls = {};
 
 await redis.set(targetMetaKey, JSON.stringify(meta));
 console.log("Reset to stopped — will create fresh v2 sandbox on next ensure");
+await redis.quit();

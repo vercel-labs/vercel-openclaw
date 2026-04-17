@@ -71,10 +71,8 @@ import {
 const ENV_OVERRIDES: Record<string, string | undefined> = {
   NODE_ENV: "test",
   VERCEL: undefined,
-  UPSTASH_REDIS_REST_URL: undefined,
-  UPSTASH_REDIS_REST_TOKEN: undefined,
-  KV_REST_API_URL: undefined,
-  KV_REST_API_TOKEN: undefined,
+  REDIS_URL: undefined,
+  KV_URL: undefined,
   AI_GATEWAY_API_KEY: undefined,
   VERCEL_OIDC_TOKEN: undefined,
   OPENCLAW_SANDBOX_SLEEP_AFTER_MS: undefined,

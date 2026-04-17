@@ -8,16 +8,14 @@
 
 AI Gateway auth uses Vercel OIDC automatically on deployed Vercel environments — no extra configuration needed.
 
-## Persistent store (Upstash Redis)
+## Persistent store (Redis)
 
-Auto-provisioned by the deploy button via the Vercel Marketplace integration.
+Auto-provisioned by the deploy button via the Vercel Marketplace (Redis Cloud). Any Redis-wire-protocol endpoint works — self-hosted Redis, Redis Cloud, or any other provider.
 
 | Variable | Purpose |
 | -------- | ------- |
-| `UPSTASH_REDIS_REST_URL` | Persistent store endpoint. Local dev uses the in-memory store. |
-| `UPSTASH_REDIS_REST_TOKEN` | Persistent store token. Paired with the URL above. |
-| `KV_REST_API_URL` | Alias for Upstash REST URL. |
-| `KV_REST_API_TOKEN` | Alias for Upstash REST token. |
+| `REDIS_URL` | Persistent store connection string (e.g. `redis://...` or `rediss://...`). Local dev uses the in-memory store when unset. |
+| `KV_URL` | Legacy alias for `REDIS_URL` (set by the Vercel KV integration). The app prefers `REDIS_URL` but falls back to `KV_URL`. |
 
 ## Auth and cron
 
@@ -35,7 +33,7 @@ Set `VERCEL_AUTH_MODE=sign-in-with-vercel` to use Vercel OAuth instead of `ADMIN
 | `VERCEL_AUTH_MODE` | `admin-secret` (default) or `sign-in-with-vercel`. |
 | `NEXT_PUBLIC_VERCEL_APP_CLIENT_ID` | OAuth client ID. |
 | `VERCEL_APP_CLIENT_SECRET` | OAuth client secret. |
-| `SESSION_SECRET` | Explicit cookie encryption secret. Required for deployed `sign-in-with-vercel` mode. Do not rely on derivation from the Upstash token. |
+| `SESSION_SECRET` | Explicit cookie encryption secret. Required for deployed `sign-in-with-vercel` mode. Must be set explicitly — the app will not silently derive it. |
 
 ## OpenClaw version and sandbox tuning
 

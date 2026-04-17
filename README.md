@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <a href="https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Fvercel-labs%2Fvercel-openclaw.git&env=ADMIN_SECRET&envDescription=Serves%20as%20your%20password%20for%20the%20admin%20UI.&project-name=openclaw&repository-name=openclaw&stores=%255B%257B%2522integrationSlug%2522%253A%2522upstash%2522%252C%2522productSlug%2522%253A%2522upstash-kv%2522%252C%2522type%2522%253A%2522integration%2522%257D%255D"><img src="https://vercel.com/button" alt="Deploy with Vercel" /></a>
+  <a href="https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Fvercel-labs%2Fvercel-openclaw.git&env=ADMIN_SECRET&envDescription=Serves%20as%20your%20password%20for%20the%20admin%20UI.&project-name=openclaw&repository-name=openclaw&stores=%255B%257B%2522type%2522%253A%2522integration%2522%252C%2522integrationSlug%2522%253A%2522redis%2522%252C%2522productSlug%2522%253A%2522redis%2522%257D%255D"><img src="https://vercel.com/button" alt="Deploy with Vercel" /></a>
 </p>
 
 ---
@@ -24,7 +24,7 @@ Click **Deploy with Vercel** above, set a password, and you're up.
 
 ## Getting started
 
-1. **Deploy** — the button auto-provisions an [Upstash Redis](https://vercel.com/marketplace/upstash-redis) database and asks for an `ADMIN_SECRET` (your password).
+1. **Deploy** — the button auto-provisions a [Redis Cloud](https://vercel.com/marketplace/redis) database via the Vercel Marketplace and asks for an `ADMIN_SECRET` (your password).
 2. **Sign in** — open the deployment and enter your admin secret.
 3. **Use OpenClaw** — visit `/gateway` or click **Start** in the admin panel. The first boot takes about a minute while OpenClaw is installed into the sandbox. After that, resuming from stop takes about 10 seconds (the sandbox auto-snapshots on stop and auto-resumes on get).
 4. **Verify** — run destructive launch verification from the admin panel before connecting channels. Preflight is a config-readiness check. It does not prove the sandbox can complete a real channel delivery.
@@ -45,7 +45,7 @@ Click **Deploy with Vercel** above, set a password, and you're up.
 | [Next.js](https://nextjs.org) | App framework |
 | [Vercel Sandbox](https://vercel.com/docs/vercel-sandbox) | Runs the OpenClaw instance (persistent sandboxes with auto-snapshot on stop, auto-resume on get) |
 | [Vercel AI Gateway](https://vercel.com/docs/ai-gateway) | OIDC-authenticated model access for the agent |
-| [Upstash Redis](https://vercel.com/marketplace/upstash-redis) | Persistent state — metadata, snapshots, channel config |
+| [Redis Cloud](https://vercel.com/marketplace/redis) | Persistent state — metadata, snapshots, channel config (any Redis-wire-protocol endpoint works) |
 | [Vercel Workflow](https://vercel.com/docs/workflow) | Durable channel message delivery (Slack, Telegram; WhatsApp and Discord are experimental) |
 | [Vercel Queues](https://vercel.com/docs/queues) | Launch verification probe delivery |
 | [Vercel Cron](https://vercel.com/docs/cron-jobs) | Watchdog health checks and scheduled wake |
@@ -54,7 +54,7 @@ Click **Deploy with Vercel** above, set a password, and you're up.
 
 For the default deploy-button path (`VERCEL_AUTH_MODE=admin-secret`), the only value you must provide up front is `ADMIN_SECRET`. Everything else is auto-configured:
 
-- **Upstash Redis** — provisioned by the deploy button
+- **Redis** — provisioned by the deploy button via the Redis Cloud Marketplace integration (exposes `REDIS_URL`)
 - **AI Gateway auth** — handled via Vercel OIDC on deployed environments
 - **Cron secret** — falls back to `ADMIN_SECRET` when `CRON_SECRET` is unset; set `CRON_SECRET` separately on deployed environments if you want cron auth to rotate independently from admin login
 - **Watchdog cron** — runs once daily by default so Hobby-plan deploys succeed. On a Pro plan you can increase the schedule in `vercel.json` up to every minute for more responsive auto-wake

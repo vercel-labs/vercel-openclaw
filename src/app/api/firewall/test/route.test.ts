@@ -32,10 +32,8 @@ async function withTestEnv(fn: () => Promise<void>): Promise<void> {
     "NODE_ENV",
     "VERCEL",
     "VERCEL_AUTH_MODE",
-    "UPSTASH_REDIS_REST_URL",
-    "UPSTASH_REDIS_REST_TOKEN",
-    "KV_REST_API_URL",
-    "KV_REST_API_TOKEN",
+    "REDIS_URL",
+    "KV_URL",
     "ADMIN_SECRET",
     "SESSION_SECRET",
   ];
@@ -48,10 +46,8 @@ async function withTestEnv(fn: () => Promise<void>): Promise<void> {
   (process.env as Record<string, string | undefined>)["NODE_ENV"] = "test";
   delete process.env.VERCEL;
   delete process.env.VERCEL_AUTH_MODE;
-  delete process.env.UPSTASH_REDIS_REST_URL;
-  delete process.env.UPSTASH_REDIS_REST_TOKEN;
-  delete process.env.KV_REST_API_URL;
-  delete process.env.KV_REST_API_TOKEN;
+  delete process.env.REDIS_URL;
+  delete process.env.KV_URL;
   process.env.ADMIN_SECRET = "test-admin-secret-for-scenarios";
   process.env.SESSION_SECRET = "test-session-secret-for-smoke-tests";
 

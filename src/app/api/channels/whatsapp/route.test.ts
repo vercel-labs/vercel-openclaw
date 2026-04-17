@@ -29,8 +29,8 @@ const VALID_WHATSAPP_CONFIG = {
 async function withConnectableEnv(fn: () => Promise<void>): Promise<void> {
   const keys = [
     "NEXT_PUBLIC_APP_URL",
-    "UPSTASH_REDIS_REST_URL",
-    "UPSTASH_REDIS_REST_TOKEN",
+    "REDIS_URL",
+    "KV_URL",
     "VERCEL",
   ];
   const originals = new Map<string, string | undefined>();
@@ -40,8 +40,7 @@ async function withConnectableEnv(fn: () => Promise<void>): Promise<void> {
   }
 
   process.env.NEXT_PUBLIC_APP_URL = "https://openclaw.example";
-  process.env.UPSTASH_REDIS_REST_URL = "https://upstash.example";
-  process.env.UPSTASH_REDIS_REST_TOKEN = "token";
+  process.env.REDIS_URL = "redis://default:token@example.com:6379";
   process.env.VERCEL = "1";
 
   try {

@@ -4,7 +4,7 @@
 
 This guide explains how to connect Slack, Telegram, WhatsApp (experimental), and Discord (experimental) to your OpenClaw deployment. It covers what needs to be true before you connect a channel, how readiness is determined, how each platform behaves differently, and what to do when things go wrong.
 
-Channels are a first-class part of the product. They depend on durable state (Upstash Redis), a working sandbox lifecycle, and a verified deployment. This guide walks through the full path from "deployment exists" to "channel is safely connected and working."
+Channels are a first-class part of the product. They depend on durable state (Redis), a working sandbox lifecycle, and a verified deployment. This guide walks through the full path from "deployment exists" to "channel is safely connected and working."
 
 ## Before you connect a channel
 
@@ -17,7 +17,7 @@ Before the admin panel can save channel config, the deployment needs:
 
 - **A resolvable public HTTPS origin.** The app must be able to build a canonical webhook URL. If it cannot, channel connect is blocked.
 - **AI Gateway auth available.** On Vercel deployments this is usually OIDC. `AI_GATEWAY_API_KEY` can still act as a fallback when OIDC is unavailable. If AI Gateway auth is `unavailable`, channel connect is blocked.
-- **Upstash Redis configured.** Channels rely on durable state for webhook queues and session history. On Vercel deployments, missing Upstash is a hard blocker. In local or non-Vercel environments it is a warning only.
+- **Redis configured.** Channels rely on durable state for webhook queues and session history. On Vercel deployments, missing Redis is a hard blocker. In local or non-Vercel environments it is a warning only.
 
 If any of those hard blockers are present, the channel config route returns HTTP 409 with a `CHANNEL_CONNECT_BLOCKED` error and a machine-readable list of issues.
 
@@ -132,13 +132,13 @@ When the sandbox is stopped and a channel message arrives, both platforms use a 
 4. The reply is delivered back to the originating channel.
 5. **Telegram and WhatsApp:** the boot message is deleted after the reply is delivered.
 
-The Workflow-based path is durable — it survives function restarts and retries on transient failures. On deployed Vercel environments, that durability depends on Upstash-backed state and missing Upstash is a hard blocker for channel setup. In local or non-Vercel environments the app can still run with the in-memory store, but queue state and wake/retry durability do not survive cold starts.
+The Workflow-based path is durable — it survives function restarts and retries on transient failures. On deployed Vercel environments, that durability depends on Redis-backed state and missing Redis is a hard blocker for channel setup. In local or non-Vercel environments the app can still run with the in-memory store, but queue state and wake/retry durability do not survive cold starts.
 
 ## Troubleshooting
 
 ### Channel connect is blocked
 
-The admin panel shows a channel as blocked when deployment prerequisites are still failing. Check the preflight report for hard blockers: missing public origin, unavailable AI Gateway auth, or missing Upstash on Vercel. Resolve the blockers and try again.
+The admin panel shows a channel as blocked when deployment prerequisites are still failing. Check the preflight report for hard blockers: missing public origin, unavailable AI Gateway auth, or missing Redis on Vercel. Resolve the blockers and try again.
 
 ### Preflight passes but channel still is not trusted
 

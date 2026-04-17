@@ -5,7 +5,7 @@
 Preflight is a config-readiness check. It runs without touching the sandbox and answers questions like:
 
 - Can the app resolve a canonical public origin?
-- Is the durable store (Upstash) configured?
+- Is the durable store (Redis) configured?
 - Is AI Gateway auth available (OIDC or API key)?
 - Is auth configuration complete?
 - Is cron authentication configured?
