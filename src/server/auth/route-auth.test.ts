@@ -10,6 +10,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { requireRouteAuth, sanitizeNextPath } from "@/server/auth/vercel-auth";
+import { requireJsonRouteAuth, requireMutationAuth } from "@/server/auth/route-auth";
 
 // ---------------------------------------------------------------------------
 // Set env for admin-secret mode (default)
@@ -127,4 +128,65 @@ test("route-auth: sanitizeNextPath rejects encoded protocol-relative paths", () 
 test("route-auth: sanitizeNextPath rejects control characters", () => {
   assert.equal(sanitizeNextPath("/admin\x00"), "/admin");
   assert.equal(sanitizeNextPath("/admin\t"), "/admin");
+});
+
+// ---------------------------------------------------------------------------
+// LOCAL_READ_ONLY guard
+// ---------------------------------------------------------------------------
+
+test("LOCAL_READ_ONLY=1 blocks requireMutationAuth with 403 before admin check", async () => {
+  const original = process.env.LOCAL_READ_ONLY;
+  process.env.LOCAL_READ_ONLY = "1";
+  try {
+    const req = new Request("http://localhost:3000/api/admin/stop", {
+      method: "POST",
+    });
+    const result = await requireMutationAuth(req);
+    assert.ok(result instanceof Response);
+    assert.equal(result.status, 403);
+    const body = (await result.json()) as { error: string };
+    assert.equal(body.error, "LOCAL_READ_ONLY");
+  } finally {
+    if (original === undefined) delete process.env.LOCAL_READ_ONLY;
+    else process.env.LOCAL_READ_ONLY = original;
+  }
+});
+
+test("LOCAL_READ_ONLY=1 blocks requireJsonRouteAuth mutations with the LOCAL_READ_ONLY code", async () => {
+  const original = process.env.LOCAL_READ_ONLY;
+  process.env.LOCAL_READ_ONLY = "1";
+  try {
+    const postReq = new Request("http://localhost:3000/api/admin/channels/slack", {
+      method: "PUT",
+    });
+    const postResult = await requireJsonRouteAuth(postReq);
+    assert.ok(postResult instanceof Response);
+    assert.equal(postResult.status, 403);
+    const body = (await postResult.json()) as { error: string };
+    assert.equal(body.error, "LOCAL_READ_ONLY");
+  } finally {
+    if (original === undefined) delete process.env.LOCAL_READ_ONLY;
+    else process.env.LOCAL_READ_ONLY = original;
+  }
+});
+
+test("LOCAL_READ_ONLY unset: mutation auth does NOT short-circuit with LOCAL_READ_ONLY error", async () => {
+  const original = process.env.LOCAL_READ_ONLY;
+  delete process.env.LOCAL_READ_ONLY;
+  try {
+    const req = new Request("http://localhost:3000/api/admin/stop", {
+      method: "POST",
+    });
+    const result = await requireMutationAuth(req);
+    // Whatever the downstream admin/CSRF check returns, it must not be the
+    // LOCAL_READ_ONLY short-circuit. Only assert absence of the guard code.
+    if (result instanceof Response) {
+      const body = (await result.clone().json().catch(() => ({}))) as {
+        error?: string;
+      };
+      assert.notEqual(body.error, "LOCAL_READ_ONLY");
+    }
+  } finally {
+    if (original !== undefined) process.env.LOCAL_READ_ONLY = original;
+  }
 });

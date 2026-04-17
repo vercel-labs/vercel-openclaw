@@ -1,10 +1,29 @@
-import { jsonError, jsonOk } from "@/shared/http";
+import { ApiError, jsonError, jsonOk } from "@/shared/http";
 import { requireAdminAuth, requireAdminMutationAuth } from "@/server/auth/admin-auth";
 
 type AdminAuthResult = Exclude<
   Awaited<ReturnType<typeof requireAdminAuth>>,
   Response
 >;
+
+/**
+ * Opt-in local safety switch: when LOCAL_READ_ONLY=1, block every mutation
+ * route at the auth boundary. Intended for "pnpm dev against prod env"
+ * sessions where the operator wants to tweak UI without risking accidental
+ * sandbox stop / reset / snapshot delete / channel re-register against prod.
+ */
+function localReadOnlyBlocked(): Response | null {
+  if (process.env.LOCAL_READ_ONLY?.trim() !== "1") {
+    return null;
+  }
+  return jsonError(
+    new ApiError(
+      403,
+      "LOCAL_READ_ONLY",
+      "Mutations are disabled because LOCAL_READ_ONLY=1 is set. Unset it to allow writes.",
+    ),
+  );
+}
 
 /**
  * Require admin auth for JSON API routes.
@@ -17,6 +36,8 @@ export async function requireJsonRouteAuth(
   const isMutation = method !== "GET" && method !== "HEAD" && method !== "OPTIONS";
 
   if (isMutation) {
+    const blocked = localReadOnlyBlocked();
+    if (blocked) return blocked;
     return requireAdminMutationAuth(request);
   }
 
@@ -29,6 +50,8 @@ export async function requireJsonRouteAuth(
 export async function requireMutationAuth(
   request: Request,
 ): Promise<Response | AdminAuthResult> {
+  const blocked = localReadOnlyBlocked();
+  if (blocked) return blocked;
   return requireAdminMutationAuth(request);
 }
 

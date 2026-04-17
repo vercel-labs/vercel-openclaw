@@ -12,14 +12,15 @@ import {
 } from "@/server/sandbox/lifecycle";
 import { getInitializedMeta } from "@/server/store/store";
 
-const BOOT_MESSAGE_INITIAL = "🦞 Waking up\u2026 one moment.";
+const BOOT_MESSAGE_INITIAL =
+  "🦞 Waking up\u2026 the first reply after idle is slow. Future replies in this channel will be instant.";
 
 const STATUS_MESSAGES: Partial<Record<SingleMeta["status"], string>> = {
-  restoring: "🦞 Restoring\u2026",
-  creating: "🦞 Restoring Sandbox",
-  setup: "🦞 Setting up\u2026",
-  booting: "🦞 Starting gateway\u2026",
-  running: "🦞 Processing\u2026",
+  restoring: "🦞 Restoring sandbox\u2026",
+  creating: "🦞 Restoring sandbox\u2026",
+  setup: "🦞 Finishing setup\u2026",
+  booting: "🦞 Starting OpenClaw\u2026",
+  running: "🦞 Thinking up your reply\u2026",
 };
 
 const DEFAULT_POLL_INTERVAL_MS = 1_000;

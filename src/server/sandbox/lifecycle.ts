@@ -151,10 +151,13 @@ function parseStoredCronRecord(
   return buildCronRecord(jobsJson, "stop") ?? null;
 }
 
-const LIFECYCLE_LOCK_TTL_SECONDS = 20 * 60;
-const START_LOCK_TTL_SECONDS = 15 * 60;
+// Lock base TTLs are kept short so a Vercel Function killed mid-operation
+// leaves a stuck lock behind for at most TTL seconds. The auto-renewer
+// (LOCK_RENEW_INTERVAL_MS) extends the lock while the holder is alive.
+const LIFECYCLE_LOCK_TTL_SECONDS = 90;
+const START_LOCK_TTL_SECONDS = 90;
 const TOKEN_REFRESH_LOCK_TTL_SECONDS = 60;
-const LOCK_RENEW_INTERVAL_MS = 30_000;
+const LOCK_RENEW_INTERVAL_MS = 25_000;
 const STALE_OPERATION_MS = 5 * 60 * 1000;
 const READY_WAIT_TIMEOUT_MS = 5 * 60 * 1000;
 const READY_WAIT_POLL_MS = 1_000;

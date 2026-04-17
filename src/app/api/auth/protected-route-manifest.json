@@ -1,18 +1,22 @@
 {
   "version": 3,
-  "generatedAt": "2026-04-12T19:17:54.931Z",
+  "generatedAt": "2026-04-17T10:28:44.190Z",
   "roots": [
     "src/app/api/admin",
     "src/app/api/firewall",
     "src/app/api/debug"
   ],
-  "discoveredRouteCount": 43,
+  "discoveredRouteCount": 45,
   "unauthenticatedRouteCount": 0,
   "violationCount": 0,
   "routes": [
     {
       "method": "DELETE",
       "path": "/api/admin/channel-secrets"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/admin/lifecycle-lock"
     },
     {
       "method": "DELETE",
@@ -33,6 +37,10 @@
     {
       "method": "GET",
       "path": "/api/admin/launch-verify"
+    },
+    {
+      "method": "GET",
+      "path": "/api/admin/lifecycle-lock"
     },
     {
       "method": "GET",

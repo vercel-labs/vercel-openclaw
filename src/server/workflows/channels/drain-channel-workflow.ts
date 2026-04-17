@@ -608,35 +608,29 @@ export async function processChannelStep(
     if (existingBootHandle) {
       if (channel === "slack" && forwardResult.ok) {
         await existingBootHandle
-          .update("🦞 Bot waking up\u2026")
+          .update("🦞 Almost ready\u2026")
           .catch(() => {});
         const slackPayload = payload as {
-          event?: {
-            channel?: string;
-            ts?: string;
-            thread_ts?: string;
-          };
+          event?: { channel?: string };
         } | null;
         const slackChannel = slackPayload?.event?.channel;
-        const threadTs =
-          slackPayload?.event?.thread_ts ?? slackPayload?.event?.ts ?? null;
         const bootTs =
           typeof bootMessageId === "string" ? bootMessageId : null;
-        if (slackChannel && threadTs && bootTs) {
+        if (slackChannel && bootTs) {
           try {
             await getStore().setValue(
-              channelPendingBootMessageKey("slack", slackChannel, threadTs),
+              channelPendingBootMessageKey("slack", slackChannel),
               bootTs,
               600,
             );
           } catch {
             // Best effort — if the store write fails the boot message will
-            // just stay until the thread reply makes it harmless.
+            // just stay until the next reply makes it harmless.
           }
         }
       } else if (channel === "telegram" && forwardResult.ok) {
         await existingBootHandle
-          .update("🦞 Restoring Sandbox")
+          .update("🦞 Almost ready\u2026")
           .catch(() => {});
       } else {
         await existingBootHandle.clear().catch(() => {});

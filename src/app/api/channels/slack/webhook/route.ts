@@ -221,12 +221,8 @@ export async function POST(request: Request): Promise<Response> {
   // "🦞 Bot waking up…" placeholder we parked in this thread — OpenClaw's
   // reply arriving means the dead-time fill has served its purpose.
   if (eventInfo.botId) {
-    if (eventInfo.channel && eventInfo.threadTs) {
-      const pendingKey = channelPendingBootMessageKey(
-        "slack",
-        eventInfo.channel,
-        eventInfo.threadTs,
-      );
+    if (eventInfo.channel) {
+      const pendingKey = channelPendingBootMessageKey("slack", eventInfo.channel);
       try {
         const bootTs = await getStore().getValue<string>(pendingKey);
         if (bootTs) {
@@ -246,7 +242,6 @@ export async function POST(request: Request): Promise<Response> {
           logInfo("channels.slack_pending_boot_cleared", {
             requestId,
             channel: eventInfo.channel,
-            threadTs: eventInfo.threadTs,
             bootTs,
           });
         }
@@ -254,7 +249,6 @@ export async function POST(request: Request): Promise<Response> {
         logWarn("channels.slack_pending_boot_clear_failed", {
           requestId,
           channel: eventInfo.channel,
-          threadTs: eventInfo.threadTs,
           error: error instanceof Error ? error.message : String(error),
         });
       }
@@ -438,7 +432,7 @@ export async function POST(request: Request): Promise<Response> {
         body: JSON.stringify({
           channel: eventInfo.channel,
           ...(eventInfo.threadTs ? { thread_ts: eventInfo.threadTs } : {}),
-          text: "🦞 Waking up\u2026 one moment.",
+          text: "🦞 Waking up\u2026 the first reply after idle is slow. Future replies in this channel will be instant.",
         }),
         signal: AbortSignal.timeout(SLACK_BOOT_MESSAGE_TIMEOUT_MS),
       });

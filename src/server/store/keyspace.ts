@@ -109,9 +109,8 @@ export function channelUserMessageDedupKey(
 export function channelPendingBootMessageKey(
   channel: ChannelName,
   channelId: string,
-  threadTs: string,
 ): string {
-  return buildKey(`channels:${channel}:pending-boot:${channelId}:${threadTs}`);
+  return buildKey(`channels:${channel}:pending-boot:${channelId}`);
 }
 
 export function watchdogReportKey(): string {
