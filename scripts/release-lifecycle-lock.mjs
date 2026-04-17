@@ -22,8 +22,11 @@ if (!url) {
 
 const instanceId =
   (env.OPENCLAW_INSTANCE_ID && env.OPENCLAW_INSTANCE_ID.trim()) ||
-  (env.VERCEL_PROJECT_ID && env.VERCEL_PROJECT_ID.trim()) ||
-  "prj_RMaYazjosJflLoZ94GrsSeVdA4Yr";
+  (env.VERCEL_PROJECT_ID && env.VERCEL_PROJECT_ID.trim());
+if (!instanceId) {
+  console.error("no OPENCLAW_INSTANCE_ID or VERCEL_PROJECT_ID in env file");
+  process.exit(2);
+}
 
 const prefix = `${instanceId}:`;
 const locks = [
