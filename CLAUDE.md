@@ -424,7 +424,7 @@ Both `SANDBOX_PORTS` in lifecycle.ts must include port 8787 alongside 3000.
 
 Behavior:
 
-- Slack uses threaded replies; fast path forwards to `/slack/events` on the gateway when running
+- Slack uses threaded replies; fast path forwards to `/slack/events` on the gateway when running. When the sandbox is stopped, the workflow wake path forwards `x-slack-signature` and `x-slack-request-timestamp` through `ChannelWorkflowHandoff.slackForwardHeaders` so OpenClaw's Bolt `HTTPReceiver` can re-verify signatures. Slack Bolt enforces a **5-minute replay window** on the timestamp header; the wake must complete within 5 minutes of the original POST or signature verification fails. `WORKFLOW_SANDBOX_READY_TIMEOUT_MS = 120_000` (2 min) keeps normal wakes well inside that budget. The retry wrapper treats a 401 from Slack Bolt as fatal (signature failure is unrecoverable) and retries 404 while Bolt finishes registering its route.
 - Telegram uses webhook-secret validation; fast path forwards to native handler on port 8787 when running; boot message sent from webhook route when stopped
 - WhatsApp (experimental) uses webhook-proxied mode with signature validation; delivery via workflow when sandbox is stopped
 - Discord (experimental) uses webhook-proxied mode; delivery via workflow when sandbox is stopped

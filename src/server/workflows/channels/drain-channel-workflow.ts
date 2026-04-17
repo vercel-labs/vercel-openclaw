@@ -57,6 +57,7 @@ export type ProcessChannelStepOptions = {
 
 export type ChannelWorkflowHandoff = {
   fallbackTelegramConfig?: TelegramChannelConfig | null;
+  slackForwardHeaders?: Record<string, string> | null;
 };
 
 type TelegramRestoreContractAssessment = {
@@ -422,6 +423,32 @@ export async function processChannelStep(
         Boolean(effectiveReadyMeta.sandboxId),
       );
       forwardResult = { ok: retryingResult.ok, status: retryingResult.status };
+    } else if (channel === "slack") {
+      // Slack on port 3000 returns 404 until Bolt's HTTPReceiver registers
+      // /slack/events (no base-server catch-all to worry about). The retry
+      // wrapper handles the 404 window, 5xx, and fetch exceptions. Slack
+      // signature headers from the original webhook request must be forwarded
+      // intact — Bolt re-verifies signatures and rejects with 401 otherwise.
+      const slackForwardHeaders = options?.workflowHandoff?.slackForwardHeaders ?? null;
+      diag.slackForwardHeaderKeys = slackForwardHeaders
+        ? Object.keys(slackForwardHeaders).sort()
+        : null;
+      diag.slackForwardHasSignature = Boolean(
+        slackForwardHeaders?.["x-slack-signature"],
+      );
+      diag.slackForwardHasTimestamp = Boolean(
+        slackForwardHeaders?.["x-slack-request-timestamp"],
+      );
+      retryingResult = await forwardToNativeHandlerWithRetry(
+        channel as ChannelName,
+        payload,
+        effectiveReadyMeta,
+        getSandboxDomain,
+        null,
+        false,
+        slackForwardHeaders,
+      );
+      forwardResult = { ok: retryingResult.ok, status: retryingResult.status };
     } else {
       forwardResult = await forwardToNativeHandler(
         channel as ChannelName,
@@ -439,7 +466,8 @@ export async function processChannelStep(
     diag.forwardRetries = retryingResult?.retries ?? null;
     diag.forwardTotalMs = retryingResult?.totalMs ?? null;
     diag.forwardTransport =
-      retryingResult?.transport ?? (channel === "telegram" ? "public" : null);
+      retryingResult?.transport
+      ?? (channel === "telegram" || channel === "slack" ? "public" : null);
     diag.forwardAttemptTimeline = retryingResult?.attemptsDetail ?? null;
     console.log(`[DIAG] Phase 2 DONE: ok=${forwardResult.ok} status=${forwardResult.status} attempts=${retryingResult?.attempts ?? 1} retries=${JSON.stringify(retryingResult?.retries ?? [])} durationMs=${diag.forwardDurationMs}`);
     await persistDiagSnapshot("native-forward-complete", {
@@ -459,7 +487,8 @@ export async function processChannelStep(
       sandboxId: effectiveReadyMeta.sandboxId,
       ok: forwardResult.ok,
       status: forwardResult.status,
-      transport: retryingResult?.transport ?? (channel === "telegram" ? "public" : null),
+      transport: retryingResult?.transport
+        ?? (channel === "telegram" || channel === "slack" ? "public" : null),
       retryingForwardAttempts: retryingResult?.attempts ?? null,
       retryingForwardTotalMs: retryingResult?.totalMs ?? null,
       retryingForwardRetries: retryingResult?.retries?.length ?? null,
@@ -519,6 +548,42 @@ export async function processChannelStep(
         telegramReconcileMs: restore?.telegramReconcileMs ?? null,
         telegramSecretSyncBlocking: restore?.telegramSecretSyncBlocking ?? null,
         telegramSecretSyncMs: restore?.telegramSecretSyncMs ?? null,
+        hotSpareHit: restore?.hotSpareHit ?? null,
+        hotSparePromotionMs: restore?.hotSparePromotionMs ?? null,
+        hotSpareRejectReason: restore?.hotSpareRejectReason ?? null,
+      });
+    }
+
+    // Emit one end-to-end Slack wake summary per request.
+    if (channel === "slack") {
+      const restore = effectiveReadyMeta.lastRestoreMetrics;
+      logInfo("channels.slack_wake_summary", {
+        channel,
+        requestId,
+        sandboxId: effectiveReadyMeta.sandboxId,
+        bootResultStatus: bootResult.meta.status,
+        webhookToWorkflowMs: typeof receivedAtMs === "number" ? Math.max(0, workflowStartedAt - receivedAtMs) : null,
+        workflowToSandboxReadyMs: sandboxReadyAt - workflowStartedAt,
+        forwardMs: forwardCompletedAt - forwardStartedAt,
+        endToEndMs: typeof receivedAtMs === "number" ? Math.max(0, forwardCompletedAt - receivedAtMs) : null,
+        restoreTotalMs: restore?.totalMs ?? null,
+        sandboxCreateMs: restore?.sandboxCreateMs ?? null,
+        assetSyncMs: restore?.assetSyncMs ?? null,
+        startupScriptMs: restore?.startupScriptMs ?? null,
+        localReadyMs: restore?.localReadyMs ?? null,
+        publicReadyMs: restore?.publicReadyMs ?? null,
+        bootOverlapMs: restore?.bootOverlapMs ?? null,
+        skippedStaticAssetSync: restore?.skippedStaticAssetSync ?? null,
+        skippedDynamicConfigSync: restore?.skippedDynamicConfigSync ?? null,
+        dynamicConfigReason: restore?.dynamicConfigReason ?? null,
+        slackForwardHeaderKeys: diag.slackForwardHeaderKeys ?? null,
+        slackForwardHasSignature: diag.slackForwardHasSignature ?? null,
+        slackForwardHasTimestamp: diag.slackForwardHasTimestamp ?? null,
+        retryingForwardAttempts: retryingResult?.attempts ?? null,
+        retryingForwardTotalMs: retryingResult?.totalMs ?? null,
+        retryingForwardTransport: retryingResult?.transport ?? null,
+        retryingForwardRetries: retryingResult?.retries?.length ?? null,
+        retryingForwardAttemptTimeline: retryingResult?.attemptsDetail ?? null,
         hotSpareHit: restore?.hotSpareHit ?? null,
         hotSparePromotionMs: restore?.hotSparePromotionMs ?? null,
         hotSpareRejectReason: restore?.hotSpareRejectReason ?? null,
@@ -1014,6 +1079,7 @@ async function forwardToNativeHandler(
   payload: unknown,
   meta: import("@/shared/types").SingleMeta,
   getSandboxDomain: (port?: number) => Promise<string>,
+  extraForwardHeaders: Record<string, string> | null = null,
 ): Promise<{ ok: boolean; status: number; durationMs: number; bodyLength: number; bodyHead: string; headers: DiagnosticHeaders | null }> {
   const { OPENCLAW_TELEGRAM_WEBHOOK_PORT } = await import("@/server/openclaw/config");
 
@@ -1032,6 +1098,11 @@ async function forwardToNativeHandler(
     case "slack": {
       const sandboxUrl = await getSandboxDomain();
       forwardUrl = `${sandboxUrl}/slack/events`;
+      if (extraForwardHeaders) {
+        for (const [k, v] of Object.entries(extraForwardHeaders)) {
+          headers[k] = v;
+        }
+      }
       break;
     }
     case "whatsapp": {
@@ -1122,6 +1193,7 @@ async function forwardToNativeHandlerWithRetry(
     error?: string | null;
   }>) | null,
   preferLocalTelegramForward = false,
+  extraForwardHeaders: Record<string, string> | null = null,
 ): Promise<RetryingForwardResult> {
   const startedAt = Date.now();
   const deadline = startedAt + RETRYING_FORWARD_TIMEOUT_MS;
@@ -1143,11 +1215,18 @@ async function forwardToNativeHandlerWithRetry(
             payload,
             meta.channels.telegram?.webhookSecret ?? null,
           )
-        : await forwardToNativeHandler(channel, payload, meta, getSandboxDomain);
+        : await forwardToNativeHandler(channel, payload, meta, getSandboxDomain, extraForwardHeaders);
 
       // Proxy-level failures (502/503/504): handler not listening yet. Safe to retry.
       // Handler-not-ready (401/404): native handler is listening at TCP level
       // but webhook route or secret validation is not yet initialized.
+      //
+      // Channel-specific behavior:
+      // - Telegram: retries on 401 (webhook secret validation against an
+      //   uninitialized route) AND 404 (path not yet registered).
+      // - Slack: retries on 404 only. 401 from Slack Bolt means the signature
+      //   failed re-verification — retrying won't recover since the payload
+      //   body and signing secret are fixed; treat as fatal.
       //
       // Swallowed by base server (200 with empty body in <100ms): some OpenClaw
       // versions return a generic 200 from the base HTTP server on port 8787
@@ -1155,6 +1234,8 @@ async function forwardToNativeHandlerWithRetry(
       // handler processes the AI request (takes seconds) and returns a body.
       // A near-instant 200 with no body means the payload was silently
       // discarded.  Safe to retry — the handler never saw it.
+      // Slack on port 3000 has no equivalent base-server catch-all, so this
+      // check stays Telegram-only.
       const swallowed = channel === "telegram"
         && transport === "public"
         && result.status === 200
@@ -1164,11 +1245,14 @@ async function forwardToNativeHandlerWithRetry(
           || result.headers?.cacheControl === "public, max-age=0, must-revalidate"
           || result.durationMs < 100
         );
+      const isHandlerNotReady =
+        result.status === 404
+        || (result.status === 401 && channel === "telegram");
       const classification = swallowed
         ? "swallowed-by-base-server"
         : result.status >= 502
           ? "proxy-error"
-          : result.status === 401 || result.status === 404
+          : isHandlerNotReady
             ? "handler-not-ready"
             : result.ok
               ? "accepted"
@@ -1186,7 +1270,7 @@ async function forwardToNativeHandlerWithRetry(
         transport,
         classification,
       });
-      if (result.status >= 502 || result.status === 401 || result.status === 404 || swallowed) {
+      if (result.status >= 502 || isHandlerNotReady || swallowed) {
         const reason = classification;
         const entry = { attempt, reason, status: result.status };
         retries.push(entry);

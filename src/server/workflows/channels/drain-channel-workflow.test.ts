@@ -369,7 +369,7 @@ test("processChannelStep keeps native forward 404 fatal (Telegram retrying path)
   );
 });
 
-test("processChannelStep uses retrying forward for Telegram, direct forward for Slack", async () => {
+test("processChannelStep uses retrying forward for Telegram and Slack, direct forward for WhatsApp", async () => {
   let retryingCalled = false;
   let directCalled = false;
 
@@ -403,8 +403,26 @@ test("processChannelStep uses retrying forward for Telegram, direct forward for 
   });
 
   await processChannelStep("slack", { event: {} }, "test", "req-slack", null, { dependencies: slackDeps });
-  assert.ok(!retryingCalled, "Slack should not use retrying forward");
-  assert.ok(directCalled, "Slack should use direct forward");
+  assert.ok(retryingCalled, "Slack should use retrying forward");
+  assert.ok(!directCalled, "Slack should not use direct forward");
+
+  retryingCalled = false;
+  directCalled = false;
+
+  const whatsappDeps = createWorkflowDependencies({
+    forwardToNativeHandlerWithRetry: async (): Promise<RetryingForwardResult> => {
+      retryingCalled = true;
+      return { ok: true, status: 200, attempts: 1, totalMs: 50, transport: "public", retries: [] };
+    },
+    forwardToNativeHandler: async () => {
+      directCalled = true;
+      return { ok: true, status: 200, durationMs: 0, bodyLength: 0, bodyHead: "", headers: null };
+    },
+  });
+
+  await processChannelStep("whatsapp", { entry: [] }, "test", "req-wa", null, { dependencies: whatsappDeps });
+  assert.ok(!retryingCalled, "WhatsApp should not use retrying forward");
+  assert.ok(directCalled, "WhatsApp should use direct forward");
 });
 
 test("processChannelStep converts retrying forward 504 (exhausted) into RetryableError", async () => {
@@ -994,7 +1012,7 @@ test("processChannelStep uses local Telegram native handler readiness before for
   assert.ok(forwardCalledAfterLocalProbe, "forward should only happen after local probe completes");
 });
 
-test("processChannelStep does NOT probe for non-Telegram channels", async () => {
+test("processChannelStep does NOT run Telegram-specific probe for Slack or WhatsApp", async () => {
   let probeCallCount = 0;
 
   const dependencies = createWorkflowDependencies({
@@ -1011,9 +1029,11 @@ test("processChannelStep does NOT probe for non-Telegram channels", async () => 
     },
   });
 
-  await processChannelStep("slack", { event: {} }, "test", "req-no-probe", null, { dependencies });
+  await processChannelStep("slack", { event: {} }, "test", "req-no-probe-slack", null, { dependencies });
+  assert.equal(probeCallCount, 0, "Telegram probe should NOT run for Slack — Slack relies on retry-on-404");
 
-  assert.equal(probeCallCount, 0, "probe should NOT be called for Slack");
+  await processChannelStep("whatsapp", { entry: [] }, "test", "req-no-probe-wa", null, { dependencies });
+  assert.equal(probeCallCount, 0, "Telegram probe should NOT run for WhatsApp");
 });
 
 test("processChannelStep falls back to public Telegram probe when local handler is not ready", async () => {
@@ -1201,4 +1221,240 @@ test("processChannelStep accepts local Telegram empty 200 without retrying", asy
     attemptTimeline?.[0]?.classification,
     "accepted",
   );
+});
+
+// ===========================================================================
+// Slack workflow wake path tests (mirror Telegram coverage)
+// ===========================================================================
+
+test("processChannelStep converts retrying Slack forward fetch exception into RetryableError", async () => {
+  const dependencies = createWorkflowDependencies({
+    forwardToNativeHandlerWithRetry: async () => {
+      throw new Error("native_handler_timeout channel=slack timeoutMs=30000");
+    },
+  });
+
+  await assert.rejects(
+    processChannelStep("slack", { event: {} }, "test", "req-slack-fetch", null, { dependencies }),
+    (error: unknown) => {
+      assert.ok(error instanceof TestRetryableError);
+      assert.equal((error as TestRetryableError).retryAfter, "15s");
+      return true;
+    },
+  );
+});
+
+test("processChannelStep converts native Slack forward 502 into RetryableError (retrying path)", async () => {
+  const dependencies = createWorkflowDependencies({
+    forwardToNativeHandlerWithRetry: async (): Promise<RetryingForwardResult> => ({
+      ok: false,
+      status: 502,
+      attempts: 6,
+      totalMs: 6000,
+      transport: "public",
+      retries: [{ attempt: 1, reason: "proxy-error", status: 502 }],
+    }),
+  });
+
+  await assert.rejects(
+    processChannelStep("slack", { event: {} }, "test", "req-slack-502", null, { dependencies }),
+    (error: unknown) => {
+      assert.ok(error instanceof TestRetryableError);
+      assert.equal((error as TestRetryableError).retryAfter, "15s");
+      return true;
+    },
+  );
+});
+
+test("processChannelStep converts retrying Slack forward 504 (exhausted) into RetryableError", async () => {
+  const dependencies = createWorkflowDependencies({
+    forwardToNativeHandlerWithRetry: async (): Promise<RetryingForwardResult> => ({
+      ok: false,
+      status: 504,
+      attempts: 20,
+      totalMs: 45000,
+      transport: null,
+      retries: [
+        { attempt: 1, reason: "handler-not-ready", status: 404 },
+        { attempt: 2, reason: "fetch-exception", error: "connect ECONNREFUSED" },
+      ],
+    }),
+  });
+
+  await assert.rejects(
+    processChannelStep("slack", { event: {} }, "test", "req-slack-504", null, { dependencies }),
+    (error: unknown) => {
+      assert.ok(error instanceof TestRetryableError);
+      assert.equal((error as TestRetryableError).retryAfter, "15s");
+      return true;
+    },
+  );
+});
+
+test("processChannelStep treats Slack retrying forward 500 as retryable at workflow level", async () => {
+  const dependencies = createWorkflowDependencies({
+    forwardToNativeHandlerWithRetry: async (): Promise<RetryingForwardResult> => ({
+      ok: false,
+      status: 500,
+      attempts: 1,
+      totalMs: 100,
+      transport: "public",
+      retries: [],
+    }),
+  });
+
+  await assert.rejects(
+    processChannelStep("slack", { event: {} }, "test", "req-slack-500", null, { dependencies }),
+    (error: unknown) => {
+      assert.ok(error instanceof TestRetryableError);
+      assert.equal((error as TestRetryableError).retryAfter, "15s");
+      return true;
+    },
+  );
+});
+
+test("processChannelStep surfaces Slack retrying forward 200 (after 404 recovery) as success", async () => {
+  // Simulates the retry wrapper succeeding after several 404 attempts while
+  // the Slack Bolt HTTPReceiver finishes registering its /slack/events route.
+  let capturedChannel: string | null = null;
+  const dependencies = createWorkflowDependencies({
+    forwardToNativeHandlerWithRetry: async (channel: unknown): Promise<RetryingForwardResult> => {
+      capturedChannel = channel as string;
+      return {
+        ok: true,
+        status: 200,
+        attempts: 4,
+        totalMs: 6200,
+        transport: "public",
+        retries: [
+          { attempt: 1, reason: "handler-not-ready", status: 404 },
+          { attempt: 2, reason: "handler-not-ready", status: 404 },
+          { attempt: 3, reason: "handler-not-ready", status: 404 },
+        ],
+      };
+    },
+  });
+
+  await processChannelStep("slack", { event: {} }, "test", "req-slack-recover", null, { dependencies });
+  assert.equal(capturedChannel, "slack");
+});
+
+test("processChannelStep keeps Slack 401 fatal (signature failure is unrecoverable)", async () => {
+  // Unlike Telegram, a 401 from Slack Bolt means signature re-verification
+  // failed — retrying cannot recover. The workflow must treat it as fatal.
+  const dependencies = createWorkflowDependencies({
+    forwardToNativeHandlerWithRetry: async (): Promise<RetryingForwardResult> => ({
+      ok: false,
+      status: 401,
+      attempts: 1,
+      totalMs: 50,
+      transport: "public",
+      retries: [],
+    }),
+  });
+
+  await assert.rejects(
+    processChannelStep("slack", { event: {} }, "test", "req-slack-401", null, { dependencies }),
+    (error: unknown) => {
+      assert.ok(error instanceof TestFatalError);
+      return true;
+    },
+  );
+});
+
+test("processChannelStep passes slackForwardHeaders from handoff through to the retry wrapper", async () => {
+  let capturedHeaders: Record<string, string> | null | undefined;
+  const dependencies = createWorkflowDependencies({
+    forwardToNativeHandlerWithRetry: async (
+      _channel: unknown,
+      _payload: unknown,
+      _meta: SingleMeta,
+      _getDomain: unknown,
+      _forwardTelegramLocally: unknown,
+      _preferLocal: unknown,
+      extraForwardHeaders: Record<string, string> | null | undefined,
+    ): Promise<RetryingForwardResult> => {
+      capturedHeaders = extraForwardHeaders;
+      return { ok: true, status: 200, attempts: 1, totalMs: 50, transport: "public", retries: [] };
+    },
+  });
+
+  const slackForwardHeaders = {
+    "x-slack-signature": "v0=deadbeef",
+    "x-slack-request-timestamp": "1700000000",
+  };
+
+  await processChannelStep(
+    "slack",
+    { event: {} },
+    "test",
+    "req-slack-headers",
+    null,
+    {
+      dependencies,
+      workflowHandoff: { slackForwardHeaders } satisfies ChannelWorkflowHandoff,
+    },
+  );
+
+  assert.deepStrictEqual(capturedHeaders, slackForwardHeaders);
+});
+
+test("processChannelStep emits channels.slack_wake_summary for Slack requests", async () => {
+  _resetLogBuffer();
+
+  const dependencies = createWorkflowDependencies({
+    ensureSandboxReady: async () =>
+      asMeta({
+        status: "running",
+        sandboxId: "sbx-slack-summary",
+        channels: { telegram: null, slack: null, discord: null, whatsapp: null },
+      }),
+    forwardToNativeHandlerWithRetry: async (): Promise<RetryingForwardResult> => ({
+      ok: true,
+      status: 200,
+      attempts: 2,
+      totalMs: 2500,
+      transport: "public",
+      retries: [{ attempt: 1, reason: "handler-not-ready", status: 404 }],
+    }),
+  });
+
+  const receivedAtMs = Date.now() - 100;
+  await processChannelStep(
+    "slack",
+    { event: {} },
+    "test",
+    "req-slack-summary",
+    null,
+    {
+      receivedAtMs,
+      dependencies,
+      workflowHandoff: {
+        slackForwardHeaders: {
+          "x-slack-signature": "v0=abc",
+          "x-slack-request-timestamp": "1700000000",
+        },
+      } satisfies ChannelWorkflowHandoff,
+    },
+  );
+
+  const logs = getServerLogs();
+  const summaryLogs = logs.filter((entry) => entry.message === "channels.slack_wake_summary");
+  assert.equal(summaryLogs.length, 1);
+  const data = summaryLogs[0].data ?? {};
+  assert.equal(typeof data.webhookToWorkflowMs, "number");
+  assert.equal(typeof data.workflowToSandboxReadyMs, "number");
+  assert.equal(typeof data.forwardMs, "number");
+  assert.equal(data.retryingForwardAttempts, 2);
+  assert.equal(data.retryingForwardRetries, 1);
+  assert.equal(data.slackForwardHasSignature, true);
+  assert.equal(data.slackForwardHasTimestamp, true);
+  const headerKeys = data.slackForwardHeaderKeys as string[] | null;
+  assert.ok(Array.isArray(headerKeys));
+  assert.ok(headerKeys.includes("x-slack-signature"));
+  assert.ok(headerKeys.includes("x-slack-request-timestamp"));
+
+  // And telegram_wake_summary must NOT be emitted for Slack.
+  const telegramSummaryLogs = logs.filter((entry) => entry.message === "channels.telegram_wake_summary");
+  assert.equal(telegramSummaryLogs.length, 0);
 });
