@@ -199,7 +199,7 @@ test("deployed sign-in-with-vercel requires explicit session secret", () => {
   );
 });
 
-test("admin-secret mode on Vercel requires explicit SESSION_SECRET in production", () => {
+test("admin-secret mode on Vercel returns placeholder from sync accessor (async resolver auto-generates at runtime)", () => {
   withEnv(
     {
       VERCEL: "1",
@@ -208,10 +208,8 @@ test("admin-secret mode on Vercel requires explicit SESSION_SECRET in production
       NODE_ENV: "production",
     },
     () => {
-      assert.throws(
-        () => getSessionSecret(),
-        /SESSION_SECRET is required in production/,
-      );
+      const secret = getSessionSecret();
+      assert.ok(secret.includes("change-me"));
     },
   );
 });

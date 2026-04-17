@@ -33,7 +33,7 @@ Set `VERCEL_AUTH_MODE=sign-in-with-vercel` to use Vercel OAuth instead of `ADMIN
 | `VERCEL_AUTH_MODE` | `admin-secret` (default) or `sign-in-with-vercel`. |
 | `NEXT_PUBLIC_VERCEL_APP_CLIENT_ID` | OAuth client ID. |
 | `VERCEL_APP_CLIENT_SECRET` | OAuth client secret. |
-| `SESSION_SECRET` | Explicit cookie encryption secret. Required for deployed `sign-in-with-vercel` mode. Must be set explicitly — the app will not silently derive it. |
+| `SESSION_SECRET` | Cookie encryption secret. Optional in `admin-secret` mode — the app auto-generates a 32-byte value on first login and persists it in Redis (same pattern as `ADMIN_SECRET`). Required and must be explicitly set for deployed `sign-in-with-vercel` mode. |
 
 ## OpenClaw version and sandbox tuning
 

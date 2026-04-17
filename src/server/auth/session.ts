@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 
 import { EncryptJWT, jwtDecrypt, type JWTPayload } from "jose";
 
-import { getSessionSecret } from "@/server/env";
+import { resolveSessionSecret } from "@/server/auth/session-secret";
 
 export const SESSION_COOKIE_NAME = "openclaw_session";
 export const OAUTH_STATE_COOKIE_NAME = "vercel_oauth_state";
@@ -28,26 +28,29 @@ export type OAuthContext = {
   next: string;
 };
 
-function getEncryptionKey(): Uint8Array {
-  return createHash("sha256").update(getSessionSecret()).digest();
+async function getEncryptionKey(): Promise<Uint8Array> {
+  const secret = await resolveSessionSecret();
+  return createHash("sha256").update(secret).digest();
 }
 
 export async function encryptPayload(
   payload: JWTPayload,
   expirationTime: string,
 ): Promise<string> {
+  const key = await getEncryptionKey();
   return new EncryptJWT(payload)
     .setProtectedHeader({ alg: "dir", enc: "A256GCM" })
     .setIssuedAt()
     .setExpirationTime(expirationTime)
-    .encrypt(getEncryptionKey());
+    .encrypt(key);
 }
 
 export async function decryptPayload<T extends JWTPayload>(
   token: string,
 ): Promise<T | null> {
   try {
-    const { payload } = await jwtDecrypt(token, getEncryptionKey());
+    const key = await getEncryptionKey();
+    const { payload } = await jwtDecrypt(token, key);
     return payload as T;
   } catch {
     return null;

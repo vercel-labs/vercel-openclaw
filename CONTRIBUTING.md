@@ -144,7 +144,7 @@ Full reference:
 | `VERCEL_AUTH_MODE` | No | `admin-secret` (default) or `sign-in-with-vercel` |
 | `NEXT_PUBLIC_VERCEL_APP_CLIENT_ID` | Sign-in mode | OAuth client ID |
 | `VERCEL_APP_CLIENT_SECRET` | Sign-in mode | OAuth client secret |
-| `SESSION_SECRET` | Required on Vercel (`sign-in-with-vercel` mode) | Cookie encryption secret. Must be explicitly set on deployed Vercel environments. |
+| `SESSION_SECRET` | Optional (`admin-secret` mode) / Required on Vercel (`sign-in-with-vercel` mode) | Cookie encryption secret. In admin-secret mode the app auto-generates a 32-byte value and persists it in Redis on first login. In `sign-in-with-vercel` mode it must be explicitly set on deployed Vercel environments. |
 | `AI_GATEWAY_API_KEY` | No | Optional fallback when Vercel OIDC is unavailable (e.g. local dev without `vercel env pull`). OIDC is the default on deployed Vercel. |
 | `OPENCLAW_INSTANCE_ID` | No | Optional Redis key namespace. Defaults to `openclaw-single`. Required when multiple deployments share one Redis database. Changing it later points the app at a new namespace and does not migrate existing state. |
 | `OPENCLAW_PACKAGE_SPEC` | No | OpenClaw version to install. When unset, the runtime falls back to a pinned known-good version (currently `openclaw@2026.4.12`). On Vercel deployments, the deployment contract **warns** — it does not fail — when unset or unpinned. Pin to an exact version like `openclaw@1.2.3` for deterministic sandbox resumes. |
