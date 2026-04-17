@@ -2594,7 +2594,41 @@ async function createAndBootstrapSandboxWithinLifecycleLock(
     if (!sandbox) {
     try {
       progress.appendLine("system", `Resuming persistent sandbox: ${sandboxName}`);
-      sandbox = await getSandboxController().get({ sandboxId: sandboxName });
+      const resumedHandle = await getSandboxController().get({ sandboxId: sandboxName });
+      // Reject unhealthy statuses that @vercel/sandbox will happily return
+      // from get(). The SDK wraps any existing sandbox — including ones that
+      // failed to boot or were aborted — and returning that handle to the
+      // resume flow causes every subsequent runCommand to hang or error out,
+      // which the caller sees as a 120s "sandbox did not become ready"
+      // timeout. Treat these as "no existing sandbox" so the catch branch
+      // creates a fresh one. Best-effort delete first to release the
+      // persistent name; ignore failures (the name is already bound to a
+      // dead handle and create-by-name will 409 and get()-fallback if the
+      // delete didn't take).
+      const unhealthyStatuses = new Set<string>(["failed", "error", "aborted"]);
+      if (unhealthyStatuses.has(resumedHandle.status)) {
+        logWarn("sandbox.create.resume_unhealthy_handle", ctx({
+          sandboxId: resumedHandle.sandboxId,
+          sandboxStatus: resumedHandle.status,
+          sandboxName,
+        }));
+        progress.appendLine(
+          "system",
+          `Discarding unhealthy sandbox ${resumedHandle.sandboxId} (status=${resumedHandle.status}) — forcing fresh create`,
+        );
+        try {
+          await resumedHandle.delete();
+        } catch (deleteErr) {
+          logWarn("sandbox.create.resume_unhealthy_delete_failed", ctx({
+            sandboxId: resumedHandle.sandboxId,
+            error: deleteErr instanceof Error ? deleteErr.message : String(deleteErr),
+          }));
+        }
+        throw new Error(
+          `resume_unhealthy_handle:${resumedHandle.status}:${resumedHandle.sandboxId}`,
+        );
+      }
+      sandbox = resumedHandle;
       progress.appendLine("system", `Resumed: ${sandbox.sandboxId} status=${sandbox.status}`);
     } catch {
       if (isRestoreAttempt) {
