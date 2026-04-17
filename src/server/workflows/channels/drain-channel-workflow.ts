@@ -58,6 +58,7 @@ export type ProcessChannelStepOptions = {
 export type ChannelWorkflowHandoff = {
   fallbackTelegramConfig?: TelegramChannelConfig | null;
   slackForwardHeaders?: Record<string, string> | null;
+  slackRawBody?: string | null;
 };
 
 type TelegramRestoreContractAssessment = {
@@ -430,6 +431,7 @@ export async function processChannelStep(
       // signature headers from the original webhook request must be forwarded
       // intact — Bolt re-verifies signatures and rejects with 401 otherwise.
       const slackForwardHeaders = options?.workflowHandoff?.slackForwardHeaders ?? null;
+      const slackRawBody = options?.workflowHandoff?.slackRawBody ?? null;
       diag.slackForwardHeaderKeys = slackForwardHeaders
         ? Object.keys(slackForwardHeaders).sort()
         : null;
@@ -447,6 +449,7 @@ export async function processChannelStep(
         null,
         false,
         slackForwardHeaders,
+        slackRawBody,
       );
       forwardResult = { ok: retryingResult.ok, status: retryingResult.status };
     } else {
@@ -1080,6 +1083,7 @@ async function forwardToNativeHandler(
   meta: import("@/shared/types").SingleMeta,
   getSandboxDomain: (port?: number) => Promise<string>,
   extraForwardHeaders: Record<string, string> | null = null,
+  rawBody: string | null = null,
 ): Promise<{ ok: boolean; status: number; durationMs: number; bodyLength: number; bodyHead: string; headers: DiagnosticHeaders | null }> {
   const { OPENCLAW_TELEGRAM_WEBHOOK_PORT } = await import("@/server/openclaw/config");
 
@@ -1119,13 +1123,21 @@ async function forwardToNativeHandler(
       throw new Error(`unsupported_native_forward_channel:${channel}`);
   }
 
-  console.log(`[DIAG] native_forward_attempt url=${forwardUrl} channel=${channel} sandboxId=${meta.sandboxId} hasSecret=${Boolean(headers["x-telegram-bot-api-secret-token"])}`);
+  // Slack Bolt HMAC-verifies signatures over the exact raw request bytes. Any
+  // re-serialization (even with the same keys) produces a different byte
+  // sequence and fails verification with 401. When rawBody is provided, use
+  // it verbatim; otherwise fall back to re-serializing the parsed payload.
+  const forwardBody = channel === "slack" && rawBody != null
+    ? rawBody
+    : JSON.stringify(payload);
+
+  console.log(`[DIAG] native_forward_attempt url=${forwardUrl} channel=${channel} sandboxId=${meta.sandboxId} hasSecret=${Boolean(headers["x-telegram-bot-api-secret-token"])} bodySource=${channel === "slack" && rawBody != null ? "raw" : "serialized"}`);
 
   const t0 = Date.now();
   const response = await fetch(forwardUrl, {
     method: "POST",
     headers,
-    body: JSON.stringify(payload),
+    body: forwardBody,
   });
   const durationMs = Date.now() - t0;
 
@@ -1194,6 +1206,7 @@ async function forwardToNativeHandlerWithRetry(
   }>) | null,
   preferLocalTelegramForward = false,
   extraForwardHeaders: Record<string, string> | null = null,
+  rawBody: string | null = null,
 ): Promise<RetryingForwardResult> {
   const startedAt = Date.now();
   const deadline = startedAt + RETRYING_FORWARD_TIMEOUT_MS;
@@ -1215,7 +1228,7 @@ async function forwardToNativeHandlerWithRetry(
             payload,
             meta.channels.telegram?.webhookSecret ?? null,
           )
-        : await forwardToNativeHandler(channel, payload, meta, getSandboxDomain, extraForwardHeaders);
+        : await forwardToNativeHandler(channel, payload, meta, getSandboxDomain, extraForwardHeaders, rawBody);
 
       // Proxy-level failures (502/503/504): handler not listening yet. Safe to retry.
       // Handler-not-ready (401/404): native handler is listening at TCP level
