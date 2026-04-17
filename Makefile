@@ -7,13 +7,13 @@ test:
 	node scripts/test.mjs
 
 lint:
-	npm run lint
+	pnpm run lint
 
 typecheck:
-	npm run typecheck
+	pnpm run typecheck
 
 build:
-	npm run build
+	pnpm run build
 
 verify:
 	node scripts/verify.mjs

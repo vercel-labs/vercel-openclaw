@@ -17,25 +17,25 @@ const makefilePath = path.join(rootDir, "Makefile");
 const pkg = JSON.parse(readFileSync(packageJsonPath, "utf8"));
 const failures = [];
 
-// Package manager must be npm
+// Package manager must be pnpm
 if (
   typeof pkg.packageManager !== "string" ||
-  !pkg.packageManager.startsWith("npm@")
+  !pkg.packageManager.startsWith("pnpm@")
 ) {
-  failures.push('package.json packageManager must start with "npm@"');
+  failures.push('package.json packageManager must start with "pnpm@"');
 }
 
 // Lock file checks
-if (!existsSync(packageLockPath)) {
-  failures.push("package-lock.json is missing");
+if (!existsSync(pnpmLockPath)) {
+  failures.push("pnpm-lock.yaml is missing");
 }
 
-if (existsSync(pnpmLockPath)) {
-  failures.push("pnpm-lock.yaml must be removed");
+if (existsSync(packageLockPath)) {
+  failures.push("package-lock.json must be removed");
 }
 
 if (existsSync(pnpmWorkspacePath)) {
-  failures.push("pnpm-workspace.yaml must be removed");
+  failures.push("pnpm-workspace.yaml must be removed (this is not a workspace)");
 }
 
 // Script entrypoint checks
@@ -60,7 +60,7 @@ const docFiles = [
   ".claude/skills/vercel-openclaw-testing/SKILL.md",
 ];
 const disallowedPatterns = [
-  { pattern: /\bpnpm(?:\s+run)?\s+(?:test|lint|typecheck|build)\b/g, label: "pnpm run <step>" },
+  { pattern: /\bnpm(?:\s+run)?\s+(?:test|lint|typecheck|build)\b/g, label: "npm run <step>" },
   { pattern: /\bnpx\s+tsx\b/g, label: "npx tsx" },
   { pattern: /\btsx\s+--test\b/g, label: "tsx --test" },
 ];

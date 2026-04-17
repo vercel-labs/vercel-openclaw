@@ -3,12 +3,12 @@
 ## Commands
 
 ```bash
-npm install
-npm run dev
-npm run lint
-npm test
-npm run typecheck
-npm run build
+pnpm install
+pnpm dev
+pnpm lint
+pnpm test
+pnpm typecheck
+pnpm build
 ```
 
 Tests use Node's built-in `node:test` runner.
@@ -30,9 +30,9 @@ node scripts/verify.mjs --steps=test,typecheck
 Additional verification commands:
 
 ```bash
-npm run verify:observability-pass   # preflight + launch-verify + deploy-requirements + lifecycle tests
-npm run check:deploy-readiness      # machine-checkable deployment readiness report
-npm run check:verify-contract       # docs/env contract guard for README.md, CLAUDE.md, CONTRIBUTING.md, .env.example
+pnpm verify:observability-pass   # preflight + launch-verify + deploy-requirements + lifecycle tests
+pnpm check:deploy-readiness      # machine-checkable deployment readiness report
+pnpm check:verify-contract       # docs/env contract guard for README.md, CLAUDE.md, CONTRIBUTING.md, .env.example
 ```
 
 ### Maintainer observability contract
@@ -41,8 +41,8 @@ Prefer these non-interactive entrypoints in local automation and CI:
 
 - `node scripts/verify.mjs`
 - `node scripts/check-deploy-readiness.mjs`
-- `npm run verify:observability-pass`
-- `npm run check:verify-contract`
+- `pnpm verify:observability-pass`
+- `pnpm check:verify-contract`
 
 Structured outputs to rely on:
 
@@ -60,8 +60,8 @@ Policy details that matter to automation:
 ### Remote smoke testing
 
 ```bash
-npm run smoke:remote -- --base-url https://my-app.vercel.app
-npm run smoke:remote -- --base-url https://my-app.vercel.app --destructive --timeout 180
+pnpm smoke:remote --base-url https://my-app.vercel.app
+pnpm smoke:remote --base-url https://my-app.vercel.app --destructive --timeout 180
 ```
 
 See `CLAUDE.md` for the full list of smoke test flags.
