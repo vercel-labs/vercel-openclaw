@@ -1,6 +1,14 @@
 // Shared Slack app scopes, events, and manifest builder.
 // Used by both the manifest route and the OAuth install flow.
 
+import {
+  buildBotDisplayName,
+  buildDescription,
+  buildDisplayName,
+  slugifyForSlash,
+  type ProjectIdentity,
+} from "./project-identity";
+
 // Scopes aligned with OpenClaw's native Slack manifest plus extras for
 // the proxied HTTP-mode integration (assistant:write, im:write).
 export const SLACK_BOT_SCOPES = [
@@ -58,19 +66,19 @@ export type SlackManifestUrls = {
    *  install via `oauth.v2.access`. Safe to include for the paste-to-Slack
    *  flow too; Slack just uses it as the default redirect. */
   redirectUrl?: string;
-  /** Optional display name override (e.g. when vclaw auto-generates one). */
-  appName?: string;
+  /** Per-project identity: scope + name drive display name, bot name, and
+   *  slash command so multiple projects can coexist in one Slack workspace. */
+  identity: ProjectIdentity;
 };
 
 export function buildSlackManifest(
-  urlsOrWebhook: string | SlackManifestUrls,
+  urls: SlackManifestUrls,
 ): Record<string, unknown> {
-  const urls: SlackManifestUrls =
-    typeof urlsOrWebhook === "string"
-      ? { webhookUrl: urlsOrWebhook }
-      : urlsOrWebhook;
-  const { webhookUrl, redirectUrl, appName } = urls;
-  const name = appName ?? "VClaw";
+  const { webhookUrl, redirectUrl, identity } = urls;
+  const displayName = buildDisplayName(identity);
+  const botDisplayName = buildBotDisplayName(identity);
+  const description = buildDescription(identity);
+  const command = slugifyForSlash(identity);
 
   const oauthConfig: Record<string, unknown> = {
     scopes: {
@@ -83,8 +91,8 @@ export function buildSlackManifest(
 
   return {
     display_information: {
-      name,
-      description: "VClaw — AI assistant powered by OpenClaw",
+      name: displayName,
+      description,
       background_color: "#0f172a",
     },
     features: {
@@ -107,13 +115,13 @@ export function buildSlackManifest(
         ],
       },
       bot_user: {
-        display_name: name,
+        display_name: botDisplayName,
         always_online: true,
       },
       slash_commands: [
         {
-          command: "/openclaw",
-          description: "Send a message to OpenClaw",
+          command,
+          description: `Send a message to OpenClaw (${identity.combined})`,
           should_escape: false,
           url: webhookUrl,
         },

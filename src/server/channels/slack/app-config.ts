@@ -26,6 +26,10 @@ export type StoredSlackAppConfig = {
   createdAt: number;
   /** Display name echoed back to the admin panel. */
   appName?: string;
+  /** Vercel scope/team slug that owned this app at create time. */
+  projectScope?: string;
+  /** Vercel project name that owned this app at create time. */
+  projectName?: string;
 };
 
 /** Five-minute TTL matches the OAuth state cookie. */
@@ -149,5 +153,9 @@ function normalizeAppConfig(raw: unknown): StoredSlackAppConfig | null {
       typeof r.configTokenExpiresAt === "number" ? r.configTokenExpiresAt : undefined,
     createdAt: r.createdAt,
     appName: typeof r.appName === "string" ? r.appName : undefined,
+    projectScope:
+      typeof r.projectScope === "string" ? r.projectScope : undefined,
+    projectName:
+      typeof r.projectName === "string" ? r.projectName : undefined,
   };
 }

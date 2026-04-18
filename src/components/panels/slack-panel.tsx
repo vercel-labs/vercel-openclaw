@@ -112,7 +112,6 @@ export function SlackPanel({
   const [refreshToken, setRefreshToken] = useState("");
   const [showConfigToken, setShowConfigToken] = useState(false);
   const [showRefreshToken, setShowRefreshToken] = useState(false);
-  const [appName, setAppName] = useState("");
   const [createAppBusy, setCreateAppBusy] = useState(false);
   const [panelError, setPanelError] = useState<string | null>(() => {
     if (typeof window === "undefined") return null;
@@ -227,7 +226,6 @@ export function SlackPanel({
         body: JSON.stringify({
           configToken: configToken.trim(),
           refreshToken: refreshToken.trim() || undefined,
-          appName: appName.trim() || undefined,
         }),
       });
       if (result.ok && result.data?.installUrl) {
@@ -278,6 +276,13 @@ export function SlackPanel({
           {sl.botId ? ` · ${sl.botId}` : ""}
         </code>
       </ChannelInfoRow>
+      {sl.projectScope && sl.projectName ? (
+        <ChannelInfoRow label="Owned by">
+          <code className="inline-code">
+            {sl.projectScope}/{sl.projectName}
+          </code>
+        </ChannelInfoRow>
+      ) : null}
       <ChannelCopyValue
         label="Webhook URL"
         value={sl.webhookUrl}
@@ -373,17 +378,6 @@ export function SlackPanel({
           onToggleShown={() => setShowRefreshToken((v) => !v)}
           help="Lets us auto-rotate the config token if it's expired."
         />
-        <div className="stack">
-          <span className="field-label">App name (optional)</span>
-          <input
-            className="text-input"
-            type="text"
-            autoComplete="off"
-            value={appName}
-            onChange={(event) => setAppName(event.target.value)}
-            placeholder="VClaw"
-          />
-        </div>
         <div className="inline-actions">
           <button
             type="button"

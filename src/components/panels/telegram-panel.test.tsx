@@ -84,6 +84,8 @@ function makeStatus(
         appId: null,
         appName: null,
         appCreatedAt: null,
+        projectScope: null,
+        projectName: null,
       },
       telegram: {
         configured: false,

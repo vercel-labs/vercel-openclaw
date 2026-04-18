@@ -174,6 +174,8 @@ function toPublicSlackState(
     appId: app?.appId ?? null,
     appName: app?.appName ?? null,
     appCreatedAt: app?.createdAt ?? null,
+    projectScope: app?.projectScope ?? null,
+    projectName: app?.projectName ?? null,
   };
 }
 

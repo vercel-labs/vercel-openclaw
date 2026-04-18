@@ -27,6 +27,10 @@ export type PublicSlackState = {
   appName: string | null;
   /** Unix-epoch ms when the stored app record was created. */
   appCreatedAt: number | null;
+  /** Vercel scope/team slug that owned this app at create time. */
+  projectScope: string | null;
+  /** Vercel project name that owned this app at create time. */
+  projectName: string | null;
 };
 
 export type PublicTelegramState = {

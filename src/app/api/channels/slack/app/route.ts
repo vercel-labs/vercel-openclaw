@@ -16,6 +16,7 @@ import {
   rotateSlackConfigToken,
   SlackManifestApiError,
 } from "@/server/channels/slack/manifest-api";
+import { getProjectIdentity } from "@/server/channels/slack/project-identity";
 import { logInfo, logWarn } from "@/server/log";
 import { buildPublicUrl, getPublicOrigin } from "@/server/public-url";
 
@@ -30,8 +31,11 @@ import { buildPublicUrl, getPublicOrigin } from "@/server/public-url";
  *   {
  *     configToken:   string             // Slack App Configuration Token
  *     refreshToken?: string             // optional; used to auto-rotate on expiry
- *     appName?:      string             // optional display name override
  *   }
+ *
+ * Display name, bot name, and slash command are all derived from the owning
+ * Vercel project (VCLAW_PROJECT_SCOPE / VCLAW_PROJECT_NAME env vars) so two
+ * deployments can coexist in the same Slack workspace.
  *
  * Response:
  *   {
@@ -50,18 +54,18 @@ export async function POST(request: Request): Promise<Response> {
 
   try {
     const body = (await request.json().catch(() => null)) as
-      | { configToken?: unknown; refreshToken?: unknown; appName?: unknown }
+      | { configToken?: unknown; refreshToken?: unknown }
       | null;
     if (!body) {
       throw new ApiError(400, "INVALID_BODY", "Request body must be JSON.");
     }
     const configToken = parseNonEmptyString(body.configToken, "configToken");
     const refreshToken = parseOptionalString(body.refreshToken);
-    const appName = parseOptionalString(body.appName);
 
+    const identity = getProjectIdentity();
     const webhookUrl = buildPublicUrl("/api/channels/slack/webhook", request);
     const redirectUrl = `${getPublicOrigin(request)}/api/channels/slack/install/callback`;
-    const manifest = buildSlackManifest({ webhookUrl, redirectUrl, appName });
+    const manifest = buildSlackManifest({ webhookUrl, redirectUrl, identity });
 
     const { result, tokenRotated, activeConfigToken, activeRefreshToken, configTokenExpiresAt } =
       await createWithAutoRotate({
@@ -72,7 +76,7 @@ export async function POST(request: Request): Promise<Response> {
 
     const stored: StoredSlackAppConfig = {
       appId: result.appId,
-      appName: appName ?? "VClaw",
+      appName: `${identity.name} (${identity.scope})`,
       clientId: result.credentials.clientId,
       clientSecret: result.credentials.clientSecret,
       signingSecret: result.credentials.signingSecret,
@@ -81,6 +85,8 @@ export async function POST(request: Request): Promise<Response> {
       refreshToken: activeRefreshToken,
       configTokenExpiresAt,
       createdAt: Date.now(),
+      projectScope: identity.scope,
+      projectName: identity.name,
     };
 
     await setSlackAppConfig(stored);
