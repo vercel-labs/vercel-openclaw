@@ -85,9 +85,23 @@ function truncate(value: string, max: number): string {
   return value.length <= max ? value : value.slice(0, max);
 }
 
-export function buildDisplayName(identity: ProjectIdentity): string {
+/**
+ * display_information.name (≤ 35 chars). When an explicit override is
+ * provided, it wins (truncated to fit). Otherwise prefer `name (scope)`; if
+ * that won't fit cleanly, drop the scope — the slash command and description
+ * already carry the scope, and a mid-paren truncation like
+ * "my-project (vercel-internal-" looks broken.
+ */
+export function buildDisplayName(
+  identity: ProjectIdentity,
+  override?: string,
+): string {
+  if (override && override.trim().length > 0) {
+    return truncate(override.trim(), DISPLAY_NAME_MAX);
+  }
   const full = `${identity.name} (${identity.scope})`;
-  return truncate(full, DISPLAY_NAME_MAX);
+  if (full.length <= DISPLAY_NAME_MAX) return full;
+  return truncate(identity.name, DISPLAY_NAME_MAX);
 }
 
 /**

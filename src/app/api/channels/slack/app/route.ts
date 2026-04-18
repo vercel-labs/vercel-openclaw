@@ -31,11 +31,14 @@ import { buildPublicUrl, getPublicOrigin } from "@/server/public-url";
  *   {
  *     configToken:   string             // Slack App Configuration Token
  *     refreshToken?: string             // optional; used to auto-rotate on expiry
+ *     appName?:      string             // optional display_information.name override
  *   }
  *
- * Display name, bot name, and slash command are all derived from the owning
- * Vercel project (VCLAW_PROJECT_SCOPE / VCLAW_PROJECT_NAME env vars) so two
- * deployments can coexist in the same Slack workspace.
+ * Bot handle (bot_user.display_name) and the slash command are always derived
+ * from the owning Vercel project (VCLAW_PROJECT_SCOPE / VCLAW_PROJECT_NAME
+ * env vars) so two deployments can coexist in the same Slack workspace. The
+ * optional `appName` in the body overrides only the human-facing
+ * display_information.name.
  *
  * Response:
  *   {
@@ -54,18 +57,24 @@ export async function POST(request: Request): Promise<Response> {
 
   try {
     const body = (await request.json().catch(() => null)) as
-      | { configToken?: unknown; refreshToken?: unknown }
+      | { configToken?: unknown; refreshToken?: unknown; appName?: unknown }
       | null;
     if (!body) {
       throw new ApiError(400, "INVALID_BODY", "Request body must be JSON.");
     }
     const configToken = parseNonEmptyString(body.configToken, "configToken");
     const refreshToken = parseOptionalString(body.refreshToken);
+    const appNameOverride = parseOptionalString(body.appName);
 
     const identity = getProjectIdentity();
     const webhookUrl = buildPublicUrl("/api/channels/slack/webhook", request);
     const redirectUrl = `${getPublicOrigin(request)}/api/channels/slack/install/callback`;
-    const manifest = buildSlackManifest({ webhookUrl, redirectUrl, identity });
+    const manifest = buildSlackManifest({
+      webhookUrl,
+      redirectUrl,
+      identity,
+      appName: appNameOverride,
+    });
 
     const { result, tokenRotated, activeConfigToken, activeRefreshToken, configTokenExpiresAt } =
       await createWithAutoRotate({
@@ -74,9 +83,15 @@ export async function POST(request: Request): Promise<Response> {
         manifest,
       });
 
+    const manifestDisplay = (
+      manifest?.display_information as { name?: string } | undefined
+    )?.name;
     const stored: StoredSlackAppConfig = {
       appId: result.appId,
-      appName: `${identity.name} (${identity.scope})`,
+      appName:
+        appNameOverride ??
+        manifestDisplay ??
+        `${identity.name} (${identity.scope})`,
       clientId: result.credentials.clientId,
       clientSecret: result.credentials.clientSecret,
       signingSecret: result.credentials.signingSecret,

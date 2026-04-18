@@ -66,16 +66,20 @@ export type SlackManifestUrls = {
    *  install via `oauth.v2.access`. Safe to include for the paste-to-Slack
    *  flow too; Slack just uses it as the default redirect. */
   redirectUrl?: string;
-  /** Per-project identity: scope + name drive display name, bot name, and
-   *  slash command so multiple projects can coexist in one Slack workspace. */
+  /** Per-project identity: scope + name drive bot display_name and slash
+   *  command so multiple projects can coexist in one Slack workspace. */
   identity: ProjectIdentity;
+  /** Optional operator-supplied override for display_information.name.
+   *  Does NOT affect bot_user.display_name or the slash command — those
+   *  stay identity-derived to keep routing unambiguous. */
+  appName?: string;
 };
 
 export function buildSlackManifest(
   urls: SlackManifestUrls,
 ): Record<string, unknown> {
-  const { webhookUrl, redirectUrl, identity } = urls;
-  const displayName = buildDisplayName(identity);
+  const { webhookUrl, redirectUrl, identity, appName } = urls;
+  const displayName = buildDisplayName(identity, appName);
   const botDisplayName = buildBotDisplayName(identity);
   const description = buildDescription(identity);
   const command = slugifyForSlash(identity);

@@ -112,6 +112,7 @@ export function SlackPanel({
   const [refreshToken, setRefreshToken] = useState("");
   const [showConfigToken, setShowConfigToken] = useState(false);
   const [showRefreshToken, setShowRefreshToken] = useState(false);
+  const [appName, setAppName] = useState("");
   const [createAppBusy, setCreateAppBusy] = useState(false);
   const [panelError, setPanelError] = useState<string | null>(() => {
     if (typeof window === "undefined") return null;
@@ -226,6 +227,7 @@ export function SlackPanel({
         body: JSON.stringify({
           configToken: configToken.trim(),
           refreshToken: refreshToken.trim() || undefined,
+          appName: appName.trim() || undefined,
         }),
       });
       if (result.ok && result.data?.installUrl) {
@@ -378,6 +380,21 @@ export function SlackPanel({
           onToggleShown={() => setShowRefreshToken((v) => !v)}
           help="Lets us auto-rotate the config token if it's expired."
         />
+        <div className="stack">
+          <span className="field-label">App name (optional)</span>
+          <input
+            className="text-input"
+            type="text"
+            autoComplete="off"
+            value={appName}
+            onChange={(event) => setAppName(event.target.value)}
+            placeholder="Defaults to project name"
+          />
+          <span className="muted-copy">
+            Overrides the human-facing Slack app name only. Bot handle and
+            slash command stay tied to this Vercel project.
+          </span>
+        </div>
         <div className="inline-actions">
           <button
             type="button"

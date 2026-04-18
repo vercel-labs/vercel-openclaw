@@ -83,12 +83,51 @@ test("slugifyForSlash: deterministic for same input", () => {
   assert.equal(slugifyForSlash(id), slugifyForSlash(id));
 });
 
-test("buildDisplayName: format is `name (scope)` and ≤ 35 chars", () => {
+test("buildDisplayName: format is `name (scope)` and ≤ 35 chars when it fits", () => {
   assert.equal(buildDisplayName(identity("vercel-labs", "my-bot")), "my-bot (vercel-labs)");
+});
+
+test("buildDisplayName: drops scope (no mid-paren cut) when `name (scope)` exceeds 35", () => {
+  // Repro of the production bug: scope="vercel-internal-playground" +
+  // name="vercel-openclaw-3" was rendering as "vercel-openclaw-3 (vercel-internal-"
+  // — truncated mid-paren.
+  const display = buildDisplayName(
+    identity("vercel-internal-playground", "vercel-openclaw-3"),
+  );
+  assert.equal(display, "vercel-openclaw-3");
+  assert.ok(display.length <= 35);
+  assert.ok(!display.includes("(") || display.includes(")"));
+});
+
+test("buildDisplayName: truncates name when name alone exceeds 35 chars", () => {
+  const display = buildDisplayName(
+    identity("s", "a-very-very-very-very-very-very-long-project-name"),
+  );
+  assert.ok(display.length <= 35);
+  assert.ok(!display.includes("("));
+});
+
+test("buildDisplayName: honors override (trimmed, truncated to 35 chars)", () => {
+  assert.equal(
+    buildDisplayName(identity("vercel-labs", "my-bot"), "  My Custom Bot Name  "),
+    "My Custom Bot Name",
+  );
   const long = buildDisplayName(
-    identity("very-long-scope-here", "very-long-project-name-here"),
+    identity("vercel-labs", "my-bot"),
+    "a".repeat(100),
   );
   assert.ok(long.length <= 35);
+});
+
+test("buildDisplayName: empty/whitespace override falls through to identity", () => {
+  assert.equal(
+    buildDisplayName(identity("vercel-labs", "my-bot"), "   "),
+    "my-bot (vercel-labs)",
+  );
+  assert.equal(
+    buildDisplayName(identity("vercel-labs", "my-bot"), ""),
+    "my-bot (vercel-labs)",
+  );
 });
 
 test("buildBotDisplayName: uses `.` separator to satisfy Slack's [a-z0-9-_.] rule", () => {

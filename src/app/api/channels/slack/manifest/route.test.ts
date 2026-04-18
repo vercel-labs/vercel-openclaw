@@ -150,6 +150,36 @@ test("Slack manifest: slash command stays ≤ 32 chars when scope+name are long"
   });
 });
 
+test("Slack manifest: display name never cuts mid-parens when scope is too long", async () => {
+  // Repro of the production bug: "vercel-openclaw-3 (vercel-internal-"
+  await withHarness(async () => {
+    await withProjectIdentity(
+      "vercel-internal-playground",
+      "vercel-openclaw-3",
+      async () => {
+        const route = getSlackManifestRoute();
+        const req = buildAuthGetRequest("/api/channels/slack/manifest");
+        const result = await callRoute(route.GET!, req);
+
+        assert.equal(result.status, 200);
+        const body = result.json as {
+          manifest: { display_information: { name: string } };
+        };
+        const name = body.manifest.display_information.name;
+        assert.ok(
+          name.length <= 35,
+          `display_information.name "${name}" exceeds Slack's 35-char cap`,
+        );
+        assert.ok(
+          !name.includes("(") || name.includes(")"),
+          `display_information.name "${name}" was truncated mid-parens`,
+        );
+        assert.equal(name, "vercel-openclaw-3");
+      },
+    );
+  });
+});
+
 test("Slack manifest: uses NEXT_PUBLIC_BASE_DOMAIN when set", async () => {
   await withHarness(async () => {
     await withProjectIdentity("vercel-labs", "my-bot", async () => {
