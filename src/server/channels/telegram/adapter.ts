@@ -102,6 +102,23 @@ export function extractTelegramChatId(update: unknown): string | null {
   return null;
 }
 
+export function extractTelegramThreadId(update: unknown): number | null {
+  if (!update || typeof update !== "object") {
+    return null;
+  }
+  const payload = update as Record<string, unknown>;
+  const message =
+    payload.message ?? payload.edited_message ?? payload.channel_post;
+  if (!message || typeof message !== "object") {
+    return null;
+  }
+  const threadId = (message as Record<string, unknown>).message_thread_id;
+  if (typeof threadId === "number") {
+    return threadId;
+  }
+  return null;
+}
+
 function extractTelegramText(update: unknown): string | null {
   if (!update || typeof update !== "object") {
     return null;

@@ -4,7 +4,11 @@ import * as workflowApi from "workflow/api";
 import { getPublicOrigin } from "@/server/public-url";
 import { channelDedupKey } from "@/server/channels/keys";
 import { drainChannelWorkflow } from "@/server/workflows/channels/drain-channel-workflow";
-import { extractTelegramChatId, isTelegramWebhookSecretValid } from "@/server/channels/telegram/adapter";
+import {
+  extractTelegramChatId,
+  extractTelegramThreadId,
+  isTelegramWebhookSecretValid,
+} from "@/server/channels/telegram/adapter";
 import { deleteMessage, sendMessage } from "@/server/channels/telegram/bot-api";
 import { extractRequestId, logError, logInfo, logWarn } from "@/server/log";
 import { createOperationContext, withOperationContext } from "@/server/observability/operation-context";
@@ -125,6 +129,7 @@ export async function POST(request: Request): Promise<Response> {
   try {
     const updateId = extractUpdateId(payload);
     const chatId = extractTelegramChatId(payload);
+    const threadId = extractTelegramThreadId(payload);
     if (updateId) {
       const dedupKey = channelDedupKey("telegram", updateId);
       const dedupToken = await getStore().acquireLock(dedupKey, 24 * 60 * 60);
@@ -284,7 +289,12 @@ export async function POST(request: Request): Promise<Response> {
     let bootMessageId: number | null = null;
     if (effectiveMeta.status !== "running" && chatId) {
       try {
-        const result = await sendMessage(config.botToken, Number(chatId), "🦞 Waking up\u2026 one moment.");
+        const result = await sendMessage(
+          config.botToken,
+          Number(chatId),
+          "🦞 Waking up\u2026 one moment.",
+          threadId !== null ? { messageThreadId: threadId } : undefined,
+        );
         bootMessageId = result.message_id;
         logInfo("channels.telegram_boot_message_sent", withOperationContext(op, {
           chatId,

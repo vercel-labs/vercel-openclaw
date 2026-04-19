@@ -786,15 +786,30 @@ export async function processChannelStep(
           .update("🦞 Almost ready\u2026")
           .catch(() => {});
         const slackPayload = payload as {
-          event?: { channel?: string };
+          event?: {
+            channel?: string;
+            ts?: string;
+            thread_ts?: string;
+          };
         } | null;
         const slackChannel = slackPayload?.event?.channel;
+        // Scope the pending-boot key to the thread root so multiple
+        // concurrent posts in different threads of the same channel do
+        // not collide. Top-level posts use their own ts as the root; in
+        // both cases, Slack's bot reply carries thread_ts equal to the
+        // root, so the webhook bot-message handler finds the same key.
+        const threadRoot =
+          slackPayload?.event?.thread_ts ?? slackPayload?.event?.ts ?? null;
         const bootTs =
           typeof bootMessageId === "string" ? bootMessageId : null;
-        if (slackChannel && bootTs) {
+        if (slackChannel && bootTs && threadRoot) {
           try {
             await getStore().setValue(
-              channelPendingBootMessageKey("slack", slackChannel),
+              channelPendingBootMessageKey(
+                "slack",
+                slackChannel,
+                threadRoot,
+              ),
               bootTs,
               600,
             );

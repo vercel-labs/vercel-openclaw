@@ -113,8 +113,10 @@ export function channelUserMessageDedupKey(
 export function channelPendingBootMessageKey(
   channel: ChannelName,
   channelId: string,
+  scope?: string,
 ): string {
-  return buildKey(`channels:${channel}:pending-boot:${channelId}`);
+  const base = `channels:${channel}:pending-boot:${channelId}`;
+  return buildKey(scope ? `${base}:${scope}` : base);
 }
 
 export function watchdogReportKey(): string {

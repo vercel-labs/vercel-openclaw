@@ -80,11 +80,12 @@ function extractSlackEventInfo(payload: unknown): {
   user: string | null;
   text: string | null;
   threadTs: string | null;
+  ts: string | null;
   botId: string | null;
   payloadType: string | null;
 } {
   if (!payload || typeof payload !== "object") {
-    return { eventType: null, eventSubtype: null, channel: null, user: null, text: null, threadTs: null, botId: null, payloadType: null };
+    return { eventType: null, eventSubtype: null, channel: null, user: null, text: null, threadTs: null, ts: null, botId: null, payloadType: null };
   }
 
   const p = payload as Record<string, unknown>;
@@ -98,6 +99,7 @@ function extractSlackEventInfo(payload: unknown): {
     user: typeof event?.user === "string" ? event.user : null,
     text: typeof event?.text === "string" ? event.text.slice(0, 100) : null,
     threadTs: typeof event?.thread_ts === "string" ? event.thread_ts : null,
+    ts: typeof event?.ts === "string" ? event.ts : null,
     botId: typeof event?.bot_id === "string" ? event.bot_id : null,
   };
 }
@@ -252,7 +254,20 @@ export async function POST(request: Request): Promise<Response> {
   // reply arriving means the dead-time fill has served its purpose.
   if (eventInfo.botId) {
     if (eventInfo.channel) {
-      const pendingKey = channelPendingBootMessageKey("slack", eventInfo.channel);
+      // Bot replies always include thread_ts equal to the user's thread
+      // root. The write side keys pending-boot by the same root so this
+      // cleanup only touches the boot for this specific thread.
+      const botReplyRoot =
+        typeof eventInfo.threadTs === "string" && eventInfo.threadTs.length > 0
+          ? eventInfo.threadTs
+          : typeof eventInfo.ts === "string" && eventInfo.ts.length > 0
+            ? eventInfo.ts
+            : null;
+      const pendingKey = channelPendingBootMessageKey(
+        "slack",
+        eventInfo.channel,
+        botReplyRoot ?? undefined,
+      );
       try {
         const bootTs = await getStore().getValue<string>(pendingKey);
         if (bootTs) {
@@ -523,6 +538,28 @@ export async function POST(request: Request): Promise<Response> {
       slackForwardHeaderKeys: Object.keys(slackForwardHeaders),
     }));
   } catch (error) {
+    // Best-effort delete the boot message we posted just before this failed
+    // workflow start. Slack will not auto-retry the webhook (we return 5xx),
+    // and the user will eventually retry manually — leaving a dangling
+    // "Waking up…" placeholder looks broken. Symmetric to the Telegram path.
+    if (bootMessageTs && eventInfo.channel) {
+      try {
+        await fetch("https://slack.com/api/chat.delete", {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${config.botToken}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            channel: eventInfo.channel,
+            ts: bootMessageTs,
+          }),
+          signal: AbortSignal.timeout(SLACK_BOOT_MESSAGE_TIMEOUT_MS),
+        }).catch(() => {});
+      } catch {
+        // Don't let cleanup failure mask the real error response.
+      }
+    }
     const [dedupRelease, userMessageRelease] =
       await releaseSlackWebhookDedupLocksForRetry([
         dedupLock,
@@ -539,6 +576,7 @@ export async function POST(request: Request): Promise<Response> {
       userMessageDedupLockReleaseAttempted: userMessageRelease.attempted,
       userMessageDedupLockReleased: userMessageRelease.released,
       userMessageDedupLockReleaseError: userMessageRelease.releaseError,
+      bootMessageCleanupAttempted: Boolean(bootMessageTs && eventInfo.channel),
       retryable: true,
       ...eventInfo,
     }));
