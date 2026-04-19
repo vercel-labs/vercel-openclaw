@@ -13,7 +13,7 @@ import { ensureUsableAiGatewayCredential } from "@/server/sandbox/lifecycle";
 import { getInitializedMeta } from "@/server/store/store";
 import { getStore } from "@/server/store/store";
 import { mutateMeta } from "@/server/store/store";
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import {
   channelFailedKey,
   channelForwardDiagnosticKey,
@@ -567,8 +567,53 @@ export async function processChannelStep(
       // wrapper handles the 404 window, 5xx, and fetch exceptions. Slack
       // signature headers from the original webhook request must be forwarded
       // intact — Bolt re-verifies signatures and rejects with 401 otherwise.
-      const slackForwardHeaders = options?.workflowHandoff?.slackForwardHeaders ?? null;
+      let slackForwardHeaders =
+        options?.workflowHandoff?.slackForwardHeaders ?? null;
       const slackRawBody = options?.workflowHandoff?.slackRawBody ?? null;
+      // If the original webhook sat in the workflow queue long enough that
+      // its timestamp is near Slack Bolt's 5-minute replay window, re-sign
+      // with a fresh timestamp using our stored signing secret before
+      // forwarding. Bolt verifies with the same secret, so a fresh signature
+      // is accepted and we avoid a fatal 401 at the sandbox edge.
+      const SLACK_RESIGN_AGE_SECONDS = 240;
+      if (slackForwardHeaders && slackRawBody) {
+        const signingSecret =
+          effectiveReadyMeta.channels?.slack?.signingSecret ?? null;
+        const originalTsRaw =
+          slackForwardHeaders["x-slack-request-timestamp"] ?? null;
+        const originalTs =
+          typeof originalTsRaw === "string" && /^\d+$/.test(originalTsRaw)
+            ? parseInt(originalTsRaw, 10)
+            : null;
+        const nowSeconds = Math.floor(Date.now() / 1000);
+        const ageSeconds =
+          originalTs !== null ? nowSeconds - originalTs : null;
+        const shouldResign =
+          signingSecret !== null &&
+          ageSeconds !== null &&
+          ageSeconds > SLACK_RESIGN_AGE_SECONDS;
+        diag.slackOriginalTimestamp = originalTs;
+        diag.slackSignatureAgeSeconds = ageSeconds;
+        diag.slackSignatureResigned = shouldResign;
+        if (shouldResign && signingSecret) {
+          const freshTs = String(nowSeconds);
+          const baseString = `v0:${freshTs}:${slackRawBody}`;
+          const hmac = createHmac("sha256", signingSecret)
+            .update(baseString)
+            .digest("hex");
+          slackForwardHeaders = {
+            ...slackForwardHeaders,
+            "x-slack-signature": `v0=${hmac}`,
+            "x-slack-request-timestamp": freshTs,
+          };
+          logInfo("channels.slack_signature_resigned", {
+            requestId,
+            originalTs,
+            ageSeconds,
+            freshTs,
+          });
+        }
+      }
       diag.slackForwardHeaderKeys = slackForwardHeaders
         ? Object.keys(slackForwardHeaders).sort()
         : null;
