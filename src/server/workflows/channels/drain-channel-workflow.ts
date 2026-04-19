@@ -1440,6 +1440,12 @@ async function forwardToNativeHandlerWithRetry(
   const deadline = startedAt + RETRYING_FORWARD_TIMEOUT_MS;
   const retries: Array<{ attempt: number; reason: string; status?: number; error?: string }> = [];
   const attemptsDetail: ForwardAttemptDetail[] = [];
+  // Track whether we have already burned our one-shot AI Gateway credential
+  // refresh. The sandbox's AI Gateway OIDC token is injected via firewall
+  // transform; if it silently expires between our proactive refresh at
+  // Phase 1.5 and the actual forward, the handler can return a non-ok
+  // response. Force a refresh exactly once, then retry the forward.
+  let triedCredentialRecovery = false;
 
   for (let attempt = 1; attempt <= RETRYING_FORWARD_MAX_ATTEMPTS && Date.now() < deadline; attempt++) {
     const attemptStartedAt = Date.now();
@@ -1533,8 +1539,55 @@ async function forwardToNativeHandlerWithRetry(
         continue;
       }
 
-      // Any other direct handler response: do NOT retry regardless of status.
-      // This includes 200 (success), other 4xx (client error), 500 (server error).
+      // Any other direct handler response: normally do NOT retry.
+      // Exception: on a non-ok response (4xx/5xx from the handler that is
+      // not handler-not-ready or proxy-error), force-refresh the AI Gateway
+      // token exactly once and retry. Covers the case where the injected
+      // OIDC bearer has gone stale mid-forward; a single refresh plus
+      // retry recovers the delivery without looping.
+      if (
+        !result.ok &&
+        !triedCredentialRecovery &&
+        attempt < RETRYING_FORWARD_MAX_ATTEMPTS &&
+        Date.now() < deadline
+      ) {
+        triedCredentialRecovery = true;
+        retries.push({
+          attempt,
+          reason: "ai-gateway-credential-recovery",
+          status: result.status,
+        });
+        try {
+          const recovery = await ensureUsableAiGatewayCredential({
+            minRemainingMs: Number.POSITIVE_INFINITY,
+            reason: `channel:${channel}:forward-recovery`,
+          });
+          logInfo("channels.ai_gateway_credential_recovery", {
+            channel,
+            attempt,
+            status: result.status,
+            refreshed: recovery.refreshed,
+            source: recovery.credential?.source ?? null,
+          });
+        } catch (recoveryError) {
+          logWarn("channels.ai_gateway_credential_recovery_failed", {
+            channel,
+            attempt,
+            status: result.status,
+            error:
+              recoveryError instanceof Error
+                ? recoveryError.message
+                : String(recoveryError),
+          });
+        }
+        await new Promise((r) =>
+          setTimeout(r, RETRYING_FORWARD_RETRY_INTERVAL_MS),
+        );
+        continue;
+      }
+
+      // 200 (success), or non-ok after we already tried credential recovery:
+      // return as-is.
       const totalMs = Date.now() - startedAt;
       logInfo("channels.retrying_forward_complete", {
         channel,
@@ -1545,6 +1598,7 @@ async function forwardToNativeHandlerWithRetry(
         transport,
         retryCount: retries.length,
         attemptsDetail,
+        triedCredentialRecovery,
       });
       return {
         ok: result.ok,
