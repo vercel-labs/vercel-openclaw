@@ -253,7 +253,7 @@ test("Slack webhook: app_mention + message for same user post collapses to one w
   });
 });
 
-test("Slack webhook: fast path non-ok response returns 200 without falling through to workflow", async () => {
+test("Slack webhook: fast path non-ok response falls through to workflow wake path", async () => {
   await withHarness(async (h) => {
     await configureSlack(h);
     await h.mutateMeta((meta) => {
@@ -279,8 +279,8 @@ test("Slack webhook: fast path non-ok response returns 200 without falling throu
       assert.deepEqual(result.json, { ok: true });
       assert.equal(
         startMock.mock.callCount(),
-        0,
-        "workflow must NOT start when native handler returned an HTTP response (even non-2xx) to avoid duplicate delivery",
+        1,
+        "workflow MUST start when native handler returned non-2xx so the event is not silently dropped",
       );
       resetAfterCallbacks();
     } finally {

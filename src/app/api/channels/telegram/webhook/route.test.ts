@@ -381,7 +381,7 @@ test("Telegram webhook: fast path fires when status=running AND telegramListener
   });
 });
 
-test("Telegram webhook: fast path non-ok response returns 200 without falling through to workflow", async () => {
+test("Telegram webhook: fast path non-ok response falls through to workflow wake path", async () => {
   await withHarness(async (h) => {
     await configureTelegram(h);
     await h.mutateMeta((meta) => {
@@ -425,8 +425,8 @@ test("Telegram webhook: fast path non-ok response returns 200 without falling th
       assert.deepEqual(result.json, { ok: true });
       assert.equal(
         startMock.mock.callCount(),
-        0,
-        "workflow must NOT start when native handler returned an HTTP response (even non-2xx) to avoid duplicate delivery",
+        1,
+        "workflow MUST start when native handler returned non-2xx so the update is not silently dropped",
       );
       resetAfterCallbacks();
     } finally {

@@ -345,14 +345,14 @@ export async function POST(request: Request): Promise<Response> {
   // processing cycle (including long AI tasks like image generation).
   // Fluid Compute bills only for CPU cycles, not idle wait time.
   //
-  // On ANY HTTP response (2xx or not), return 200 — the native handler
-  // received the payload and may have started processing.  Falling through
-  // to the workflow would forward the same payload again, causing duplicate
-  // delivery (e.g. the same image sent multiple times).
+  // Return 200 only when the native handler returned 2xx. A non-2xx response
+  // indicates the payload was NOT successfully handed off (edge error,
+  // handler unavailable, or explicit reject). Since Slack does not retry on
+  // a 200 from us, we must fall through to the durable workflow wake path
+  // rather than silently dropping the event.
   //
-  // Only on network-level failure (fetch throws — connection refused, DNS
-  // failure) is it safe to fall through: the native handler never received
-  // the payload, so the workflow can retry without duplication.
+  // Network-level failure (fetch throws) is also safe to fall through on:
+  // the native handler never received the payload.
   let effectiveMeta = meta;
   if (effectiveMeta.status === "running" && effectiveMeta.sandboxId) {
     const forwardHeaders: Record<string, string> = {
@@ -387,16 +387,18 @@ export async function POST(request: Request): Promise<Response> {
           responseStatus: resp.status,
           ...eventInfo,
         }));
-      } else {
-        logWarn("channels.slack_fast_path_non_ok", withOperationContext(op, {
-          status: resp.status,
-          sandboxId: effectiveMeta.sandboxId,
-          ...eventInfo,
-        }));
+        return Response.json({ ok: true });
       }
-      // Any HTTP response means the native handler received the payload.
-      // Return 200 to avoid duplicate delivery via the workflow path.
-      return Response.json({ ok: true });
+
+      // Native handler returned non-2xx — fall through to workflow wake path
+      // so the event is not silently dropped. Slack does not retry on our 200.
+      logWarn("channels.slack_fast_path_fallback_to_workflow", withOperationContext(op, {
+        status: resp.status,
+        sandboxId: effectiveMeta.sandboxId,
+        action: "start_drain_channel_workflow",
+        ...eventInfo,
+      }));
+      effectiveMeta = await reconcileStaleRunningStatus();
     } catch (error) {
       // Network-level failure — native handler never received the payload.
       // Reconcile stale status and fall through to workflow wake path.

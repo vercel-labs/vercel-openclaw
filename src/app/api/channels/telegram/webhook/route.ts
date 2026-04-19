@@ -185,14 +185,16 @@ export async function POST(request: Request): Promise<Response> {
     // full processing cycle (including long AI tasks like image generation).
     // Fluid Compute bills only for CPU cycles, not idle wait time.
     //
-    // On ANY HTTP response (2xx or not), return 200 — the native handler
-    // received the payload and may have started processing.  Falling through
-    // to the workflow would forward the same payload again, causing duplicate
-    // delivery (e.g. the same image sent multiple times).
-    //
-    // Only on network-level failure (fetch throws — connection refused, DNS
-    // failure) is it safe to fall through: the native handler never received
-    // the payload, so the workflow can retry without duplication.
+    // Return 200 only when the native handler genuinely accepted the payload:
+    //   - forwardResponse.ok (2xx) AND NOT a "suspicious empty 200" (fast,
+    //     empty body — indicates an intermediary swallowed it before reaching
+    //     the native handler).
+    // Otherwise fall through to the durable workflow. The native handler waits
+    // for processing to complete, so a fast empty 200 is evidence the handler
+    // was never reached. Non-2xx responses likewise indicate the payload did
+    // not get processed, and Telegram will not retry a 200 from us, so a
+    // silent drop is worse than the (low) risk of duplicate delivery through
+    // the workflow path.
     let effectiveMeta = meta;
     // Gate the fast-path on BOTH status=running AND proof the Telegram handler
     // on port 8787 actually bound during the last restore.  Without this check,
@@ -222,7 +224,7 @@ export async function POST(request: Request): Promise<Response> {
           forwardResponse.status === 200 &&
           fastPathDurationMs < 150 &&
           forwardBody.length === 0;
-        if (forwardResponse.ok) {
+        if (forwardResponse.ok && !suspiciousEmpty200) {
           logInfo("channels.telegram_fast_path_ok", withOperationContext(op, {
             sandboxId: effectiveMeta.sandboxId,
             forwardUrl,
@@ -231,30 +233,31 @@ export async function POST(request: Request): Promise<Response> {
             bodyLength: forwardBody.length,
             bodyHead: forwardBody.slice(0, 200),
             responseHeaders: forwardHeaders,
-            suspiciousEmpty200,
           }));
-          if (suspiciousEmpty200) {
-            logWarn("channels.telegram_fast_path_suspect_empty_200", withOperationContext(op, {
-              sandboxId: effectiveMeta.sandboxId,
-              forwardUrl,
-              status: forwardResponse.status,
-              durationMs: fastPathDurationMs,
-              bodyLength: forwardBody.length,
-              responseHeaders: forwardHeaders,
-            }));
-          }
-        } else {
-          logWarn("channels.telegram_fast_path_non_ok", withOperationContext(op, {
-            status: forwardResponse.status,
-            sandboxId: effectiveMeta.sandboxId,
-            forwardUrl,
-            durationMs: fastPathDurationMs,
-            bodyLength: forwardBody.length,
-            bodyHead: forwardBody.slice(0, 200),
-            responseHeaders: forwardHeaders,
-          }));
+          return Response.json({ ok: true });
         }
-        return Response.json({ ok: true });
+
+        // Fast path did not genuinely deliver. Fall through to the workflow
+        // wake path so Telegram is not silently dropped.
+        logWarn("channels.telegram_fast_path_fallback_to_workflow", withOperationContext(op, {
+          reason: suspiciousEmpty200 ? "suspicious_empty_200" : "non_ok",
+          status: forwardResponse.status,
+          sandboxId: effectiveMeta.sandboxId,
+          forwardUrl,
+          durationMs: fastPathDurationMs,
+          bodyLength: forwardBody.length,
+          bodyHead: forwardBody.slice(0, 200),
+          responseHeaders: forwardHeaders,
+          action: "start_drain_channel_workflow",
+        }));
+        const staleMeta = effectiveMeta;
+        effectiveMeta = await reconcileStaleRunningStatus();
+        logInfo("channels.telegram_fast_path_reconciled", withOperationContext(op, {
+          previousStatus: staleMeta.status,
+          previousSandboxId: staleMeta.sandboxId,
+          reconciledStatus: effectiveMeta.status,
+          reconciledSandboxId: effectiveMeta.sandboxId,
+        }));
       } catch (error) {
         // Network-level failure — sandbox is unreachable, native handler never
         // got the payload.  Reconcile stale status and fall through to the
