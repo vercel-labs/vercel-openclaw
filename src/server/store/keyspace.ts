@@ -79,8 +79,12 @@ export function channelProcessingKey(channel: ChannelName): string {
   return buildKey(`channels:${channel}:processing`);
 }
 
-export function channelFailedKey(channel: ChannelName): string {
-  return buildKey(`channels:${channel}:failed`);
+export function channelFailedKey(
+  channel: ChannelName,
+  deliveryId?: string,
+): string {
+  const base = `channels:${channel}:failed`;
+  return buildKey(deliveryId ? `${base}:${deliveryId}` : base);
 }
 
 export function channelDrainLockKey(channel: ChannelName): string {

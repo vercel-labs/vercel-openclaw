@@ -8,15 +8,99 @@ import type { QueuedChannelJob } from "@/server/channels/driver";
 import { extractTelegramChatId } from "@/server/channels/telegram/adapter";
 import { deleteMessage, editMessageText } from "@/server/channels/telegram/bot-api";
 import { deleteMessage as deleteWhatsAppMessage } from "@/server/channels/whatsapp/whatsapp-api";
-import { logInfo, logWarn } from "@/server/log";
+import { logError, logInfo, logWarn } from "@/server/log";
 import { ensureUsableAiGatewayCredential } from "@/server/sandbox/lifecycle";
 import { getInitializedMeta } from "@/server/store/store";
 import { getStore } from "@/server/store/store";
 import { mutateMeta } from "@/server/store/store";
+import { createHash } from "node:crypto";
 import {
+  channelFailedKey,
   channelForwardDiagnosticKey,
   channelPendingBootMessageKey,
 } from "@/server/store/keyspace";
+
+const WORKFLOW_FAILED_RECORD_TTL_SECONDS = 30 * 24 * 60 * 60;
+
+function extractChannelDeliveryId(
+  channel: string,
+  payload: unknown,
+  requestId: string | null,
+  receivedAtMs: number | null,
+): string {
+  const p = payload as Record<string, unknown> | null;
+  if (channel === "telegram" && typeof p?.update_id === "number") {
+    return `telegram:${p.update_id}`;
+  }
+  if (channel === "slack") {
+    const eventId = (p as { event_id?: unknown } | null)?.event_id;
+    if (typeof eventId === "string" && eventId) {
+      return `slack:${eventId}`;
+    }
+    const event = (p as { event?: Record<string, unknown> } | null)?.event;
+    const chan = event?.channel;
+    const ts = event?.ts;
+    if (typeof chan === "string" && typeof ts === "string") {
+      return `slack:${chan}:${ts}`;
+    }
+  }
+  const fallbackBody = `${requestId ?? ""}:${receivedAtMs ?? ""}:${JSON.stringify(p ?? {})}`;
+  const hash = createHash("sha256").update(fallbackBody).digest("hex").slice(0, 32);
+  return `${channel}:${hash}`;
+}
+
+async function recordWorkflowFailure(input: {
+  channel: string;
+  requestId: string | null;
+  deliveryId: string;
+  terminal: boolean;
+  error: unknown;
+  diag: Record<string, unknown>;
+  receivedAtMs: number | null;
+}): Promise<void> {
+  const errorMessage =
+    input.error instanceof Error ? input.error.message : String(input.error);
+  const errorName =
+    input.error instanceof Error ? input.error.name : null;
+  const record = {
+    channel: input.channel,
+    requestId: input.requestId,
+    deliveryId: input.deliveryId,
+    terminal: input.terminal,
+    errorName,
+    errorMessage,
+    failedAt: Date.now(),
+    receivedAtMs: input.receivedAtMs,
+    ageMs:
+      typeof input.receivedAtMs === "number"
+        ? Date.now() - input.receivedAtMs
+        : null,
+    diag: input.diag,
+  };
+  try {
+    await getStore().setValue(
+      channelFailedKey(input.channel as ChannelName, input.deliveryId),
+      record,
+      WORKFLOW_FAILED_RECORD_TTL_SECONDS,
+    );
+  } catch (writeError) {
+    logError("channels.workflow_failed_record_write_failed", {
+      channel: input.channel,
+      deliveryId: input.deliveryId,
+      requestId: input.requestId,
+      error:
+        writeError instanceof Error
+          ? writeError.message
+          : String(writeError),
+    });
+  }
+  logError(
+    input.terminal
+      ? "channels.workflow_terminal_failure_recorded"
+      : "channels.workflow_retryable_failure_recorded",
+    record,
+  );
+}
 
 export type RetryingForwardResult = {
   ok: boolean;
@@ -137,10 +221,17 @@ export async function processChannelStep(
     channel === "telegram"
       ? options?.workflowHandoff?.fallbackTelegramConfig ?? null
       : null;
+  const deliveryId = extractChannelDeliveryId(
+    channel,
+    payload,
+    requestId,
+    receivedAtMs,
+  );
   // Diagnostic trace — every phase appends here, written to store at the end.
   const diag: Record<string, unknown> = {
     channel,
     requestId,
+    deliveryId,
     bootMessageId: bootMessageId ?? null,
     receivedAtMs,
     workflowStartedAt,
@@ -703,7 +794,21 @@ export async function processChannelStep(
       await getStore().setValue(channelForwardDiagnosticKey(), diag, 3600);
     } catch { /* best effort */ }
 
-    throw toWorkflowProcessingError(channel, error, resolvedDependencies);
+    const workflowError = toWorkflowProcessingError(
+      channel,
+      error,
+      resolvedDependencies,
+    );
+    await recordWorkflowFailure({
+      channel,
+      requestId,
+      deliveryId,
+      terminal: workflowError.name === "FatalError",
+      error,
+      diag,
+      receivedAtMs,
+    });
+    throw workflowError;
   }
 }
 
