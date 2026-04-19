@@ -149,6 +149,28 @@ export type ChannelWorkflowHandoff = {
   slackRawBody?: string | null;
 };
 
+// Versioned workflow envelope. All new callers pass a single v1 envelope
+// instead of positional args so that adding fields in future deploys can
+// never corrupt in-flight payloads already queued in Workflow DevKit.
+export type DrainChannelWorkflowEnvelopeV1 = {
+  version: 1;
+  channel: string;
+  payload: unknown;
+  origin: string;
+  requestId: string | null;
+  bootMessageId?: number | string | null;
+  receivedAtMs?: number | null;
+  workflowHandoff?: ChannelWorkflowHandoff | null;
+};
+
+function isDrainChannelWorkflowEnvelopeV1(
+  value: unknown,
+): value is DrainChannelWorkflowEnvelopeV1 {
+  if (!value || typeof value !== "object") return false;
+  const v = value as Record<string, unknown>;
+  return v.version === 1 && typeof v.channel === "string";
+}
+
 type TelegramRestoreContractAssessment = {
   status: "verified" | "not-expected" | "unverified";
   restoreMetricsRecordedAt: number | null;
@@ -189,20 +211,46 @@ function assessTelegramRestoreContract(
 }
 
 export async function drainChannelWorkflow(
-  channel: string,
-  payload: unknown,
-  origin: string,
-  requestId: string | null,
+  channelOrEnvelope: string | DrainChannelWorkflowEnvelopeV1,
+  payload?: unknown,
+  origin?: string,
+  requestId?: string | null,
   bootMessageId?: number | string | null,
   receivedAtMs?: number | null,
   workflowHandoff?: ChannelWorkflowHandoff | null,
 ): Promise<void> {
   "use workflow";
 
-  await processChannelStep(channel, payload, origin, requestId, bootMessageId ?? null, {
-    receivedAtMs: receivedAtMs ?? null,
-    workflowHandoff: workflowHandoff ?? null,
-  });
+  // Accept either the v1 envelope (new callers) or the legacy positional
+  // form (still queued in Workflow DevKit from prior deploys). Parsing the
+  // envelope first is cheap and keeps both shapes working during rollout.
+  if (isDrainChannelWorkflowEnvelopeV1(channelOrEnvelope)) {
+    const env = channelOrEnvelope;
+    await processChannelStep(
+      env.channel,
+      env.payload,
+      env.origin,
+      env.requestId,
+      env.bootMessageId ?? null,
+      {
+        receivedAtMs: env.receivedAtMs ?? null,
+        workflowHandoff: env.workflowHandoff ?? null,
+      },
+    );
+    return;
+  }
+
+  await processChannelStep(
+    channelOrEnvelope,
+    payload,
+    origin as string,
+    requestId ?? null,
+    bootMessageId ?? null,
+    {
+      receivedAtMs: receivedAtMs ?? null,
+      workflowHandoff: workflowHandoff ?? null,
+    },
+  );
 }
 
 export async function processChannelStep(

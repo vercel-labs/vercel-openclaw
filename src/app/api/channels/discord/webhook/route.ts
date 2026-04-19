@@ -126,7 +126,15 @@ export async function POST(request: Request): Promise<Response> {
 
   try {
     const origin = getPublicOrigin(request);
-    await discordWebhookWorkflowRuntime.start(drainChannelWorkflow, ["discord", payload, origin, requestId ?? null]);
+    await discordWebhookWorkflowRuntime.start(drainChannelWorkflow, [
+      {
+        version: 1,
+        channel: "discord",
+        payload,
+        origin,
+        requestId: requestId ?? null,
+      },
+    ]);
     logInfo("channels.discord_workflow_started", withOperationContext(op));
   } catch (error) {
     const dedupRelease = await releaseDiscordWebhookDedupLockForRetry(dedupLock);

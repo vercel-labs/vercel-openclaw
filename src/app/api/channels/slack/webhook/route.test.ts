@@ -139,17 +139,15 @@ test("Slack webhook: forwards signature headers to the workflow handoff", async 
       const call = startMock.mock.calls[0];
       const args = call.arguments?.[1] as unknown[] | undefined;
       assert.ok(Array.isArray(args), "start must be called with args array");
-      assert.equal(args.length, 7, "drainChannelWorkflow expects 7 args including handoff");
-      const [channel, , , , , , handoff] = args as [
-        string,
-        unknown,
-        string,
-        string | null,
-        string | null,
-        number | null,
-        { slackForwardHeaders?: Record<string, string> } | null,
-      ];
-      assert.equal(channel, "slack");
+      assert.equal(args.length, 1, "drainChannelWorkflow expects a single v1 envelope");
+      const envelope = args[0] as {
+        version?: number;
+        channel?: string;
+        workflowHandoff?: { slackForwardHeaders?: Record<string, string> };
+      };
+      assert.equal(envelope.version, 1, "workflow envelope must be v1");
+      assert.equal(envelope.channel, "slack");
+      const handoff = envelope.workflowHandoff ?? null;
       assert.ok(handoff, "handoff must be present");
       const headers = handoff.slackForwardHeaders ?? null;
       assert.ok(headers, "slackForwardHeaders must be present on handoff");

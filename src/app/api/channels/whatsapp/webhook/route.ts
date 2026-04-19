@@ -237,11 +237,14 @@ export async function POST(request: Request): Promise<Response> {
     try {
       const origin = getPublicOrigin(request);
       await whatsappWebhookWorkflowRuntime.start(drainChannelWorkflow, [
-        "whatsapp",
-        payload,
-        origin,
-        requestId ?? null,
-        bootMessageId,
+        {
+          version: 1,
+          channel: "whatsapp",
+          payload,
+          origin,
+          requestId: requestId ?? null,
+          bootMessageId,
+        },
       ]);
       logInfo("channels.whatsapp_workflow_started", withOperationContext(op));
     } catch (error) {

@@ -121,9 +121,12 @@ test("Telegram webhook: passes receivedAtMs to drainChannelWorkflow", async () =
       assert.equal(result.status, 200);
       assert.equal(startMock.mock.callCount(), 1);
 
-      // drainChannelWorkflow args: [channel, payload, origin, requestId, bootMessageId, receivedAtMs]
+      // drainChannelWorkflow v1 envelope carries receivedAtMs as a field.
       const args = startMock.mock.calls[0].arguments[1] as unknown[];
-      const receivedAtMs = args[5] as number;
+      assert.equal(args.length, 1, "workflow expects a single v1 envelope");
+      const envelope = args[0] as { version?: number; receivedAtMs?: number };
+      assert.equal(envelope.version, 1, "envelope must be v1");
+      const receivedAtMs = envelope.receivedAtMs as number;
       assert.equal(typeof receivedAtMs, "number", "receivedAtMs should be a number");
       assert.ok(receivedAtMs >= beforeMs, "receivedAtMs should be at or after test start");
       assert.ok(receivedAtMs <= Date.now(), "receivedAtMs should be at or before now");

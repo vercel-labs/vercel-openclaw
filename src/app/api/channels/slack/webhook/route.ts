@@ -525,13 +525,16 @@ export async function POST(request: Request): Promise<Response> {
   try {
     const origin = getPublicOrigin(request);
     await slackWebhookWorkflowRuntime.start(drainChannelWorkflow, [
-      "slack",
-      payload,
-      origin,
-      requestId ?? null,
-      bootMessageTs,
-      receivedAtMs,
-      { slackForwardHeaders, slackRawBody: rawBody },
+      {
+        version: 1,
+        channel: "slack",
+        payload,
+        origin,
+        requestId: requestId ?? null,
+        bootMessageId: bootMessageTs,
+        receivedAtMs,
+        workflowHandoff: { slackForwardHeaders, slackRawBody: rawBody },
+      },
     ]);
     logInfo("channels.slack_workflow_started", withOperationContext(op, {
       ...eventInfo,
