@@ -2746,13 +2746,49 @@ async function createAndBootstrapSandboxWithinLifecycleLock(
         progress.appendLine("system", `Created: ${sandbox.sandboxId}`);
       } catch (createErr) {
         const apiJson = (createErr as { json?: unknown }).json;
-        logError("sandbox.create.failed", ctx({
-          sandboxName,
-          error: createErr instanceof Error ? createErr.message : String(createErr),
-          ...(apiJson ? { apiJson } : {}),
-        }));
-        progress.appendLine("system", `Create failed: ${createErr instanceof Error ? createErr.message : String(createErr)}`);
-        throw createErr;
+        const status = (createErr as { status?: unknown }).status;
+        // A 409 from create() means the persistent sandbox name is already
+        // bound to a handle that our earlier get() missed (e.g. the platform
+        // raced a resume after our get() returned or a prior unhealthy
+        // delete didn't take). Instead of failing the restore, fall back to
+        // get() by name — the implicit resume on first runCommand will wake
+        // it. This is the recovery path alluded to at line 2694 above.
+        if (status === 409) {
+          logWarn("sandbox.create.name_conflict_recovery", ctx({
+            sandboxName,
+            error: createErr instanceof Error ? createErr.message : String(createErr),
+            ...(apiJson ? { apiJson } : {}),
+          }));
+          progress.appendLine(
+            "system",
+            `Create 409 — recovering via get(${sandboxName})`,
+          );
+          try {
+            sandbox = await getSandboxController().get({ sandboxId: sandboxName });
+            progress.appendLine(
+              "system",
+              `Recovered: ${sandbox.sandboxId} status=${sandbox.status}`,
+            );
+          } catch (getErr) {
+            logError("sandbox.create.name_conflict_get_fallback_failed", ctx({
+              sandboxName,
+              error: getErr instanceof Error ? getErr.message : String(getErr),
+            }));
+            progress.appendLine(
+              "system",
+              `Get fallback failed: ${getErr instanceof Error ? getErr.message : String(getErr)}`,
+            );
+            throw createErr;
+          }
+        } else {
+          logError("sandbox.create.failed", ctx({
+            sandboxName,
+            error: createErr instanceof Error ? createErr.message : String(createErr),
+            ...(apiJson ? { apiJson } : {}),
+          }));
+          progress.appendLine("system", `Create failed: ${createErr instanceof Error ? createErr.message : String(createErr)}`);
+          throw createErr;
+        }
       }
     }
     } // end if (!sandbox)
