@@ -513,6 +513,59 @@ test("Telegram webhook: unexpected enqueue failure returns 500", async () => {
   });
 });
 
+test("Telegram webhook: deletes boot message and releases dedup lock when workflow start fails", async () => {
+  await withHarness(async (h) => {
+    await configureTelegram(h);
+    const bootMessageId = 77;
+    const sendCalls: string[] = [];
+    const deleteCalls: string[] = [];
+    h.fakeFetch.onPost(/api\.telegram\.org.*\/sendMessage$/, (url) => {
+      sendCalls.push(url);
+      return Response.json({ ok: true, result: { message_id: bootMessageId } });
+    });
+    h.fakeFetch.onPost(/api\.telegram\.org.*\/deleteMessage$/, (url) => {
+      deleteCalls.push(url);
+      return Response.json({ ok: true, result: true });
+    });
+    const route = getTelegramWebhookRoute();
+    const payload = {
+      update_id: 99997,
+      message: {
+        message_id: 1,
+        from: { id: 12345, first_name: "Test", is_bot: false },
+        chat: { id: 12345, type: "private", first_name: "Test" },
+        date: Math.floor(Date.now() / 1000),
+        text: "boot cleanup",
+      },
+    };
+    const dedupKey = channelDedupKey("telegram", String(payload.update_id));
+    const startMock = mock.method(telegramWebhookWorkflowRuntime, "start", async () => {
+      throw new Error("workflow engine unavailable");
+    });
+
+    try {
+      const req = buildTelegramWebhook({ webhookSecret: TELEGRAM_WEBHOOK_SECRET, payload });
+      const result = await callRoute(route.POST, req);
+      assert.equal(result.status, 500);
+      assert.deepEqual(result.json, {
+        ok: false,
+        error: "WORKFLOW_START_FAILED",
+        retryable: true,
+      });
+
+      assert.equal(sendCalls.length, 1, "boot message should be sent once");
+      assert.equal(deleteCalls.length, 1, "boot message should be deleted once on workflow start failure");
+
+      const reacquiredToken = await getStore().acquireLock(dedupKey, 60);
+      assert.ok(reacquiredToken, "dedup lock should still be released when workflow start fails");
+      await getStore().releaseLock(dedupKey, reacquiredToken!);
+      assert.equal(startMock.mock.callCount(), 1);
+    } finally {
+      startMock.mock.restore();
+    }
+  });
+});
+
 test("Telegram webhook: releases dedup lock and returns 500 when workflow start fails", async () => {
   await withHarness(async (h) => {
     await configureTelegram(h);

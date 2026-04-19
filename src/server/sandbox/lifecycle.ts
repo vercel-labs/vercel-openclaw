@@ -2676,8 +2676,9 @@ async function createAndBootstrapSandboxWithinLifecycleLock(
       }
     }
 
-    // Normal path: get() first (auto-resumes stopped persistent sandbox in
-    // one call).  Fall back to create() only if the sandbox doesn't exist yet.
+    // Normal path: get() retrieves the persistent sandbox handle (which may
+    // be stopped).  The first runCommand() triggers an implicit platform
+    // resume.  Fall back to create() only if the sandbox doesn't exist yet.
     if (!sandbox) {
     try {
       progress.appendLine("system", `Resuming persistent sandbox: ${sandboxName}`);
@@ -2766,6 +2767,8 @@ async function createAndBootstrapSandboxWithinLifecycleLock(
 
     // Detect resumed persistent sandbox by checking if the openclaw binary
     // exists on disk (sub-ms stat) instead of running it (loads 577MB package).
+    // NOTE: For stopped persistent sandboxes, this runCommand is also the
+    // implicit resume trigger — the platform auto-starts on first command.
     const whichCheck = await sandbox.runCommand("bash", [
       "-c", `test -x "$(command -v ${OPENCLAW_BIN} 2>/dev/null)" && echo yes || echo no`,
     ]);
@@ -3296,6 +3299,13 @@ function clearSandboxRuntimeStateForReset(meta: SingleMeta): void {
   meta.openclawVersion = null;
   meta.lastError = null;
   meta.lifecycleAttemptId = null;
+
+  meta.lastTokenRefreshAt = null;
+  meta.lastTokenExpiresAt = null;
+  meta.lastTokenSource = null;
+  meta.lastTokenRefreshError = null;
+  meta.consecutiveTokenRefreshFailures = 0;
+  meta.breakerOpenUntil = null;
 
   // Reset oracle to default idle state.
   meta.restoreOracle = {

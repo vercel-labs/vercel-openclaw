@@ -195,3 +195,53 @@ describe("ensureMetaShape restoreOracle hydration", () => {
     assert.equal(result.restoreOracle.consecutiveFailures, 0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Q38: ensureMetaShape instance ID mismatch guard
+// ---------------------------------------------------------------------------
+
+describe("ensureMetaShape instance ID mismatch", () => {
+  test("throws when persisted meta.id differs from expectedInstanceId", () => {
+    assert.throws(
+      () =>
+        ensureMetaShape(
+          { id: "some-other-instance", gatewayToken: "gw" },
+          "openclaw-single",
+        ),
+      /Refusing to hydrate meta for instance "some-other-instance" while expecting "openclaw-single"/,
+    );
+  });
+
+  test("accepts hydration when ids match exactly", () => {
+    const result = ensureMetaShape(
+      { id: "openclaw-single", gatewayToken: "gw" },
+      "openclaw-single",
+    );
+    assert.ok(result, "should hydrate when ids match");
+    assert.equal(result!.id, "openclaw-single");
+  });
+
+  test("accepts hydration when persisted id is missing (legacy meta)", () => {
+    // Raw.id missing — hydrator fills in expectedInstanceId without throwing.
+    const result = ensureMetaShape(
+      { gatewayToken: "gw" },
+      "openclaw-single",
+    );
+    assert.ok(result, "should hydrate legacy meta missing id");
+    assert.equal(result!.id, "openclaw-single");
+  });
+
+  test("throws with both ids in the error message for operator debugging", () => {
+    try {
+      ensureMetaShape(
+        { id: "stale-prefix", gatewayToken: "gw" },
+        "new-prefix",
+      );
+      assert.fail("expected ensureMetaShape to throw");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      assert.ok(msg.includes("stale-prefix"), `error should mention persisted id, got: ${msg}`);
+      assert.ok(msg.includes("new-prefix"), `error should mention expected id, got: ${msg}`);
+    }
+  });
+});

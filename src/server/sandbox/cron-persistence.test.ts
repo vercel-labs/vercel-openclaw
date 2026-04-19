@@ -431,6 +431,134 @@ test("cron-persistence: cron restore failure does not block sandbox restore", as
 });
 
 // ---------------------------------------------------------------------------
+// Q9: Malformed jobs.json on stop — buildCronRecord must not persist garbage
+// ---------------------------------------------------------------------------
+
+test("cron-persistence Q9: malformed jobs.json does not persist to store on stop", async (t) => {
+  const h = createScenarioHarness();
+
+  try {
+    await h.driveToRunning();
+
+    // Write a truncated/malformed jobs.json to the sandbox.
+    const handle = h.controller.lastCreated()!;
+    await handle.writeFiles([{
+      path: CRON_JOBS_PATH,
+      content: Buffer.from('{"version":1,"jobs":[{"id":"broken",'), // truncated
+    }]);
+
+    await h.stopToSnapshot();
+
+    // readCronNextWakeFromSandbox surfaces "error" status (JSON.parse throws),
+    // which makes the stop path skip both cron-jobs and cron-wake persistence.
+    const record = await getStore().getValue<StoredCronRecord>(CRON_JOBS_KEY());
+    assert.equal(record, null, "Malformed jobs.json must not produce a stored record");
+
+    const wakeMs = await getStore().getValue<number>(CRON_NEXT_WAKE_KEY());
+    assert.equal(wakeMs, null, "Malformed jobs.json must not produce a wake timestamp");
+  } catch (err) {
+    await dumpDiagnostics(t, h);
+    throw err;
+  } finally {
+    h.teardown();
+  }
+});
+
+test("cron-persistence Q9: valid JSON with empty jobs array clears store", async (t) => {
+  const h = createScenarioHarness();
+
+  try {
+    // Pre-populate store with a good record.
+    const goodJson = buildTestCronJobs(Date.now() + 600_000);
+    const { createHash } = await import("node:crypto");
+    await getStore().setValue(CRON_JOBS_KEY(), {
+      version: 1,
+      capturedAt: Date.now(),
+      source: "stop",
+      sha256: createHash("sha256").update(goodJson).digest("hex"),
+      jobCount: 2,
+      jobIds: ["avatar-quote", "daily-standup"],
+      jobsJson: goodJson,
+    });
+
+    await h.driveToRunning();
+
+    // Write jobs.json with empty jobs array on stop — the authoritative
+    // "0 jobs" signal. Stop must clear the store so old jobs don't resurrect.
+    const handle = h.controller.lastCreated()!;
+    await handle.writeFiles([{
+      path: CRON_JOBS_PATH,
+      content: Buffer.from(JSON.stringify({ version: 1, jobs: [] })),
+    }]);
+
+    await h.stopToSnapshot();
+
+    const record = await getStore().getValue<StoredCronRecord>(CRON_JOBS_KEY());
+    assert.equal(record, null, "Empty jobs on stop must clear store");
+  } catch (err) {
+    await dumpDiagnostics(t, h);
+    throw err;
+  } finally {
+    h.teardown();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Q11: Disabled jobs — cron wake treats them as no-jobs
+// ---------------------------------------------------------------------------
+
+test("cron-persistence Q11: jobs.json with only disabled jobs yields no wake time", async (t) => {
+  const h = createScenarioHarness();
+
+  try {
+    await h.driveToRunning();
+
+    // All jobs disabled — cron wake should find no earliest nextRunAtMs.
+    const disabledPayload = {
+      version: 1,
+      jobs: [
+        {
+          id: "disabled-1",
+          name: "disabled-1",
+          enabled: false,
+          createdAtMs: Date.now() - 86400_000,
+          updatedAtMs: Date.now() - 3600_000,
+          schedule: { kind: "every", everyMs: 1800_000, anchorMs: Date.now() },
+          sessionTarget: "isolated",
+          wakeMode: "now",
+          payload: { kind: "agentTurn", message: "noop" },
+          delivery: { mode: "announce", channel: "telegram", to: "1" },
+          state: { nextRunAtMs: Date.now() + 600_000, lastRunStatus: "ok", lastStatus: "ok", consecutiveErrors: 0 },
+        },
+      ],
+    };
+    const handle = h.controller.lastCreated()!;
+    await handle.writeFiles([{
+      path: CRON_JOBS_PATH,
+      content: Buffer.from(JSON.stringify(disabledPayload)),
+    }]);
+
+    await h.stopToSnapshot();
+
+    // No wake-time persisted: all jobs disabled means no earliest nextRunAtMs.
+    const wakeMs = await getStore().getValue<number>(CRON_NEXT_WAKE_KEY());
+    assert.equal(wakeMs, null, "Disabled-only jobs must not produce a wake timestamp");
+
+    // But the raw record IS persisted by buildCronRecord — it sees jobs.length > 0.
+    // This is intentional: the store safety-net is about job definitions, not
+    // scheduling state.
+    const record = await getStore().getValue<StoredCronRecord>(CRON_JOBS_KEY());
+    assert.ok(record, "Disabled jobs are still persisted as a backup");
+    assert.equal(record.jobCount, 1);
+  } catch (err) {
+    await dumpDiagnostics(t, h);
+    throw err;
+  } finally {
+    h.teardown();
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Phase 7: Resurrection prevention — deleted jobs must stay deleted
 // ---------------------------------------------------------------------------
 

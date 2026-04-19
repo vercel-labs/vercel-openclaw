@@ -2778,6 +2778,128 @@ test("[lifecycle] ensureUsableAiGatewayCredential: api-key source returns no-ref
 });
 
 // ---------------------------------------------------------------------------
+// Q17: Circuit breaker opens after 3 consecutive failures, closes after timeout
+// ---------------------------------------------------------------------------
+
+test("[lifecycle] Q17: circuit breaker opens after 3 consecutive token refresh failures", async () => {
+  const fake = new FakeSandboxController();
+  await withTestEnv(fake, async () => {
+    // No OIDC token, no api-key — refreshAiGatewayToken throws.
+    _setAiGatewayTokenOverrideForTesting(null);
+    delete process.env.AI_GATEWAY_API_KEY;
+
+    await mutateMeta((meta) => {
+      meta.status = "running";
+      meta.sandboxId = "sbx-breaker";
+      meta.lastTokenRefreshAt = Date.now() - 60 * 60 * 1000;
+      meta.lastTokenExpiresAt = Math.floor(Date.now() / 1000) - 300; // expired
+      meta.lastTokenSource = "oidc";
+      meta.consecutiveTokenRefreshFailures = 0;
+      meta.breakerOpenUntil = null;
+    });
+
+    // Three consecutive failures. Each triggers a real refresh attempt
+    // because `force: true` and TTL is expired.
+    for (let i = 1; i <= 3; i++) {
+      const result = await ensureUsableAiGatewayCredential({ force: true, reason: "q17-test" });
+      assert.equal(result.refreshed, false);
+      assert.ok(
+        typeof result.reason === "string" && result.reason.startsWith("refresh-failed"),
+        `Attempt ${i} should have reason starting with "refresh-failed", got "${result.reason}"`,
+      );
+    }
+
+    const afterThree = await getInitializedMeta();
+    assert.equal(afterThree.consecutiveTokenRefreshFailures, 3);
+    assert.ok(
+      afterThree.breakerOpenUntil && afterThree.breakerOpenUntil > Date.now(),
+      "Breaker should be open after 3 failures",
+    );
+
+    // 4th call with breaker open — must short-circuit to circuit-breaker-open.
+    const breakerResult = await ensureUsableAiGatewayCredential({ force: true, reason: "q17-test" });
+    assert.equal(breakerResult.refreshed, false);
+    assert.equal(breakerResult.reason, "circuit-breaker-open");
+    assert.ok(typeof breakerResult.retryAfterMs === "number" && breakerResult.retryAfterMs > 0);
+
+    // Simulate breaker timeout expiring by clearing breakerOpenUntil.
+    await mutateMeta((meta) => {
+      meta.breakerOpenUntil = 1; // in the past
+    });
+
+    // Next call should attempt a refresh again (breaker closed), fail, and
+    // keep the failure counter bumping.
+    const afterTimeout = await ensureUsableAiGatewayCredential({ force: true, reason: "q17-test" });
+    assert.equal(afterTimeout.refreshed, false);
+    assert.ok(
+      typeof afterTimeout.reason === "string" && afterTimeout.reason.startsWith("refresh-failed"),
+      `After timeout, expected a new refresh attempt, got "${afterTimeout.reason}"`,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Q18: Token TTL / breaker fields persist across resetSandbox
+// ---------------------------------------------------------------------------
+
+test("[lifecycle] Q18: clearSandboxRuntimeStateForReset clears token TTL fields", async () => {
+  const fake = new FakeSandboxController();
+  await withTestEnv(fake, async () => {
+    // Populate TTL fields and breaker state as if we had a live token.
+    const expiresAtSec = Math.floor(Date.now() / 1000) + 1800;
+    const lastRefresh = Date.now() - 60_000;
+    await mutateMeta((meta) => {
+      meta.status = "stopped";
+      meta.sandboxId = "sbx-ttl-reset";
+      meta.snapshotId = null; // no snapshot — avoid deleteSnapshot API call
+      meta.lastTokenRefreshAt = lastRefresh;
+      meta.lastTokenExpiresAt = expiresAtSec;
+      meta.lastTokenSource = "oidc";
+      meta.lastTokenRefreshError = "prior error";
+      meta.consecutiveTokenRefreshFailures = 2;
+      meta.breakerOpenUntil = Date.now() + 30_000;
+    });
+
+    await resetSandbox(
+      { origin: "http://localhost", reason: "q18-test" },
+      { deleteSnapshot: async () => {} }, // stub: always succeeds
+    );
+
+    const afterReset = await getInitializedMeta();
+
+    // Sandbox runtime fields DO get cleared.
+    assert.equal(afterReset.sandboxId, null);
+    assert.equal(afterReset.snapshotId, null);
+    assert.equal(afterReset.status, "uninitialized");
+
+    // Token TTL / breaker fields are now cleared on reset so that a fresh
+    // sandbox does not inherit stale expiry / breaker state from the
+    // destroyed one.
+    assert.ok(
+      afterReset.lastTokenRefreshAt === null || afterReset.lastTokenRefreshAt === undefined,
+      "lastTokenRefreshAt cleared on reset",
+    );
+    assert.ok(
+      afterReset.lastTokenExpiresAt === null || afterReset.lastTokenExpiresAt === undefined,
+      "lastTokenExpiresAt cleared on reset",
+    );
+    assert.ok(
+      afterReset.lastTokenSource === null || afterReset.lastTokenSource === undefined,
+      "lastTokenSource cleared on reset",
+    );
+    assert.ok(
+      afterReset.lastTokenRefreshError === null || afterReset.lastTokenRefreshError === undefined,
+      "lastTokenRefreshError cleared on reset",
+    );
+    assert.equal(afterReset.consecutiveTokenRefreshFailures, 0, "consecutiveTokenRefreshFailures reset to 0");
+    assert.ok(
+      afterReset.breakerOpenUntil === null || afterReset.breakerOpenUntil === undefined,
+      "breakerOpenUntil cleared on reset",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Edge-branch: stale booting/setup re-schedule
 // ---------------------------------------------------------------------------
 
@@ -4577,5 +4699,482 @@ test("persistent resume skips cron restore when store has no jobs", async () => 
     } finally {
       globalThis.fetch = originalFetch;
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Q2: Gateway liveness failure asymmetry in touchRunningSandbox
+// ---------------------------------------------------------------------------
+//
+// The internal curl liveness probe is gated by `NODE_ENV !== "test"` in
+// lifecycle.ts. To exercise that branch under node:test, the tests below
+// temporarily flip NODE_ENV to "development" around the touchRunningSandbox
+// call so the liveness check actually runs against the FakeSandboxHandle.
+
+test("[lifecycle] touchRunningSandbox liveness curl non-zero exit -> marks sandbox unavailable", async () => {
+  const fake = new FakeSandboxController();
+  await withTestEnv(fake, async () => {
+    await mutateMeta((meta) => {
+      meta.status = "running";
+      meta.sandboxId = "sbx-liveness-fail";
+      meta.snapshotId = "snap-existing";
+      meta.lastAccessedAt = null;
+    });
+
+    // Target: exercise the `if (process.env.NODE_ENV !== "test")` liveness
+    // branch in touchRunningSandbox. `getSandboxController()` ALSO checks
+    // NODE_ENV === "test" synchronously, so we cannot flip the env var
+    // upfront. Instead, wrap runCommand so the flip happens lazily on the
+    // first command invocation (extendTimeout is a method, not a command).
+    // `lastAccessedAt = null` forces the extend path; we also pre-set the
+    // handle timeout above target so extendTimeout skips work.
+    // Handle timeout below the target sleep so extendTimeout() fires — we
+    // use that hook to flip NODE_ENV between the controller.get() lookup
+    // and the liveness curl probe.
+    const handle = new FakeSandboxHandle(
+      "sbx-liveness-fail",
+      fake.events,
+      60_000,
+    );
+    let nodeEnvBackup: string | undefined;
+    const origExtend = handle.extendTimeout.bind(handle);
+    handle.extendTimeout = async (duration: number) => {
+      if (nodeEnvBackup === undefined) {
+        nodeEnvBackup = process.env.NODE_ENV;
+        (process.env as Record<string, string>).NODE_ENV = "development";
+      }
+      return origExtend(duration);
+    };
+    handle.responders.push((cmd, args) => {
+      if (
+        cmd === "sh"
+        && args?.[0] === "-c"
+        && args[1]?.includes("curl")
+        && args[1]?.includes("localhost:3000")
+      ) {
+        return {
+          exitCode: 1,
+          output: async () => "",
+        };
+      }
+      return undefined;
+    });
+    fake.handlesByIds.set("sbx-liveness-fail", handle);
+
+    try {
+      const result = await touchRunningSandbox();
+      assert.equal(
+        result.status,
+        "stopped",
+        `Expected stopped (snapshotId set), got ${result.status} lastError=${result.lastError}`,
+      );
+      assert.ok(
+        result.lastError?.includes("heartbeat gateway liveness failed"),
+        `lastError should mention liveness failure, got: ${result.lastError}`,
+      );
+      assert.equal(result.sandboxId, null);
+    } finally {
+      if (nodeEnvBackup !== undefined) {
+        (process.env as Record<string, string | undefined>).NODE_ENV = nodeEnvBackup;
+      }
+    }
+  });
+});
+
+test("[lifecycle] touchRunningSandbox liveness runCommand throws -> NOT marked unavailable", async () => {
+  const fake = new FakeSandboxController();
+  await withTestEnv(fake, async () => {
+    await mutateMeta((meta) => {
+      meta.status = "running";
+      meta.sandboxId = "sbx-liveness-throw";
+      meta.snapshotId = "snap-existing";
+      meta.lastAccessedAt = null;
+    });
+
+    const handle = new FakeSandboxHandle(
+      "sbx-liveness-throw",
+      fake.events,
+      60_000,
+    );
+    let nodeEnvBackup: string | undefined;
+    const origExtend = handle.extendTimeout.bind(handle);
+    handle.extendTimeout = async (duration: number) => {
+      if (nodeEnvBackup === undefined) {
+        nodeEnvBackup = process.env.NODE_ENV;
+        (process.env as Record<string, string>).NODE_ENV = "development";
+      }
+      return origExtend(duration);
+    };
+    handle.responders.push((cmd, args) => {
+      if (
+        cmd === "sh"
+        && args?.[0] === "-c"
+        && args[1]?.includes("curl")
+        && args[1]?.includes("localhost:3000")
+      ) {
+        throw new Error("transient network error");
+      }
+      return undefined;
+    });
+    fake.handlesByIds.set("sbx-liveness-throw", handle);
+
+    try {
+      const result = await touchRunningSandbox();
+      assert.equal(
+        result.status,
+        "running",
+        `runCommand throw should NOT mark unavailable, got status ${result.status} lastError=${result.lastError}`,
+      );
+      assert.equal(result.sandboxId, "sbx-liveness-throw");
+      assert.ok(
+        !result.lastError || !result.lastError.includes("heartbeat gateway liveness failed"),
+        `lastError should not mention liveness failure, got: ${result.lastError}`,
+      );
+    } finally {
+      if (nodeEnvBackup !== undefined) {
+        (process.env as Record<string, string | undefined>).NODE_ENV = nodeEnvBackup;
+      }
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Q4: Resume failure via unhealthy handle falls back to create and clears snapshot
+// ---------------------------------------------------------------------------
+
+test("[lifecycle] ensureSandboxRunning resume unhealthy handle -> clears snapshotId, falls back to create (snapshotHistory retained)", async () => {
+  const fake = new FakeSandboxController();
+  const originalFetch = globalThis.fetch;
+
+  await withTestEnv(fake, async () => {
+    // Pre-register an "oc-*" handle that reports an unhealthy status so the
+    // resume path at createAndBootstrapSandboxWithinLifecycleLock treats it
+    // as dead and falls through to create().
+    const sandboxName = `oc-${"openclaw-single".replace(/[^a-z0-9-]/gi, "-").toLowerCase()}`;
+    const unhealthy = new FakeSandboxHandle(sandboxName, fake.events, 60_000);
+    unhealthy.setStatus("failed");
+    fake.handlesByIds.set(sandboxName, unhealthy);
+
+    await mutateMeta((meta) => {
+      meta.status = "stopped";
+      meta.snapshotId = "snap-resume-fail";
+      meta.snapshotConfigHash = "hash-existing";
+      meta.snapshotDynamicConfigHash = "dynhash-existing";
+      meta.snapshotAssetSha256 = "assetsha-existing";
+      meta.restorePreparedStatus = "ready";
+      meta.restorePreparedReason = null;
+      meta.restorePreparedAt = Date.now();
+      meta.snapshotHistory = [
+        {
+          id: "r-1",
+          snapshotId: "snap-resume-fail",
+          timestamp: Date.now(),
+          reason: "stop",
+        },
+        {
+          id: "r-2",
+          snapshotId: "snap-older",
+          timestamp: Date.now() - 10_000,
+          reason: "stop",
+        },
+      ];
+    });
+
+    globalThis.fetch = async () =>
+      new Response('<div id="openclaw-app"></div>', { status: 200 });
+
+    _setAiGatewayTokenOverrideForTesting("test-key");
+    try {
+      let scheduledCallback: (() => Promise<void> | void) | null = null;
+      await ensureSandboxRunning({
+        origin: "https://test.example.com",
+        reason: "resume-unhealthy-fallback",
+        schedule(cb) {
+          scheduledCallback = cb;
+        },
+      });
+
+      assert.ok(scheduledCallback);
+      await (scheduledCallback as () => Promise<void>)();
+
+      const meta = await getInitializedMeta();
+      assert.equal(meta.status, "running", "Should reach running after fallback");
+      // Snapshot metadata should be cleared because the restore was abandoned.
+      assert.equal(meta.snapshotId, null, "snapshotId should be cleared on fallback");
+      assert.equal(meta.snapshotConfigHash, null);
+      assert.equal(meta.snapshotDynamicConfigHash, null);
+      assert.equal(meta.snapshotAssetSha256, null);
+      assert.equal(meta.restorePreparedStatus, "dirty");
+      assert.equal(meta.restorePreparedReason, "snapshot-missing");
+      // snapshotHistory is NOT wiped by the fallback path — it remains for
+      // diagnostics / future prepare cycles. Asserted so the invariant is
+      // explicit and any future behavior change is caught.
+      assert.ok(
+        meta.snapshotHistory.length >= 2,
+        `snapshotHistory should be retained on fallback, got length=${meta.snapshotHistory.length}`,
+      );
+      assert.ok(
+        unhealthy.deleteCalled,
+        "Unhealthy handle should have been deleted before create fallback",
+      );
+    } finally {
+      _setAiGatewayTokenOverrideForTesting(null);
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Q19: touchRunningSandbox detecting sandbox gone via SDK status (not throw)
+// ---------------------------------------------------------------------------
+
+test("[lifecycle] touchRunningSandbox marks unavailable when SDK reports status!=running", async () => {
+  const fake = new FakeSandboxController();
+  await withTestEnv(fake, async () => {
+    await mutateMeta((meta) => {
+      meta.status = "running";
+      meta.sandboxId = "sbx-sdk-stopped";
+      meta.snapshotId = "snap-existing";
+      meta.lastAccessedAt = null;
+    });
+
+    // Handle exists but reports stopped status (platform auto-timed-out the
+    // sandbox). controller.get() does NOT throw — it returns a handle whose
+    // status is "stopped". Verifies touchRunningSandbox() uses the SDK status
+    // signal (lifecycle.ts:1626) rather than only reacting to get() throws.
+    const handle = new FakeSandboxHandle("sbx-sdk-stopped", fake.events, 60_000);
+    handle.setStatus("stopped");
+    fake.handlesByIds.set("sbx-sdk-stopped", handle);
+
+    const result = await touchRunningSandbox();
+    assert.equal(
+      result.status,
+      "stopped",
+      `Expected stopped (snapshotId present), got ${result.status}`,
+    );
+    assert.equal(result.sandboxId, null);
+    assert.ok(
+      result.lastError?.includes("heartbeat detected sandbox status"),
+      `lastError should mention heartbeat detection, got: ${result.lastError}`,
+    );
+  });
+});
+
+test("[lifecycle] touchRunningSandbox marks error when SDK reports failed and no snapshot", async () => {
+  const fake = new FakeSandboxController();
+  await withTestEnv(fake, async () => {
+    await mutateMeta((meta) => {
+      meta.status = "running";
+      meta.sandboxId = "sbx-sdk-failed";
+      meta.snapshotId = null;
+      meta.lastAccessedAt = null;
+    });
+
+    const handle = new FakeSandboxHandle("sbx-sdk-failed", fake.events, 60_000);
+    handle.setStatus("failed");
+    fake.handlesByIds.set("sbx-sdk-failed", handle);
+
+    const result = await touchRunningSandbox();
+    assert.equal(
+      result.status,
+      "error",
+      `Expected error (no snapshotId), got ${result.status}`,
+    );
+    assert.equal(result.sandboxId, null);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Q21: ensureSandboxRunning when running but timeout expired -> reconciles
+// ---------------------------------------------------------------------------
+
+test("[lifecycle] ensureSandboxRunning running + expired timeout -> reconciles via reconcileSandboxHealth", async () => {
+  const fake = new FakeSandboxController();
+  const originalFetch = globalThis.fetch;
+
+  await withTestEnv(fake, async () => {
+    // Pre-register a handle reporting stopped so reconcile->probe fails and
+    // the recovery path is exercised.
+    const handle = new FakeSandboxHandle("sbx-running-expired", fake.events, 60_000);
+    handle.setStatus("stopped");
+    fake.handlesByIds.set("sbx-running-expired", handle);
+
+    // Force sleep-after to 5 minutes, then pretend last access was 1 hour ago
+    // so estimateSandboxTimeoutRemainingMs returns 0 (expired).
+    process.env.OPENCLAW_SANDBOX_SLEEP_AFTER_MS = String(5 * 60 * 1000);
+    _resetSandboxSleepConfigCacheForTesting();
+
+    const longAgo = Date.now() - 60 * 60 * 1000; // 1 hour ago
+    await mutateMeta((meta) => {
+      meta.status = "running";
+      meta.sandboxId = "sbx-running-expired";
+      meta.snapshotId = "snap-expired";
+      meta.lastAccessedAt = longAgo;
+      meta.portUrls = { "3000": "https://sbx-running-expired-3000.fake.vercel.run" };
+    });
+
+    // probeGatewayReady will fetch upstream; return a 410 so probe.ready=false
+    // and reconcileSandboxHealth runs the repair path (markSandboxUnavailable
+    // then ensureSandboxRunning).
+    globalThis.fetch = async () =>
+      new Response("gone", { status: 410 });
+
+    _resetLogBuffer();
+    try {
+      let scheduledCallback: (() => Promise<void> | void) | null = null;
+      const result = await ensureSandboxRunning({
+        origin: "https://test.example.com",
+        reason: "expired-timeout-reconcile",
+        schedule(cb) {
+          scheduledCallback = cb;
+        },
+      });
+
+      // Should be waiting — repair scheduled after markSandboxUnavailable.
+      assert.equal(result.state, "waiting");
+
+      const logMessages = getServerLogs().map((e) => e.message);
+      assert.ok(
+        logMessages.includes("sandbox.ensure_running.timeout_expired"),
+        `Expected sandbox.ensure_running.timeout_expired log, got: ${logMessages.join(", ")}`,
+      );
+
+      const meta = await getInitializedMeta();
+      // After repair: sandboxId is cleared by markSandboxUnavailable; status
+      // moves to "restoring" (snapshot present) once scheduleLifecycleWork runs.
+      assert.ok(
+        meta.status === "restoring" || meta.status === "stopped",
+        `Expected restoring/stopped after repair, got ${meta.status}`,
+      );
+      assert.ok(scheduledCallback, "Should have scheduled a background callback");
+    } finally {
+      globalThis.fetch = originalFetch;
+      delete process.env.OPENCLAW_SANDBOX_SLEEP_AFTER_MS;
+      _resetSandboxSleepConfigCacheForTesting();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Q24: reconcileSnapshottingStatus stale guardrail (>5 min) forces stopped
+// ---------------------------------------------------------------------------
+
+test("[lifecycle] reconcileSnapshottingStatus stale snapshotting >5min -> force-stopped", async () => {
+  const fake = new FakeSandboxController();
+  await withTestEnv(fake, async () => {
+    // SDK still reports snapshotting (in-flight) but meta is stale.
+    const handle = (await fake.create({ ports: [3000], timeout: 300_000 })) as FakeSandboxHandle;
+    handle.setStatus("snapshotting");
+
+    // updatedAt well beyond the 5-minute STALE_OPERATION_MS threshold.
+    const longAgo = Date.now() - 10 * 60 * 1000;
+    await mutateMeta((meta) => {
+      meta.status = "snapshotting";
+      meta.sandboxId = handle.sandboxId;
+      meta.lastAccessedAt = longAgo;
+    });
+
+    // mutateMeta refreshes updatedAt on every write; force it back via setMeta.
+    const store = getStore();
+    const current = await store.getMeta();
+    if (current) {
+      await store.setMeta({ ...current, updatedAt: longAgo });
+    }
+
+    _resetLogBuffer();
+    const reconciled = await reconcileSnapshottingStatus();
+    assert.equal(
+      reconciled.status,
+      "stopped",
+      `Expected stale guardrail to force stopped, got ${reconciled.status}`,
+    );
+
+    const logs = getServerLogs();
+    const staleLog = logs.find(
+      (e) =>
+        e.message === "sandbox.snapshotting_reconciled"
+        && (e.data as { outcome?: string })?.outcome === "stale-force-stopped",
+    );
+    assert.ok(
+      staleLog,
+      "Should emit sandbox.snapshotting_reconciled with outcome=stale-force-stopped",
+    );
+  });
+});
+
+test("[lifecycle] reconcileSnapshottingStatus still-in-flight within window -> leaves meta snapshotting", async () => {
+  const fake = new FakeSandboxController();
+  await withTestEnv(fake, async () => {
+    const handle = (await fake.create({ ports: [3000], timeout: 300_000 })) as FakeSandboxHandle;
+    handle.setStatus("snapshotting");
+
+    await mutateMeta((meta) => {
+      meta.status = "snapshotting";
+      meta.sandboxId = handle.sandboxId;
+      meta.lastAccessedAt = Date.now();
+    });
+
+    // Fresh updatedAt: guardrail should NOT trip.
+    const reconciled = await reconcileSnapshottingStatus();
+    assert.equal(reconciled.status, "snapshotting");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Q18 exploit proof: stale token TTL after reset causes skipped refresh
+// ---------------------------------------------------------------------------
+
+test("[lifecycle] Q18-fixed: reset clears lastTokenExpiresAt so ensureUsableAiGatewayCredential does not skip refresh on a fresh sandbox", async () => {
+  const fake = new FakeSandboxController();
+  await withTestEnv(fake, async () => {
+    // 1. Set up a running sandbox with a "valid" OIDC token expiry 1 hour from now
+    const handle = (await fake.create({ ports: [3000], timeout: 300_000 })) as FakeSandboxHandle;
+    await mutateMeta((meta) => {
+      meta.status = "running";
+      meta.sandboxId = handle.sandboxId;
+      meta.lastAccessedAt = Date.now();
+      // Token metadata says "token is valid for another hour"
+      meta.lastTokenRefreshAt = Date.now();
+      meta.lastTokenExpiresAt = Math.floor(Date.now() / 1000) + 3600; // 1 hour from now (epoch seconds)
+      meta.lastTokenSource = "oidc";
+    });
+
+    // 2. Reset the sandbox — destroys it, clears sandbox state AND token TTL fields
+    await resetSandbox(
+      { origin: "http://localhost", reason: "q18-fixed-test" },
+      { deleteSnapshot: async () => {} },
+    );
+
+    // 3. Verify reset cleared sandbox state and token TTL fields
+    const postReset = await getInitializedMeta();
+    assert.equal(postReset.status, "uninitialized");
+    assert.equal(postReset.sandboxId, null);
+
+    // 4. THE FIX: token TTL fields no longer survive reset.
+    assert.ok(
+      postReset.lastTokenExpiresAt === null || postReset.lastTokenExpiresAt === undefined,
+      "Fix confirmed: lastTokenExpiresAt cleared on reset",
+    );
+
+    // 5. Create a fresh sandbox (simulating the next lifecycle cycle)
+    const freshHandle = (await fake.create({ ports: [3000], timeout: 300_000 })) as FakeSandboxHandle;
+    await mutateMeta((meta) => {
+      meta.status = "running";
+      meta.sandboxId = freshHandle.sandboxId;
+      meta.lastAccessedAt = Date.now();
+      // Fresh sandbox has no token installed; stale TTL has been cleared too.
+    });
+
+    // 6. Call ensureUsableAiGatewayCredential — without stale TTL it must not
+    //    short-circuit with "meta-ttl-sufficient".
+    const result = await ensureUsableAiGatewayCredential({ reason: "q18-fixed" });
+
+    // 7. The exploit is gone: either a refresh is attempted or some other
+    //    reason is returned, but it must not be the stale-TTL shortcut.
+    assert.notEqual(
+      result.reason,
+      "meta-ttl-sufficient",
+      `Fix confirmed: refresh no longer skipped via stale TTL; reason=${result.reason}`,
+    );
   });
 });

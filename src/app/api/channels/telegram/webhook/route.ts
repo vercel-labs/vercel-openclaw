@@ -5,7 +5,7 @@ import { getPublicOrigin } from "@/server/public-url";
 import { channelDedupKey } from "@/server/channels/keys";
 import { drainChannelWorkflow } from "@/server/workflows/channels/drain-channel-workflow";
 import { extractTelegramChatId, isTelegramWebhookSecretValid } from "@/server/channels/telegram/adapter";
-import { sendMessage } from "@/server/channels/telegram/bot-api";
+import { deleteMessage, sendMessage } from "@/server/channels/telegram/bot-api";
 import { extractRequestId, logError, logInfo, logWarn } from "@/server/log";
 import { createOperationContext, withOperationContext } from "@/server/observability/operation-context";
 import { OPENCLAW_TELEGRAM_WEBHOOK_PORT } from "@/server/openclaw/config";
@@ -361,6 +361,15 @@ export async function POST(request: Request): Promise<Response> {
         outcome: "workflow-started",
       });
     } catch (error) {
+      // Best-effort clean up the boot message so the user doesn't see an orphan
+      // message left over from a failed workflow start on Telegram's retry path.
+      if (bootMessageId && chatId) {
+        try {
+          await deleteMessage(config.botToken, Number(chatId), bootMessageId);
+        } catch {
+          // Don't let cleanup failure block the error response.
+        }
+      }
       const dedupRelease = await releaseTelegramWebhookDedupLockForRetry(dedupLock);
       logWarn("channels.telegram_workflow_start_failed", withOperationContext(op, {
         error: error instanceof Error ? error.message : String(error),

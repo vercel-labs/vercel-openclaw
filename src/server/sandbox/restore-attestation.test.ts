@@ -328,6 +328,150 @@ test("buildRestoreDecision: snapshotId missing with matching hashes and ready st
   assert.equal(decision.nextAction, "ensure-running");
 });
 
+// ---------------------------------------------------------------------------
+// Q31: Legacy snapshotConfigHash fallback — exercised only via partial meta
+// ---------------------------------------------------------------------------
+
+test("Q31: buildRestoreTargetAttestation falls back to legacy snapshotConfigHash", () => {
+  const base = createDefaultMeta(Date.now(), "gw-token");
+  const desiredConfigHash = computeGatewayConfigHash({});
+  const desiredAssetSha256 = buildRestoreAssetManifest().sha256;
+
+  // Direct call into buildRestoreTargetAttestation with a raw meta that
+  // ONLY has the legacy snapshotConfigHash (snapshotDynamicConfigHash is null).
+  // This path is only reachable when callers bypass ensureMetaShape — which
+  // rewrites legacy → dynamic on hydration. For meta already hydrated via the
+  // store, snapshotDynamicConfigHash will be populated and the fallback is
+  // effectively dead.
+  const attestation = buildRestoreTargetAttestation({
+    ...base,
+    snapshotId: "snap-legacy",
+    snapshotDynamicConfigHash: null,
+    snapshotConfigHash: desiredConfigHash,
+    runtimeDynamicConfigHash: desiredConfigHash,
+    snapshotAssetSha256: desiredAssetSha256,
+    runtimeAssetSha256: desiredAssetSha256,
+    restorePreparedStatus: "ready",
+    restorePreparedReason: "prepared",
+    restorePreparedAt: Date.now(),
+  });
+
+  // Legacy hash promotes through fallback to snapshotConfigFresh=true.
+  assert.equal(attestation.snapshotConfigFresh, true);
+  assert.equal(attestation.snapshotDynamicConfigHash, desiredConfigHash);
+  assert.equal(attestation.reusable, true);
+});
+
+test("Q31: legacy snapshotConfigHash fallback not reused after hydration", async () => {
+  // After ensureMetaShape, snapshotConfigHash is copied to snapshotDynamicConfigHash.
+  // So in the hydrated path, the fallback branch in buildRestoreTargetAttestation
+  // at line 55-56 never activates. Verify by hydrating a legacy meta.
+  const { ensureMetaShape } = await import("@/shared/types");
+  const legacy = {
+    id: "openclaw-single",
+    gatewayToken: "tok",
+    snapshotConfigHash: "legacy-hash",
+    snapshotDynamicConfigHash: null,
+  };
+  const hydrated = ensureMetaShape(legacy, "openclaw-single");
+  assert.ok(hydrated);
+  // After hydration, both fields are set to legacy-hash — the fallback is
+  // redundant for any hydrated meta.
+  assert.equal(hydrated.snapshotDynamicConfigHash, "legacy-hash");
+  assert.equal(hydrated.snapshotConfigHash, "legacy-hash");
+});
+
+// ---------------------------------------------------------------------------
+// Q32: restore-target-dirty + snapshot-config-stale co-occur
+// ---------------------------------------------------------------------------
+
+test("Q32: restore-target-dirty and snapshot-config-stale appear together when config changes", () => {
+  const base = createDefaultMeta(Date.now(), "gw-token");
+  const desiredConfigHash = computeGatewayConfigHash({});
+  const desiredAssetSha256 = buildRestoreAssetManifest().sha256;
+
+  // Config changed → snapshot config hash is stale AND restore-prepared=dirty.
+  // Both reasons surface together — they describe the same underlying event
+  // (config changed after last prepare), but from different vantage points:
+  //   - snapshot-config-stale: attestation of the snapshot image contents
+  //   - restore-target-dirty: pre-verified flag set when config changed
+  const decision = buildRestoreDecision({
+    meta: {
+      ...base,
+      status: "running",
+      sandboxId: "sbx-1",
+      snapshotId: "snap-dirty",
+      snapshotDynamicConfigHash: "old-hash",
+      runtimeDynamicConfigHash: desiredConfigHash,
+      snapshotAssetSha256: desiredAssetSha256,
+      runtimeAssetSha256: desiredAssetSha256,
+      restorePreparedStatus: "dirty",
+      restorePreparedReason: "dynamic-config-changed",
+      restorePreparedAt: Date.now(),
+    },
+    source: "inspect",
+    destructive: false,
+  });
+
+  assert.ok(decision.reasons.includes("snapshot-config-stale"));
+  assert.ok(decision.reasons.includes("restore-target-dirty"));
+
+  // Confirmation: they always co-occur when restorePreparedReason is the one
+  // that caused snapshot drift. The redundancy is intentional — it gives
+  // operators two signals (runtime-observed + pre-flagged) that agree.
+});
+
+test("Q32: restore-target-dirty can occur without snapshot-config-stale", () => {
+  // If restorePreparedStatus is "dirty" for a non-config reason (e.g. assets
+  // changed), snapshot-config-stale is NOT added but restore-target-dirty IS.
+  const base = createDefaultMeta(Date.now(), "gw-token");
+  const desiredConfigHash = computeGatewayConfigHash({});
+
+  const attestation = buildRestoreTargetAttestation({
+    ...base,
+    snapshotId: "snap-assets-dirty",
+    snapshotDynamicConfigHash: desiredConfigHash,
+    runtimeDynamicConfigHash: desiredConfigHash,
+    snapshotAssetSha256: "old-asset-sha",
+    runtimeAssetSha256: buildRestoreAssetManifest().sha256,
+    restorePreparedStatus: "dirty",
+    restorePreparedReason: "static-assets-changed",
+    restorePreparedAt: 1,
+  });
+
+  assert.ok(!attestation.reasons.includes("snapshot-config-stale"));
+  assert.ok(attestation.reasons.includes("snapshot-assets-stale"));
+  assert.ok(attestation.reasons.includes("restore-target-dirty"));
+});
+
+// ---------------------------------------------------------------------------
+// Q35: Legacy snapshot with no hashes is flagged as unknown / not reusable
+// ---------------------------------------------------------------------------
+
+test("Q35: legacy snapshot with all hashes null is non-reusable with unknown reasons", () => {
+  const base = createDefaultMeta(Date.now(), "gw-token");
+
+  const attestation = buildRestoreTargetAttestation({
+    ...base,
+    snapshotId: "snap-legacy-no-hashes",
+    snapshotDynamicConfigHash: null,
+    runtimeDynamicConfigHash: null,
+    snapshotAssetSha256: null,
+    runtimeAssetSha256: null,
+    restorePreparedStatus: "unknown",
+    restorePreparedReason: null,
+    restorePreparedAt: null,
+  });
+
+  assert.equal(attestation.reusable, false);
+  assert.equal(attestation.needsPrepare, true);
+  assert.ok(attestation.reasons.includes("snapshot-config-unknown"));
+  assert.ok(attestation.reasons.includes("snapshot-assets-unknown"));
+  assert.ok(attestation.reasons.includes("restore-target-unknown"));
+  assert.equal(attestation.snapshotConfigFresh, null);
+  assert.equal(attestation.snapshotAssetsFresh, null);
+});
+
 test("buildRestoreDecision agrees with attestation.reusable and plan.actions for same input", () => {
   const base = createDefaultMeta(Date.now(), "gw-token");
   const desiredConfigHash = computeGatewayConfigHash({});
