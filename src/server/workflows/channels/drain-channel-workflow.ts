@@ -878,7 +878,34 @@ export async function processChannelStep(
           .update("🦞 Almost ready\u2026")
           .catch(() => {});
       } else {
-        await existingBootHandle.clear().catch(() => {});
+        // Forward failed. Instead of silently deleting the boot message
+        // (which left the user staring at an empty channel after their
+        // "🦞 Waking up…" placeholder vanished), edit it to a status-
+        // appropriate message so they know whether we're still trying
+        // or have given up. A retryable 5xx becomes a RetryableError
+        // upstream and the workflow step re-enters from the top; keep
+        // the message alive for that retry. A non-retryable 4xx is
+        // terminal, so tell the user explicitly.
+        const retryableForwardFailure = forwardResult.status >= 500;
+        await existingBootHandle
+          .update(
+            retryableForwardFailure
+              ? "🦞 Still trying to reach the assistant\u2026"
+              : "🦞 Couldn't reach the assistant — try again in a minute.",
+          )
+          .catch((bootError) => {
+            logWarn("channels.workflow_boot_forward_failure_update_failed", {
+              channel,
+              requestId,
+              deliveryId,
+              forwardStatus: forwardResult.status,
+              retryableForwardFailure,
+              error:
+                bootError instanceof Error
+                  ? bootError.message
+                  : String(bootError),
+            });
+          });
       }
     }
 
@@ -914,11 +941,41 @@ export async function processChannelStep(
       error,
       resolvedDependencies,
     );
+    const terminal = workflowError.name === "FatalError";
+
+    // Pre-forward exceptions (sandbox ready timeout, probe failure, etc.)
+    // and post-forward throws both land here. Slack/Telegram pass
+    // deferCleanupToCaller: true so the boot message is still alive —
+    // surface the terminal vs retryable state to the user instead of
+    // letting "🦞 Waking up…" linger forever (terminal) or vanish
+    // silently (retryable). Best effort: boot-handle errors must not
+    // shadow the original workflow failure being thrown.
+    if (existingBootHandle) {
+      await existingBootHandle
+        .update(
+          terminal
+            ? "🦞 Something went wrong — try again in a moment."
+            : "🦞 Still waking up\u2026 retrying.",
+        )
+        .catch((bootError) => {
+          logWarn("channels.workflow_boot_failure_update_failed", {
+            channel,
+            requestId,
+            deliveryId,
+            terminal,
+            error:
+              bootError instanceof Error
+                ? bootError.message
+                : String(bootError),
+          });
+        });
+    }
+
     await recordWorkflowFailure({
       channel,
       requestId,
       deliveryId,
-      terminal: workflowError.name === "FatalError",
+      terminal,
       error,
       diag,
       receivedAtMs,
