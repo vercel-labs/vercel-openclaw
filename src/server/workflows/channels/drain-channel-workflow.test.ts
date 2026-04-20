@@ -543,6 +543,89 @@ test("toWorkflowProcessingError returns FatalError for native_forward_failed 404
 });
 
 // ===========================================================================
+// Story F: retry budget escalation from RetryableError to FatalError
+// ===========================================================================
+
+test("retry budget: sandbox_not_ready stays retryable inside budget", () => {
+  const error = toWorkflowProcessingError(
+    "slack",
+    new Error("sandbox_not_ready"),
+    createWorkflowDependencies(),
+    { attempt: 2, wallClockMs: 30_000, exceeded: false, reason: null },
+  );
+  assert.ok(error instanceof TestRetryableError);
+});
+
+test("retry budget: sandbox_not_ready escalates to FatalError when exceeded", () => {
+  const error = toWorkflowProcessingError(
+    "slack",
+    new Error("sandbox_not_ready"),
+    createWorkflowDependencies(),
+    {
+      attempt: 10,
+      wallClockMs: 11 * 60 * 1000,
+      exceeded: true,
+      reason: "sandbox_persistently_failing:10_attempts:660000ms",
+    },
+  );
+  assert.ok(error instanceof TestFatalError);
+  assert.match(
+    (error as Error).message,
+    /sandbox_persistently_failing:10_attempts:660000ms/,
+    "fatal error message carries the budget-reason suffix",
+  );
+});
+
+test("retry budget: native_forward_failed 5xx escalates to FatalError when exceeded", () => {
+  const error = toWorkflowProcessingError(
+    "telegram",
+    new Error("native_forward_failed status=504"),
+    createWorkflowDependencies(),
+    {
+      attempt: 25,
+      wallClockMs: 8 * 60 * 1000,
+      exceeded: true,
+      reason: "sandbox_persistently_failing:25_attempts:480000ms",
+    },
+  );
+  assert.ok(error instanceof TestFatalError);
+});
+
+test("retry budget: non-retryable 4xx stays fatal regardless of budget", () => {
+  // 404 is already fatal — budget state should not change the outcome.
+  const error = toWorkflowProcessingError(
+    "slack",
+    new Error("native_forward_failed status=404"),
+    createWorkflowDependencies(),
+    { attempt: 1, wallClockMs: 1000, exceeded: false, reason: null },
+  );
+  assert.ok(error instanceof TestFatalError);
+});
+
+test("retry budget: isRetryable-classified error escalates on exceeded budget", () => {
+  const deps = createWorkflowDependencies({
+    isRetryable: () => true,
+  });
+  const error = toWorkflowProcessingError(
+    "discord",
+    new Error("transient-something-else"),
+    deps,
+    { attempt: 30, wallClockMs: 15 * 60 * 1000, exceeded: true, reason: "sandbox_persistently_failing:30_attempts:900000ms" },
+  );
+  assert.ok(error instanceof TestFatalError);
+});
+
+test("retry budget: omitting retryBudget preserves original retryable/fatal classification", () => {
+  // No retryBudget passed — sandbox_not_ready must remain retryable.
+  const error = toWorkflowProcessingError(
+    "slack",
+    new Error("sandbox_not_ready"),
+    createWorkflowDependencies(),
+  );
+  assert.ok(error instanceof TestRetryableError);
+});
+
+// ===========================================================================
 // Telegram probe skip gate: lastRestoreMetrics.telegramListenerReady
 // ===========================================================================
 
