@@ -214,12 +214,17 @@ export async function POST(request: Request): Promise<Response> {
         const sandboxWebhookUrl = await getSandboxDomain(OPENCLAW_TELEGRAM_WEBHOOK_PORT);
         const forwardUrl = `${sandboxWebhookUrl}/telegram-webhook`;
         const fastPathStartedAt = Date.now();
+        const fastPathHeaders: Record<string, string> = {
+          "content-type": "application/json",
+          "x-telegram-bot-api-secret-token": secretHeader,
+        };
+        const fastPathUpdateId = extractUpdateId(payload);
+        if (fastPathUpdateId) {
+          fastPathHeaders["x-openclaw-delivery-id"] = `telegram:${fastPathUpdateId}`;
+        }
         const forwardResponse = await fetch(forwardUrl, {
           method: "POST",
-          headers: {
-            "content-type": "application/json",
-            "x-telegram-bot-api-secret-token": secretHeader,
-          },
+          headers: fastPathHeaders,
           body: JSON.stringify(payload),
         });
         const forwardBody = await forwardResponse.text().catch(() => "");

@@ -607,6 +607,9 @@ export async function processChannelStep(
         getSandboxDomain,
         forwardTelegramToNativeHandlerLocally,
         Boolean(effectiveReadyMeta.sandboxId),
+        null,
+        null,
+        deliveryId,
       );
       forwardResult = { ok: retryingResult.ok, status: retryingResult.status };
     } else if (channel === "slack") {
@@ -680,6 +683,7 @@ export async function processChannelStep(
         false,
         slackForwardHeaders,
         slackRawBody,
+        deliveryId,
       );
       forwardResult = { ok: retryingResult.ok, status: retryingResult.status };
     } else {
@@ -688,6 +692,9 @@ export async function processChannelStep(
         payload,
         effectiveReadyMeta,
         getSandboxDomain,
+        null,
+        null,
+        deliveryId,
       );
     }
 
@@ -1243,6 +1250,7 @@ async function forwardTelegramToNativeHandlerLocally(
   sandboxId: string,
   payload: unknown,
   webhookSecret: string | null,
+  deliveryId: string | null = null,
 ): Promise<{
   ok: boolean;
   status: number;
@@ -1261,10 +1269,11 @@ async function forwardTelegramToNativeHandlerLocally(
     const sandbox = await getSandboxController().get({ sandboxId });
     const script = `
 const startedAt = Date.now();
-const [port, path, payloadJson, secret] = process.argv.slice(1);
+const [port, path, payloadJson, secret, deliveryId] = process.argv.slice(1);
 const url = \`http://127.0.0.1:\${port}\${path}\`;
 const headers = { "content-type": "application/json" };
 if (secret) headers["x-telegram-bot-api-secret-token"] = secret;
+if (deliveryId) headers["x-openclaw-delivery-id"] = deliveryId;
 function pick(headers) {
   return {
     server: headers.get("server"),
@@ -1313,6 +1322,7 @@ fetch(url, {
       OPENCLAW_TELEGRAM_INTERNAL_WEBHOOK_PATH,
       JSON.stringify(payload),
       webhookSecret ?? "",
+      deliveryId ?? "",
     ], {
       signal: AbortSignal.timeout(8_000),
     });
@@ -1375,11 +1385,15 @@ async function forwardToNativeHandler(
   getSandboxDomain: (port?: number) => Promise<string>,
   extraForwardHeaders: Record<string, string> | null = null,
   rawBody: string | null = null,
+  deliveryId: string | null = null,
 ): Promise<{ ok: boolean; status: number; durationMs: number; bodyLength: number; bodyHead: string; headers: DiagnosticHeaders | null }> {
   const { OPENCLAW_TELEGRAM_WEBHOOK_PORT } = await import("@/server/openclaw/config");
 
   let forwardUrl: string;
   const headers: Record<string, string> = { "content-type": "application/json" };
+  if (deliveryId) {
+    headers["x-openclaw-delivery-id"] = deliveryId;
+  }
 
   switch (channel) {
     case "telegram": {
@@ -1422,7 +1436,7 @@ async function forwardToNativeHandler(
     ? rawBody
     : JSON.stringify(payload);
 
-  console.log(`[DIAG] native_forward_attempt url=${forwardUrl} channel=${channel} sandboxId=${meta.sandboxId} hasSecret=${Boolean(headers["x-telegram-bot-api-secret-token"])} bodySource=${channel === "slack" && rawBody != null ? "raw" : "serialized"}`);
+  console.log(`[DIAG] native_forward_attempt url=${forwardUrl} channel=${channel} sandboxId=${meta.sandboxId} hasSecret=${Boolean(headers["x-telegram-bot-api-secret-token"])} bodySource=${channel === "slack" && rawBody != null ? "raw" : "serialized"} deliveryId=${deliveryId ?? "none"}`);
 
   const t0 = Date.now();
   const response = await fetch(forwardUrl, {
@@ -1486,6 +1500,7 @@ async function forwardToNativeHandlerWithRetry(
     sandboxId: string,
     payload: unknown,
     webhookSecret: string | null,
+    deliveryId?: string | null,
   ) => Promise<{
     ok: boolean;
     status: number;
@@ -1498,6 +1513,7 @@ async function forwardToNativeHandlerWithRetry(
   preferLocalTelegramForward = false,
   extraForwardHeaders: Record<string, string> | null = null,
   rawBody: string | null = null,
+  deliveryId: string | null = null,
 ): Promise<RetryingForwardResult> {
   const startedAt = Date.now();
   const deadline = startedAt + RETRYING_FORWARD_TIMEOUT_MS;
@@ -1524,8 +1540,9 @@ async function forwardToNativeHandlerWithRetry(
             meta.sandboxId as string,
             payload,
             meta.channels.telegram?.webhookSecret ?? null,
+            deliveryId,
           )
-        : await forwardToNativeHandler(channel, payload, meta, getSandboxDomain, extraForwardHeaders, rawBody);
+        : await forwardToNativeHandler(channel, payload, meta, getSandboxDomain, extraForwardHeaders, rawBody, deliveryId);
 
       // Proxy-level failures (502/503/504): handler not listening yet. Safe to retry.
       // Handler-not-ready (401/404): native handler is listening at TCP level
@@ -1595,6 +1612,7 @@ async function forwardToNativeHandlerWithRetry(
           transport,
           responseHeaders: result.headers,
           retryElapsedMs: Date.now() - startedAt,
+          deliveryId,
         });
         if (attempt < RETRYING_FORWARD_MAX_ATTEMPTS && Date.now() < deadline) {
           await new Promise((r) => setTimeout(r, RETRYING_FORWARD_RETRY_INTERVAL_MS));
@@ -1662,6 +1680,7 @@ async function forwardToNativeHandlerWithRetry(
         retryCount: retries.length,
         attemptsDetail,
         triedCredentialRecovery,
+        deliveryId,
       });
       return {
         ok: result.ok,
@@ -1697,6 +1716,7 @@ async function forwardToNativeHandlerWithRetry(
         reason: "fetch-exception",
         error: errorMsg,
         retryElapsedMs: Date.now() - startedAt,
+        deliveryId,
       });
       if (attempt < RETRYING_FORWARD_MAX_ATTEMPTS && Date.now() < deadline) {
         await new Promise((r) => setTimeout(r, RETRYING_FORWARD_RETRY_INTERVAL_MS));
@@ -1712,6 +1732,7 @@ async function forwardToNativeHandlerWithRetry(
     totalMs,
     retryCount: retries.length,
     attemptsDetail,
+    deliveryId,
   });
   return {
     ok: false,

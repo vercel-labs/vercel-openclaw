@@ -377,6 +377,10 @@ export async function POST(request: Request): Promise<Response> {
       const v = request.headers.get(h);
       if (v) forwardHeaders[h] = v;
     }
+    const fastPathDedupId = extractSlackDedupId(payload);
+    if (fastPathDedupId) {
+      forwardHeaders["x-openclaw-delivery-id"] = `slack:${fastPathDedupId}`;
+    }
 
     try {
       const sandboxUrl = await getSandboxDomain();
