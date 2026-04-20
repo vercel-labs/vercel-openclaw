@@ -182,9 +182,12 @@ export async function getChannelDlqSummary(): Promise<ChannelDlqSummary> {
   };
   try {
     const store = getStore();
-    const indexRaw = await store
-      .getValue<ChannelDlqIndexEntry[] | null>(channelFailedIndexKey())
-      .catch(() => null);
+    // Intentionally don't swallow the read error here — the outer
+    // try sets unavailable:true so callers can distinguish "index is
+    // empty" from "couldn't read index at all".
+    const indexRaw = await store.getValue<ChannelDlqIndexEntry[] | null>(
+      channelFailedIndexKey(),
+    );
     const index: ChannelDlqIndexEntry[] = Array.isArray(indexRaw)
       ? indexRaw.filter((entry): entry is ChannelDlqIndexEntry => {
           return (
