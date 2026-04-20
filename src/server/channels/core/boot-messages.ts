@@ -136,15 +136,34 @@ export async function runWithBootMessages<
         });
       }
     }
-    // Sandbox already running — clean up any pre-sent boot message immediately
+    // Sandbox already running. Only clear a pre-sent boot message when the
+    // caller did not opt into managing it. The workflow wake path passes
+    // deferCleanupToCaller: true for Slack/Telegram so a retry that lands on
+    // an already-running sandbox keeps the user-visible placeholder alive
+    // until the caller decides the terminal outcome (success → "Almost
+    // ready", failure → "Couldn't reach assistant", retryable → "Still
+    // trying"). Deleting here would leave the retry path holding a handle
+    // to a deleted message, and the next forward would complete invisibly.
     if (existingBootHandle) {
-      existingBootHandle.clear().catch((error) => {
-        logWarn("channels.boot_message_cleanup_failed", {
-          channel,
-          phase: "already-running",
-          error: error instanceof Error ? error.message : String(error),
+      if (deferCleanupToCaller) {
+        void existingBootHandle
+          .update(STATUS_MESSAGES.running ?? "🦞 Connecting\u2026")
+          .catch((error) => {
+            logWarn("channels.boot_message_update_failed", {
+              channel,
+              phase: "already-running",
+              error: error instanceof Error ? error.message : String(error),
+            });
+          });
+      } else {
+        existingBootHandle.clear().catch((error) => {
+          logWarn("channels.boot_message_cleanup_failed", {
+            channel,
+            phase: "already-running",
+            error: error instanceof Error ? error.message : String(error),
+          });
         });
-      });
+      }
     }
     return { meta: initialMeta, bootMessageSent: false };
   }

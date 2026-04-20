@@ -122,6 +122,98 @@ test("boot-messages: no boot message when sandbox is already running", async () 
   });
 });
 
+test("boot-messages: already-running + existingBootHandle + deferCleanupToCaller → update, no clear", async () => {
+  await withEnv(TEST_ENV, async () => {
+    const fakeController = new FakeSandboxController();
+    _setSandboxControllerForTesting(fakeController);
+
+    await mutateMeta((meta) => {
+      meta.status = "running";
+      meta.sandboxId = "sbx-running";
+    });
+
+    const handleLog: BootMessageLog[] = [];
+    const existingBootHandle = {
+      async update(text: string) {
+        handleLog.push({ action: "update", text });
+      },
+      async clear() {
+        handleLog.push({ action: "clear" });
+      },
+    };
+
+    const { adapter } = createTrackingAdapter();
+
+    const result = await runWithBootMessages({
+      channel: "slack",
+      adapter,
+      message: createMessage(),
+      origin: "https://app.test",
+      reason: "test",
+      timeoutMs: 5_000,
+      existingBootHandle,
+      deferCleanupToCaller: true,
+    });
+
+    // Give the fire-and-forget update promise a tick to resolve.
+    await new Promise((r) => setImmediate(r));
+
+    assert.equal(result.bootMessageSent, false);
+    assert.deepEqual(
+      handleLog.map((e) => e.action),
+      ["update"],
+      "deferCleanupToCaller must preserve the boot message, not delete it",
+    );
+    assert.ok(
+      typeof handleLog[0].text === "string" && handleLog[0].text.length > 0,
+      "update must carry a status message",
+    );
+  });
+});
+
+test("boot-messages: already-running + existingBootHandle + default cleanup → clear", async () => {
+  await withEnv(TEST_ENV, async () => {
+    const fakeController = new FakeSandboxController();
+    _setSandboxControllerForTesting(fakeController);
+
+    await mutateMeta((meta) => {
+      meta.status = "running";
+      meta.sandboxId = "sbx-running";
+    });
+
+    const handleLog: BootMessageLog[] = [];
+    const existingBootHandle = {
+      async update(text: string) {
+        handleLog.push({ action: "update", text });
+      },
+      async clear() {
+        handleLog.push({ action: "clear" });
+      },
+    };
+
+    const { adapter } = createTrackingAdapter();
+
+    const result = await runWithBootMessages({
+      channel: "slack",
+      adapter,
+      message: createMessage(),
+      origin: "https://app.test",
+      reason: "test",
+      timeoutMs: 5_000,
+      existingBootHandle,
+    });
+
+    await new Promise((r) => setImmediate(r));
+
+    assert.equal(result.bootMessageSent, false);
+    assert.deepEqual(
+      handleLog.map((e) => e.action),
+      ["clear"],
+      "without deferCleanupToCaller we still delete the orphan",
+    );
+  });
+});
+
 test("boot-messages: no boot message when adapter lacks sendBootMessage", async () => {
   await withEnv(TEST_ENV, async () => {
     const adapter: PlatformAdapter<unknown, ExtractedChannelMessage> = {
