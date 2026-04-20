@@ -10,6 +10,14 @@ import { getStore } from "@/server/store/store";
 export const CHANNEL_DLQ_RECORD_TTL_SECONDS = 30 * 24 * 60 * 60;
 const CHANNEL_DLQ_INDEX_MAX = 500;
 
+// Poison-payload detection: when the same deliveryId fails many times
+// in a short window, it's very likely a payload the step can never
+// process (malformed fields, unsupported interaction type, etc.) rather
+// than a transient infra blip. Alert once per deliveryId to avoid
+// spamming logs on every redelivery after the threshold.
+const CHANNEL_DLQ_POISON_THRESHOLD = 5;
+const CHANNEL_DLQ_POISON_WINDOW_MS = 15 * 60 * 1000;
+
 export type ChannelDlqPhase =
   | "workflow-start-failed"
   | "workflow-step-failed";
@@ -28,6 +36,11 @@ export type ChannelDlqRecord = {
   failureCount: number;
   receivedAtMs: number | null;
   ageMs: number | null;
+  // Timestamp of the poison-payload alert emitted for this deliveryId.
+  // Null when no alert has fired yet; carried across upserts so each
+  // poison payload produces exactly one `dlq_poison_payload_detected`
+  // log, not one per redelivery.
+  poisonAlertedAt: number | null;
   diag: Record<string, unknown>;
 };
 
@@ -61,6 +74,24 @@ export async function recordChannelDlqFailure(input: {
     input.error instanceof Error ? input.error.message : String(input.error);
   const errorName =
     input.error instanceof Error ? input.error.name : null;
+  const firstFailedAt =
+    typeof existing?.firstFailedAt === "number"
+      ? existing.firstFailedAt
+      : now;
+  const failureCount =
+    typeof existing?.failureCount === "number" ? existing.failureCount + 1 : 1;
+  const previousPoisonAlertedAt =
+    typeof existing?.poisonAlertedAt === "number"
+      ? existing.poisonAlertedAt
+      : null;
+  // Only alert on the first threshold crossing, and only when the
+  // failures are clustered inside the window. Rare per-week failures
+  // that happen to accumulate over 30 days should NOT be flagged.
+  const poisonWindowMs = now - firstFailedAt;
+  const shouldEmitPoisonAlert =
+    previousPoisonAlertedAt === null &&
+    failureCount >= CHANNEL_DLQ_POISON_THRESHOLD &&
+    poisonWindowMs <= CHANNEL_DLQ_POISON_WINDOW_MS;
   const record: ChannelDlqRecord = {
     channel: input.channel,
     deliveryId: input.deliveryId,
@@ -70,18 +101,13 @@ export async function recordChannelDlqFailure(input: {
     requestId: input.requestId,
     errorName,
     errorMessage,
-    firstFailedAt:
-      typeof existing?.firstFailedAt === "number"
-        ? existing.firstFailedAt
-        : now,
+    firstFailedAt,
     failedAt: now,
-    failureCount:
-      typeof existing?.failureCount === "number"
-        ? existing.failureCount + 1
-        : 1,
+    failureCount,
     receivedAtMs: input.receivedAtMs,
     ageMs:
       typeof input.receivedAtMs === "number" ? now - input.receivedAtMs : null,
+    poisonAlertedAt: shouldEmitPoisonAlert ? now : previousPoisonAlertedAt,
     diag: input.diag ?? {},
   };
   try {
@@ -106,6 +132,28 @@ export async function recordChannelDlqFailure(input: {
         indexError instanceof Error ? indexError.message : String(indexError),
     });
   });
+  // Poison-payload alert fires once per deliveryId when failureCount
+  // crosses the threshold inside a tight window. Durable record of
+  // having alerted is carried on poisonAlertedAt so the next retry
+  // won't re-fire. Log AFTER the successful write so alerting
+  // necessarily reflects durable state.
+  if (shouldEmitPoisonAlert) {
+    logError("channels.dlq_poison_payload_detected", {
+      channel: record.channel,
+      deliveryId: record.deliveryId,
+      phase: record.phase,
+      terminal: record.terminal,
+      retryable: record.retryable,
+      requestId: record.requestId,
+      failureCount: record.failureCount,
+      firstFailedAt: record.firstFailedAt,
+      failedAt: record.failedAt,
+      poisonWindowMs,
+      poisonThreshold: CHANNEL_DLQ_POISON_THRESHOLD,
+      errorName: record.errorName,
+      errorMessage: record.errorMessage,
+    });
+  }
   return record;
 }
 
