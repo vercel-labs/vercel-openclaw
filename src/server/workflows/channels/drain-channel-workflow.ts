@@ -1593,6 +1593,22 @@ const RETRYING_FORWARD_RETRY_INTERVAL_MS = 2_000;
 const RETRYING_FORWARD_TIMEOUT_MS = 45_000;
 
 /**
+ * Returns true when a non-ok native-handler response is shaped like an
+ * auth failure worth one-shotting through the AI Gateway credential
+ * refresh. Slack 401 is excluded because Slack Bolt's 401 is signature
+ * re-verification failure (see Story 3 in iter1 — we already re-sign
+ * before forwarding; if Bolt still 401s, no AI Gateway refresh helps).
+ */
+function shouldAttemptAiGatewayCredentialRecovery(
+  channel: ChannelName,
+  status: number,
+): boolean {
+  if (status === 403) return true;
+  if (status === 401) return channel !== "slack";
+  return false;
+}
+
+/**
  * Collapsed probe + forward: sends the real payload directly to the native
  * handler, retrying on proxy-level failures (502/503/504), fetch exceptions,
  * and handler-not-ready responses (401/404).
@@ -1738,23 +1754,25 @@ async function forwardToNativeHandlerWithRetry(
       }
 
       // Any other direct handler response: normally do NOT retry.
-      // Exception: on a non-ok response (4xx/5xx from the handler that is
-      // not handler-not-ready or proxy-error), force-refresh the AI Gateway
-      // token exactly once and retry. Covers the case where the injected
-      // OIDC bearer has gone stale mid-forward; a single refresh plus
-      // retry recovers the delivery without looping.
-      if (
+      // Exception: auth-shaped failures (401 Unauthorized on non-Slack
+      // channels, or 403 Forbidden anywhere) may be a stale AI Gateway
+      // OIDC bearer. Force-refresh exactly once and retry. Slack 401
+      // is excluded because Slack Bolt's 401 means signature
+      // re-verification failed — no amount of AI Gateway token refresh
+      // recovers that. Non-auth-shaped 4xx (400/422/429) and 5xx other
+      // than the proxy-error bucket above should be treated as handler
+      // responses and returned as-is; a pointless refresh there just
+      // burns one wasted forward per message and pollutes retry metrics.
+      const credentialRecoveryEligible =
         !result.ok &&
+        shouldAttemptAiGatewayCredentialRecovery(channel, result.status);
+      if (
+        credentialRecoveryEligible &&
         !triedCredentialRecovery &&
         attempt < RETRYING_FORWARD_MAX_ATTEMPTS &&
         Date.now() < deadline
       ) {
         triedCredentialRecovery = true;
-        retries.push({
-          attempt,
-          reason: "ai-gateway-credential-recovery",
-          status: result.status,
-        });
         try {
           const recovery = await ensureUsableAiGatewayCredential({
             minRemainingMs: Number.POSITIVE_INFINITY,
@@ -1797,6 +1815,7 @@ async function forwardToNativeHandlerWithRetry(
         retryCount: retries.length,
         attemptsDetail,
         triedCredentialRecovery,
+        credentialRecoveryEligible,
         deliveryId,
       });
       return {
