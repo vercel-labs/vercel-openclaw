@@ -1,5 +1,11 @@
 import * as workflowApi from "workflow/api";
 
+import {
+  CHANNEL_DELIVERY_DEDUP_LOCK_TTL_SECONDS,
+  SLACK_USER_MESSAGE_DEDUP_LOCK_TTL_SECONDS,
+  tryAcquireChannelDedupLock,
+  type ChannelDedupLock,
+} from "@/server/channels/dedup";
 import { recordChannelDlqFailure } from "@/server/channels/dlq";
 import { getPublicOrigin } from "@/server/public-url";
 import {
@@ -33,10 +39,7 @@ const SLACK_FORWARD_HEADERS = [
   "x-slack-retry-reason",
 ] as const;
 
-type SlackWebhookDedupLock = {
-  key: string;
-  token: string;
-};
+type SlackWebhookDedupLock = ChannelDedupLock;
 
 type SlackWebhookDedupReleaseResult = {
   attempted: boolean;
@@ -254,8 +257,15 @@ export async function POST(request: Request): Promise<Response> {
   let dedupLock: SlackWebhookDedupLock | null = null;
   if (dedupId) {
     const dedupKey = channelDedupKey("slack", dedupId);
-    const dedupToken = await getStore().acquireLock(dedupKey, 24 * 60 * 60);
-    if (!dedupToken) {
+    const dedupResult = await tryAcquireChannelDedupLock({
+      channel: "slack",
+      key: dedupKey,
+      ttlSeconds: CHANNEL_DELIVERY_DEDUP_LOCK_TTL_SECONDS,
+      requestId: requestId ?? null,
+      dedupId,
+      lockKind: "event-id",
+    });
+    if (dedupResult.kind === "duplicate") {
       logInfo("channels.slack_webhook_dedup_skip", {
         requestId,
         dedupId,
@@ -263,10 +273,11 @@ export async function POST(request: Request): Promise<Response> {
       });
       return Response.json({ ok: true });
     }
-    dedupLock = {
-      key: dedupKey,
-      token: dedupToken,
-    };
+    if (dedupResult.kind === "acquired") {
+      dedupLock = dedupResult.lock;
+    }
+    // degraded: dedupLock stays null and we proceed without a lock.
+    // The helper already logged channels.dedup_lock_acquire_failed_degraded.
   }
 
   // Skip bot messages to avoid feedback loops. Before returning, sweep any
@@ -508,11 +519,15 @@ export async function POST(request: Request): Promise<Response> {
       eventInfo.channel,
       userMessageTs,
     );
-    const userMessageToken = await getStore().acquireLock(
-      userMessageKey,
-      24 * 60 * 60,
-    );
-    if (!userMessageToken) {
+    const userMessageResult = await tryAcquireChannelDedupLock({
+      channel: "slack",
+      key: userMessageKey,
+      ttlSeconds: SLACK_USER_MESSAGE_DEDUP_LOCK_TTL_SECONDS,
+      requestId: requestId ?? null,
+      dedupId: userMessageTs,
+      lockKind: "user-message",
+    });
+    if (userMessageResult.kind === "duplicate") {
       logInfo(
         "channels.slack_webhook_user_message_dedup_skip",
         withOperationContext(op, {
@@ -525,10 +540,11 @@ export async function POST(request: Request): Promise<Response> {
       );
       return Response.json({ ok: true });
     }
-    userMessageDedupLock = {
-      key: userMessageKey,
-      token: userMessageToken,
-    };
+    if (userMessageResult.kind === "acquired") {
+      userMessageDedupLock = userMessageResult.lock;
+    }
+    // degraded: continue without user-message dedup. The helper already
+    // emitted channels.dedup_lock_acquire_failed_degraded.
   }
 
   // Send "Waking up" boot message from the webhook route (before workflow)

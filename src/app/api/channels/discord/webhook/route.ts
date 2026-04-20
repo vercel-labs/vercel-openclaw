@@ -1,5 +1,10 @@
 import * as workflowApi from "workflow/api";
 
+import {
+  CHANNEL_DELIVERY_DEDUP_LOCK_TTL_SECONDS,
+  tryAcquireChannelDedupLock,
+  type ChannelDedupLock,
+} from "@/server/channels/dedup";
 import { recordChannelDlqFailure } from "@/server/channels/dlq";
 import { getPublicOrigin } from "@/server/public-url";
 import { verifyDiscordRequestSignature } from "@/server/channels/discord/adapter";
@@ -9,10 +14,7 @@ import { extractRequestId, logInfo, logWarn } from "@/server/log";
 import { createOperationContext, withOperationContext } from "@/server/observability/operation-context";
 import { getInitializedMeta, getStore } from "@/server/store/store";
 
-type DiscordWebhookDedupLock = {
-  key: string;
-  token: string;
-};
+type DiscordWebhookDedupLock = ChannelDedupLock;
 
 type DiscordWebhookDedupReleaseResult = {
   attempted: boolean;
@@ -103,14 +105,21 @@ export async function POST(request: Request): Promise<Response> {
   let dedupLock: DiscordWebhookDedupLock | null = null;
   if (interactionId) {
     const dedupKey = channelDedupKey("discord", interactionId);
-    const dedupToken = await getStore().acquireLock(dedupKey, 24 * 60 * 60);
-    if (!dedupToken) {
+    const dedupResult = await tryAcquireChannelDedupLock({
+      channel: "discord",
+      key: dedupKey,
+      ttlSeconds: CHANNEL_DELIVERY_DEDUP_LOCK_TTL_SECONDS,
+      requestId: requestId ?? null,
+      dedupId: interactionId,
+    });
+    if (dedupResult.kind === "duplicate") {
       return Response.json({ type: 5 });
     }
-    dedupLock = {
-      key: dedupKey,
-      token: dedupToken,
-    };
+    if (dedupResult.kind === "acquired") {
+      dedupLock = dedupResult.lock;
+    }
+    // degraded: continue without dedup. The degraded log comes from the
+    // helper; we still return type:5 (deferred) and let the workflow run.
   }
 
   const op = createOperationContext({

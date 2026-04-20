@@ -1,5 +1,10 @@
 import * as workflowApi from "workflow/api";
 
+import {
+  CHANNEL_DELIVERY_DEDUP_LOCK_TTL_SECONDS,
+  tryAcquireChannelDedupLock,
+  type ChannelDedupLock,
+} from "@/server/channels/dedup";
 import { recordChannelDlqFailure } from "@/server/channels/dlq";
 import { hasWhatsAppBusinessCredentials } from "@/shared/channels";
 import { getPublicOrigin } from "@/server/public-url";
@@ -19,10 +24,7 @@ const WHATSAPP_FORWARD_HEADERS = [
 // like image generation). Guard against wedged TCP connections only.
 const WHATSAPP_FAST_PATH_FORWARD_TIMEOUT_MS = 10 * 60 * 1000;
 
-type WhatsAppWebhookDedupLock = {
-  key: string;
-  token: string;
-};
+type WhatsAppWebhookDedupLock = ChannelDedupLock;
 
 type WhatsAppWebhookDedupReleaseResult = {
   attempted: boolean;
@@ -135,11 +137,20 @@ export async function POST(request: Request): Promise<Response> {
     const messageId = extractWhatsAppMessageId(payload);
     if (messageId) {
       const dedupKey = channelDedupKey("whatsapp", messageId);
-      const dedupToken = await getStore().acquireLock(dedupKey, 24 * 60 * 60);
-      if (!dedupToken) {
+      const dedupResult = await tryAcquireChannelDedupLock({
+        channel: "whatsapp",
+        key: dedupKey,
+        ttlSeconds: CHANNEL_DELIVERY_DEDUP_LOCK_TTL_SECONDS,
+        requestId: requestId ?? null,
+        dedupId: messageId,
+      });
+      if (dedupResult.kind === "duplicate") {
         return Response.json({ ok: true });
       }
-      dedupLock = { key: dedupKey, token: dedupToken };
+      if (dedupResult.kind === "acquired") {
+        dedupLock = dedupResult.lock;
+      }
+      // degraded: continue without lock.
     }
 
     const op = createOperationContext({
