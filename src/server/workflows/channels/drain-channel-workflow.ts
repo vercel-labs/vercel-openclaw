@@ -179,12 +179,69 @@ export type DrainChannelWorkflowDependencies = {
   buildExistingBootHandle: typeof buildExistingBootHandle;
   RetryableError: typeof import("workflow").RetryableError;
   FatalError: typeof import("workflow").FatalError;
+  getStepMetadata: typeof import("workflow").getStepMetadata;
+  getWorkflowMetadata: typeof import("workflow").getWorkflowMetadata;
 };
 
 type DrainChannelErrorDependencies = Pick<
   DrainChannelWorkflowDependencies,
   "FatalError" | "RetryableError" | "isRetryable"
 >;
+
+// Cap runaway retries of transient-looking failures (sandbox timeout,
+// 5xx, handler timeout, isRetryable-classified). Both a wall-clock
+// budget and an attempt fuse. 10 minutes is long enough to tolerate
+// ambient infra blips but short enough that a permanently broken
+// sandbox stops burning Fluid Compute on retry ping-pong.
+const WORKFLOW_RETRY_WALL_CLOCK_BUDGET_MS = 10 * 60 * 1000;
+const WORKFLOW_RETRY_HARD_ATTEMPT_CAP = 25;
+const PERSISTENT_SANDBOX_FAILURE_PREFIX = "sandbox_persistently_failing";
+
+export type WorkflowRetryBudget = {
+  attempt: number | null;
+  wallClockMs: number | null;
+  exceeded: boolean;
+  reason: string | null;
+};
+
+function resolveRetryBudget(
+  receivedAtMs: number | null,
+  dependencies: Pick<
+    DrainChannelWorkflowDependencies,
+    "getStepMetadata" | "getWorkflowMetadata"
+  >,
+): WorkflowRetryBudget {
+  let attempt: number | null = null;
+  let workflowStartedAtMs: number | null = null;
+  try {
+    attempt = dependencies.getStepMetadata().attempt;
+  } catch {
+    // Metadata is only available inside a step; calling outside throws.
+  }
+  try {
+    workflowStartedAtMs = dependencies
+      .getWorkflowMetadata()
+      .workflowStartedAt.getTime();
+  } catch {
+    // Same caveat as above.
+  }
+  const baseMs = receivedAtMs ?? workflowStartedAtMs;
+  const wallClockMs =
+    typeof baseMs === "number" ? Date.now() - baseMs : null;
+  const wallClockExceeded =
+    wallClockMs !== null && wallClockMs >= WORKFLOW_RETRY_WALL_CLOCK_BUDGET_MS;
+  const attemptExceeded =
+    attempt !== null && attempt >= WORKFLOW_RETRY_HARD_ATTEMPT_CAP;
+  const exceeded = wallClockExceeded || attemptExceeded;
+  return {
+    attempt,
+    wallClockMs,
+    exceeded,
+    reason: exceeded
+      ? `${PERSISTENT_SANDBOX_FAILURE_PREFIX}:${attempt ?? "unknown"}_attempts:${wallClockMs ?? "unknown"}ms`
+      : null,
+  };
+}
 
 export type ProcessChannelStepOptions = {
   receivedAtMs?: number | null;
@@ -1032,12 +1089,20 @@ export async function processChannelStep(
       await getStore().setValue(channelForwardDiagnosticKey(), diag, 3600);
     } catch { /* best effort */ }
 
+    const retryBudget = resolveRetryBudget(receivedAtMs, resolvedDependencies);
+    diag.workflowAttempt = retryBudget.attempt;
+    diag.workflowRetryWallClockMs = retryBudget.wallClockMs;
+    diag.workflowRetryBudgetExceeded = retryBudget.exceeded;
+    diag.workflowRetryBudgetReason = retryBudget.reason;
+
     const workflowError = toWorkflowProcessingError(
       channel,
       error,
       resolvedDependencies,
+      retryBudget,
     );
     const terminal = workflowError.name === "FatalError";
+    const persistentFailure = terminal && retryBudget.exceeded;
 
     // Pre-forward exceptions (sandbox ready timeout, probe failure, etc.)
     // and post-forward throws both land here. Slack/Telegram pass
@@ -1046,12 +1111,17 @@ export async function processChannelStep(
     // letting "🦞 Waking up…" linger forever (terminal) or vanish
     // silently (retryable). Best effort: boot-handle errors must not
     // shadow the original workflow failure being thrown.
+    //
+    // When the retry budget is exhausted, use a stronger message so the
+    // user knows this isn't a transient blip they'll hear back about.
     if (existingBootHandle) {
       await existingBootHandle
         .update(
-          terminal
-            ? "🦞 Something went wrong — try again in a moment."
-            : "🦞 Still waking up\u2026 retrying.",
+          persistentFailure
+            ? "🦞 The sandbox is having trouble. Our team has been notified."
+            : terminal
+              ? "🦞 Something went wrong — try again in a moment."
+              : "🦞 Still waking up\u2026 retrying.",
         )
         .catch((bootError) => {
           logWarn("channels.workflow_boot_failure_update_failed", {
@@ -1059,6 +1129,7 @@ export async function processChannelStep(
             requestId,
             deliveryId,
             terminal,
+            persistentFailure,
             error:
               bootError instanceof Error
                 ? bootError.message
@@ -2056,13 +2127,22 @@ export function toWorkflowProcessingError(
   channel: string,
   error: unknown,
   dependencies: DrainChannelErrorDependencies,
+  retryBudget?: WorkflowRetryBudget,
 ): Error {
   const message = `drain_channel_workflow_failed:${channel}:${formatChannelError(error)}`;
   const errorMsg = formatChannelError(error);
+  const retryBudgetExceeded = retryBudget?.exceeded === true;
+  const exhaustedMessage = retryBudgetExceeded
+    ? `${message}:${retryBudget?.reason ?? PERSISTENT_SANDBOX_FAILURE_PREFIX}`
+    : message;
 
   // Sandbox readiness failures are transient infrastructure issues while the
   // sandbox is restoring. Retry the workflow step so the webhook can recover
-  // once the sandbox becomes available again.
+  // once the sandbox becomes available again — UNLESS we have already been
+  // retrying past the wall-clock / attempt budget. A permanently broken
+  // sandbox or AI Gateway outage would otherwise retry indefinitely and
+  // burn Fluid Compute minutes for a user who sees nothing but a
+  // ping-ponging boot message.
   const nativeForwardFailedStatus = parseNativeForwardFailedStatus(errorMsg);
   if (
     errorMsg.includes("sandbox_not_ready") ||
@@ -2070,6 +2150,9 @@ export function toWorkflowProcessingError(
     errorMsg.includes(NATIVE_HANDLER_TIMEOUT_ERROR) ||
     (nativeForwardFailedStatus !== null && nativeForwardFailedStatus >= 500)
   ) {
+    if (retryBudgetExceeded) {
+      return new dependencies.FatalError(exhaustedMessage);
+    }
     return new dependencies.RetryableError(message, {
       retryAfter: WORKFLOW_RETRY_AFTER,
     });
@@ -2080,6 +2163,9 @@ export function toWorkflowProcessingError(
   }
 
   if (dependencies.isRetryable(error)) {
+    if (retryBudgetExceeded) {
+      return new dependencies.FatalError(exhaustedMessage);
+    }
     return new dependencies.RetryableError(message, {
       retryAfter: WORKFLOW_RETRY_AFTER,
     });
@@ -2098,7 +2184,7 @@ async function loadDrainChannelWorkflowDependencies(): Promise<DrainChannelWorkf
     { reconcileDiscordIntegration },
     { runWithBootMessages },
     { ensureSandboxReady, getSandboxDomain },
-    { RetryableError, FatalError },
+    { RetryableError, FatalError, getStepMetadata, getWorkflowMetadata },
   ] = await Promise.all([
     import("@/server/channels/driver"),
     import("@/server/channels/slack/adapter"),
@@ -2129,6 +2215,8 @@ async function loadDrainChannelWorkflowDependencies(): Promise<DrainChannelWorkf
     buildExistingBootHandle,
     RetryableError,
     FatalError,
+    getStepMetadata,
+    getWorkflowMetadata,
   };
 }
 
