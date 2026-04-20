@@ -212,12 +212,26 @@ export type DrainChannelWorkflowEnvelopeV1 = {
   workflowHandoff?: ChannelWorkflowHandoff | null;
 };
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function isDrainChannelWorkflowEnvelopeLike(
+  value: unknown,
+): value is Record<string, unknown> {
+  return isPlainObject(value) && "version" in value;
+}
+
 function isDrainChannelWorkflowEnvelopeV1(
   value: unknown,
 ): value is DrainChannelWorkflowEnvelopeV1 {
-  if (!value || typeof value !== "object") return false;
-  const v = value as Record<string, unknown>;
-  return v.version === 1 && typeof v.channel === "string";
+  if (!isPlainObject(value)) return false;
+  return value.version === 1 && typeof value.channel === "string";
+}
+
+async function throwFatalWorkflowEnvelopeError(message: string): Promise<never> {
+  const { FatalError } = await import("workflow");
+  throw new FatalError(message);
 }
 
 type TelegramRestoreContractAssessment = {
@@ -287,6 +301,28 @@ export async function drainChannelWorkflow(
       },
     );
     return;
+  }
+
+  // Looks like an envelope (has `version`) but isn't v1 — either a future
+  // vN we don't understand yet, or a malformed v1. Fail closed with a
+  // FatalError so Workflow DevKit doesn't retry indefinitely and
+  // operators see the version mismatch cleanly in logs. Without this
+  // the value falls through to legacy positional parsing below, where
+  // the object gets treated as a string `channel`, and processChannelStep
+  // silently corrupts.
+  if (isDrainChannelWorkflowEnvelopeLike(channelOrEnvelope)) {
+    await throwFatalWorkflowEnvelopeError(
+      `unsupported_drain_channel_workflow_envelope_version:${String(channelOrEnvelope.version)}`,
+    );
+  }
+
+  // Legacy positional form. Accept only when the first arg is a string
+  // channel name. Anything else is programmer error / corrupted queue
+  // payload and must be surfaced, not silently coerced.
+  if (typeof channelOrEnvelope !== "string") {
+    await throwFatalWorkflowEnvelopeError(
+      "invalid_legacy_drain_channel_workflow_channel",
+    );
   }
 
   await processChannelStep(
