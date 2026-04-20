@@ -15,6 +15,11 @@ import { extractRequestId, logError, logInfo, logWarn } from "@/server/log";
 import { createOperationContext, withOperationContext } from "@/server/observability/operation-context";
 import { OPENCLAW_TELEGRAM_WEBHOOK_PORT } from "@/server/openclaw/config";
 import { ensureFreshGatewayToken, getSandboxDomain, reconcileStaleRunningStatus } from "@/server/sandbox/lifecycle";
+
+// The fast path awaits the native handler's full turn (including long
+// AI work like image generation). This timeout guards against wedged
+// TCP connections to the sandbox, not against legitimately long turns.
+const TELEGRAM_FAST_PATH_FORWARD_TIMEOUT_MS = 10 * 60 * 1000;
 import { channelForwardDiagnosticKey } from "@/server/store/keyspace";
 import { getInitializedMeta, getStore } from "@/server/store/store";
 
@@ -227,6 +232,7 @@ export async function POST(request: Request): Promise<Response> {
           method: "POST",
           headers: fastPathHeaders,
           body: JSON.stringify(payload),
+          signal: AbortSignal.timeout(TELEGRAM_FAST_PATH_FORWARD_TIMEOUT_MS),
         });
         const forwardBody = await forwardResponse.text().catch(() => "");
         const forwardHeaders = pickDiagnosticHeaders(forwardResponse.headers);
@@ -270,13 +276,23 @@ export async function POST(request: Request): Promise<Response> {
           reconciledSandboxId: effectiveMeta.sandboxId,
         }));
       } catch (error) {
-        // Network-level failure — sandbox is unreachable, native handler never
-        // got the payload.  Reconcile stale status and fall through to the
-        // workflow wake path so the message is not lost.
+        // Network-level failure or AbortSignal timeout — sandbox may or
+        // may not have received the payload. Reconcile stale status and
+        // fall through to the workflow wake path so the message is not
+        // lost. TimeoutError indicates the TCP connection wedged for
+        // longer than the fast-path budget.
+        const isAbort =
+          error instanceof Error && error.name === "TimeoutError";
         logWarn("channels.telegram_fast_path_failed", withOperationContext(op, {
           error: error instanceof Error ? error.message : String(error),
+          errorName: error instanceof Error ? error.name : undefined,
           sandboxId: effectiveMeta.sandboxId,
           action: "reconcile_and_wake",
+          reason: isAbort ? "fast_path_forward_timeout" : "network_error",
+          indeterminateDelivery: isAbort,
+          fastPathTimeoutMs: isAbort
+            ? TELEGRAM_FAST_PATH_FORWARD_TIMEOUT_MS
+            : null,
         }));
         const staleMeta = effectiveMeta;
         effectiveMeta = await reconcileStaleRunningStatus();

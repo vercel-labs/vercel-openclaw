@@ -15,6 +15,9 @@ const WHATSAPP_FORWARD_HEADERS = [
   "x-hub-signature-256",
   "content-type",
 ] as const;
+// The fast path awaits the native handler's full turn (long AI work
+// like image generation). Guard against wedged TCP connections only.
+const WHATSAPP_FAST_PATH_FORWARD_TIMEOUT_MS = 10 * 60 * 1000;
 
 type WhatsAppWebhookDedupLock = {
   key: string;
@@ -192,6 +195,7 @@ export async function POST(request: Request): Promise<Response> {
           method: "POST",
           headers: forwardHeaders,
           body: rawBody,
+          signal: AbortSignal.timeout(WHATSAPP_FAST_PATH_FORWARD_TIMEOUT_MS),
         });
         if (forwardResponse.ok) {
           logInfo("channels.whatsapp_fast_path_ok", withOperationContext(op, {
@@ -208,12 +212,21 @@ export async function POST(request: Request): Promise<Response> {
         // Return 200 to avoid duplicate delivery via the workflow path.
         return Response.json({ ok: true });
       } catch (error) {
-        // Network-level failure — native handler never received the payload.
-        // Reconcile stale status and fall through to workflow wake path.
+        // Network-level failure or AbortSignal timeout — sandbox may or
+        // may not have received the payload. Reconcile stale status and
+        // fall through to workflow wake path.
+        const isAbort =
+          error instanceof Error && error.name === "TimeoutError";
         logWarn("channels.whatsapp_fast_path_failed", withOperationContext(op, {
           sandboxId: effectiveMeta.sandboxId,
           error: error instanceof Error ? error.message : String(error),
+          errorName: error instanceof Error ? error.name : undefined,
           action: "reconcile_and_wake",
+          reason: isAbort ? "fast_path_forward_timeout" : "network_error",
+          indeterminateDelivery: isAbort,
+          fastPathTimeoutMs: isAbort
+            ? WHATSAPP_FAST_PATH_FORWARD_TIMEOUT_MS
+            : null,
         }));
         effectiveMeta = await reconcileStaleRunningStatus();
       }

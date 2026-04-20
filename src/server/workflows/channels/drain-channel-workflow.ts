@@ -1807,23 +1807,37 @@ async function forwardToNativeHandler(
   console.log(`[DIAG] native_forward_attempt url=${forwardUrl} channel=${channel} sandboxId=${meta.sandboxId} hasSecret=${Boolean(headers["x-telegram-bot-api-secret-token"])} bodySource=${channel === "slack" && rawBody != null ? "raw" : "serialized"} deliveryId=${deliveryId ?? "none"}`);
 
   const t0 = Date.now();
+  // Per-fetch timeout that sits under the outer retry budget
+  // (RETRYING_FORWARD_TIMEOUT_MS = 45s). Without this, a single wedged
+  // fetch could hang the entire retry loop past its deadline. The 40s
+  // budget leaves enough room for the retry wrapper to catch the abort
+  // and surface it as a fetch-exception classification.
   const response = await fetch(forwardUrl, {
     method: "POST",
     headers,
     body: forwardBody,
+    signal: AbortSignal.timeout(NATIVE_FORWARD_PER_FETCH_TIMEOUT_MS),
   });
   const durationMs = Date.now() - t0;
 
-  // Always capture response body for diagnostics.
+  // Always capture response body for diagnostics. 300 chars on ok is
+  // enough to confirm shape; 2048 on error retains useful stack traces
+  // and validation details for post-mortem. Log volume concern is
+  // bounded by the ring buffer (1000 entries) and only non-ok responses
+  // take the larger cap.
   let responseBody: string | null = null;
   try {
     responseBody = await response.text();
   } catch { /* best effort */ }
 
   const bodyLength = responseBody?.length ?? 0;
-  const bodyHead = (responseBody ?? "").slice(0, 300);
+  const bodyHeadLimit = response.ok
+    ? NATIVE_FORWARD_OK_BODY_HEAD_CHARS
+    : NATIVE_FORWARD_ERROR_BODY_HEAD_CHARS;
+  const bodyHead = (responseBody ?? "").slice(0, bodyHeadLimit);
+  const bodyHeadTruncated = bodyLength > bodyHead.length;
   const headersSnapshot = pickDiagnosticHeaders(response.headers);
-  console.log(`[DIAG] native_forward_response status=${response.status} ok=${response.ok} durationMs=${durationMs} bodyLength=${bodyLength} body=${bodyHead} headers=${JSON.stringify(headersSnapshot)}`);
+  console.log(`[DIAG] native_forward_response status=${response.status} ok=${response.ok} durationMs=${durationMs} bodyLength=${bodyLength} bodyHeadLen=${bodyHead.length} truncated=${bodyHeadTruncated} body=${bodyHead} headers=${JSON.stringify(headersSnapshot)}`);
 
   if (!response.ok) {
     logWarn("channels.native_forward_error_response", {
@@ -1831,13 +1845,21 @@ async function forwardToNativeHandler(
       status: response.status,
       forwardUrl,
       sandboxId: meta.sandboxId,
-      responseBody: responseBody?.slice(0, 500) ?? null,
+      responseBody: bodyHead,
+      responseBodyTruncated: bodyHeadTruncated,
       responseHeaders: headersSnapshot,
     });
   }
 
   return { ok: response.ok, status: response.status, durationMs, bodyLength, bodyHead, headers: headersSnapshot };
 }
+
+// Per-fetch timeout for workflow-side native forwards. Sits below the
+// outer retry wrapper's 45s deadline so a single wedged connection
+// doesn't starve the retry loop.
+const NATIVE_FORWARD_PER_FETCH_TIMEOUT_MS = 40_000;
+const NATIVE_FORWARD_OK_BODY_HEAD_CHARS = 300;
+const NATIVE_FORWARD_ERROR_BODY_HEAD_CHARS = 2048;
 
 const RETRYING_FORWARD_MAX_ATTEMPTS = 20;
 const RETRYING_FORWARD_RETRY_INTERVAL_MS = 2_000;

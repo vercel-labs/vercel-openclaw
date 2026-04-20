@@ -19,6 +19,12 @@ import { getSandboxDomain, reconcileStaleRunningStatus } from "@/server/sandbox/
 import { getInitializedMeta, getStore } from "@/server/store/store";
 const SLACK_POST_MESSAGE_URL = "https://slack.com/api/chat.postMessage";
 const SLACK_BOOT_MESSAGE_TIMEOUT_MS = 5_000;
+// The fast path intentionally awaits the native handler's full turn
+// (including long AI work like image generation). Keep this generous
+// enough to cover real long turns but short enough to avoid burning
+// the full Vercel function maxDuration when the TCP connection to the
+// sandbox wedges half-open. 10 minutes hits that middle ground.
+const SLACK_FAST_PATH_FORWARD_TIMEOUT_MS = 10 * 60 * 1000;
 
 const SLACK_FORWARD_HEADERS = [
   "x-slack-signature",
@@ -433,6 +439,7 @@ export async function POST(request: Request): Promise<Response> {
         method: "POST",
         headers: forwardHeaders,
         body: rawBody,
+        signal: AbortSignal.timeout(SLACK_FAST_PATH_FORWARD_TIMEOUT_MS),
       });
       if (resp.ok) {
         logInfo("channels.slack_fast_path_ok", withOperationContext(op, {
@@ -453,13 +460,24 @@ export async function POST(request: Request): Promise<Response> {
       }));
       effectiveMeta = await reconcileStaleRunningStatus();
     } catch (error) {
-      // Network-level failure — native handler never received the payload.
-      // Reconcile stale status and fall through to workflow wake path.
+      // Network-level failure or AbortSignal timeout — native handler
+      // may or may not have received the payload. Reconcile stale
+      // status and fall through to workflow wake path so we don't
+      // silently drop. AbortError here is distinct from a 2xx timeout
+      // and means the sandbox probably wedged; the indeterminate flag
+      // captures that the delivery status is unknowable from this side.
+      const isAbort =
+        error instanceof Error && error.name === "TimeoutError";
       logWarn("channels.slack_fast_path_failed", withOperationContext(op, {
         error: error instanceof Error ? error.message : String(error),
         errorName: error instanceof Error ? error.name : undefined,
         sandboxId: effectiveMeta.sandboxId,
         action: "reconcile_and_wake",
+        reason: isAbort ? "fast_path_forward_timeout" : "network_error",
+        indeterminateDelivery: isAbort,
+        fastPathTimeoutMs: isAbort
+          ? SLACK_FAST_PATH_FORWARD_TIMEOUT_MS
+          : null,
         ...eventInfo,
       }));
       effectiveMeta = await reconcileStaleRunningStatus();
