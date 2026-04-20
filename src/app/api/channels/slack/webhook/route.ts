@@ -4,6 +4,7 @@ import { getPublicOrigin } from "@/server/public-url";
 import {
   channelDedupKey,
   channelPendingBootMessageKey,
+  channelPendingBootMessageLockKey,
   channelUserMessageDedupKey,
 } from "@/server/channels/keys";
 import { drainChannelWorkflow } from "@/server/workflows/channels/drain-channel-workflow";
@@ -102,6 +103,18 @@ function extractSlackEventInfo(payload: unknown): {
     ts: typeof event?.ts === "string" ? event.ts : null,
     botId: typeof event?.bot_id === "string" ? event.bot_id : null,
   };
+}
+
+// Accept both the legacy single-string pending-boot value and the new
+// bounded list. Transitional code that can be removed once every active
+// Redis value has rolled over to the list shape (max TTL:
+// PENDING_BOOT_MESSAGE_TTL_SECONDS = 1 hour).
+function pendingBootTsList(value: unknown): string[] {
+  if (typeof value === "string" && value.length > 0) return [value];
+  if (Array.isArray(value)) {
+    return value.filter((v): v is string => typeof v === "string" && v.length > 0);
+  }
+  return [];
 }
 
 function extractSlackDedupId(payload: unknown): string | null {
@@ -268,26 +281,40 @@ export async function POST(request: Request): Promise<Response> {
         eventInfo.channel,
         botReplyRoot ?? undefined,
       );
+      const pendingLockKey = channelPendingBootMessageLockKey(
+        "slack",
+        eventInfo.channel,
+        botReplyRoot ?? undefined,
+      );
+      const pendingLockToken = await getStore()
+        .acquireLock(pendingLockKey, 5)
+        .catch(() => null);
       try {
-        const bootTs = await getStore().getValue<string>(pendingKey);
-        if (bootTs) {
-          await fetch("https://slack.com/api/chat.delete", {
-            method: "POST",
-            headers: {
-              authorization: `Bearer ${config.botToken}`,
-              "content-type": "application/json",
-            },
-            body: JSON.stringify({
-              channel: eventInfo.channel,
-              ts: bootTs,
-            }),
-            signal: AbortSignal.timeout(SLACK_BOOT_MESSAGE_TIMEOUT_MS),
-          }).catch(() => {});
+        const rawPending = await getStore().getValue<unknown>(pendingKey);
+        const bootTsList = pendingBootTsList(rawPending);
+        if (bootTsList.length > 0) {
+          await Promise.all(
+            bootTsList.map((bootTs) =>
+              fetch("https://slack.com/api/chat.delete", {
+                method: "POST",
+                headers: {
+                  authorization: `Bearer ${config.botToken}`,
+                  "content-type": "application/json",
+                },
+                body: JSON.stringify({
+                  channel: eventInfo.channel,
+                  ts: bootTs,
+                }),
+                signal: AbortSignal.timeout(SLACK_BOOT_MESSAGE_TIMEOUT_MS),
+              }).catch(() => {}),
+            ),
+          );
           await getStore().deleteValue(pendingKey).catch(() => {});
           logInfo("channels.slack_pending_boot_cleared", {
             requestId,
             channel: eventInfo.channel,
-            bootTs,
+            bootCount: bootTsList.length,
+            bootTsList,
           });
         }
       } catch (error) {
@@ -296,6 +323,12 @@ export async function POST(request: Request): Promise<Response> {
           channel: eventInfo.channel,
           error: error instanceof Error ? error.message : String(error),
         });
+      } finally {
+        if (pendingLockToken) {
+          await getStore()
+            .releaseLock(pendingLockKey, pendingLockToken)
+            .catch(() => {});
+        }
       }
     }
     logInfo("channels.slack_webhook_bot_skip", {

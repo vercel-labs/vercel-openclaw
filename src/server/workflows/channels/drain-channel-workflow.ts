@@ -18,9 +18,58 @@ import {
   channelFailedKey,
   channelForwardDiagnosticKey,
   channelPendingBootMessageKey,
+  channelPendingBootMessageLockKey,
 } from "@/server/store/keyspace";
 
 const WORKFLOW_FAILED_RECORD_TTL_SECONDS = 30 * 24 * 60 * 60;
+// OpenClaw turns can run for tens of minutes (long tool chains, image
+// generation, MCP calls). Keep the pending-boot-ts entries alive long
+// enough to cover a reasonable long-turn window so the bot-reply
+// cleanup path still finds them. Short TTL (10 min) left orphans.
+const PENDING_BOOT_MESSAGE_TTL_SECONDS = 60 * 60;
+// Bounded list so a pathological channel cannot balloon Redis on repeated
+// failed wakes. 20 is well above the realistic concurrent-wake count in
+// a single Slack thread and below "this thread is clearly pathological."
+const MAX_PENDING_BOOT_TS_PER_THREAD = 20;
+
+function coercePendingBootTsList(value: unknown): string[] {
+  if (typeof value === "string" && value.length > 0) return [value];
+  if (Array.isArray(value)) {
+    return value.filter((v): v is string => typeof v === "string" && v.length > 0);
+  }
+  return [];
+}
+
+/**
+ * Append a Slack boot-message ts to the pending-boot list for a given
+ * thread, using a short-lived Redis lock to serialize concurrent
+ * append+read+write. Tolerates legacy string values left by the
+ * previous single-ts implementation.
+ */
+async function appendSlackPendingBootTs(
+  slackChannel: string,
+  threadRoot: string,
+  bootTs: string,
+): Promise<void> {
+  const listKey = channelPendingBootMessageKey("slack", slackChannel, threadRoot);
+  const lockKey = channelPendingBootMessageLockKey(
+    "slack",
+    slackChannel,
+    threadRoot,
+  );
+  const store = getStore();
+  const lockToken = await store.acquireLock(lockKey, 5).catch(() => null);
+  try {
+    const current = await store.getValue<unknown>(listKey);
+    const merged = [...new Set([...coercePendingBootTsList(current), bootTs])];
+    const bounded = merged.slice(-MAX_PENDING_BOOT_TS_PER_THREAD);
+    await store.setValue(listKey, bounded, PENDING_BOOT_MESSAGE_TTL_SECONDS);
+  } finally {
+    if (lockToken) {
+      await store.releaseLock(lockKey, lockToken).catch(() => {});
+    }
+  }
+}
 
 function extractChannelDeliveryId(
   channel: string,
@@ -878,15 +927,7 @@ export async function processChannelStep(
           typeof bootMessageId === "string" ? bootMessageId : null;
         if (slackChannel && bootTs && threadRoot) {
           try {
-            await getStore().setValue(
-              channelPendingBootMessageKey(
-                "slack",
-                slackChannel,
-                threadRoot,
-              ),
-              bootTs,
-              600,
-            );
+            await appendSlackPendingBootTs(slackChannel, threadRoot, bootTs);
           } catch {
             // Best effort — if the store write fails the boot message will
             // just stay until the next reply makes it harmless.

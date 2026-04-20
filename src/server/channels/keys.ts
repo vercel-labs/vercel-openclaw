@@ -3,6 +3,7 @@ export {
   channelDrainLockKey,
   channelFailedKey,
   channelPendingBootMessageKey,
+  channelPendingBootMessageLockKey,
   channelProcessingKey,
   channelQueueKey,
   channelSessionHistoryKey,

@@ -119,6 +119,15 @@ export function channelPendingBootMessageKey(
   return buildKey(scope ? `${base}:${scope}` : base);
 }
 
+export function channelPendingBootMessageLockKey(
+  channel: ChannelName,
+  channelId: string,
+  scope?: string,
+): string {
+  const base = `channels:${channel}:pending-boot-lock:${channelId}`;
+  return buildKey(scope ? `${base}:${scope}` : base);
+}
+
 export function watchdogReportKey(): string {
   return buildKey("watchdog:latest");
 }
