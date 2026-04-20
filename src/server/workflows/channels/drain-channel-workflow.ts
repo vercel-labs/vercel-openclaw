@@ -621,11 +621,17 @@ export async function processChannelStep(
       let slackForwardHeaders =
         options?.workflowHandoff?.slackForwardHeaders ?? null;
       const slackRawBody = options?.workflowHandoff?.slackRawBody ?? null;
-      // If the original webhook sat in the workflow queue long enough that
-      // its timestamp is near Slack Bolt's 5-minute replay window, re-sign
-      // with a fresh timestamp using our stored signing secret before
-      // forwarding. Bolt verifies with the same secret, so a fresh signature
-      // is accepted and we avoid a fatal 401 at the sandbox edge.
+      // Always re-sign the Slack webhook when we have the signing secret
+      // and raw body. The age-only gate (> 240s of Bolt's 5-minute wall)
+      // missed a second failure mode: if the Slack signing secret rotated
+      // between the original webhook ingest and this workflow step, the
+      // original signature no longer matches the stored secret Bolt will
+      // verify against, and Bolt fatally 401s regardless of timestamp age.
+      // HMAC-SHA256 over the raw body takes microseconds; re-signing every
+      // workflow forward is strictly safer than gating on age. Callers
+      // that still want the age observable keep it in diag.
+      // Emit a decision log unconditionally so post-mortem can
+      // distinguish "resigned and still 401'd" from "didn't resign".
       const SLACK_RESIGN_AGE_SECONDS = 240;
       if (slackForwardHeaders && slackRawBody) {
         const signingSecret =
@@ -639,13 +645,25 @@ export async function processChannelStep(
         const nowSeconds = Math.floor(Date.now() / 1000);
         const ageSeconds =
           originalTs !== null ? nowSeconds - originalTs : null;
-        const shouldResign =
-          signingSecret !== null &&
-          ageSeconds !== null &&
-          ageSeconds > SLACK_RESIGN_AGE_SECONDS;
+        const shouldResign = signingSecret !== null;
         diag.slackOriginalTimestamp = originalTs;
         diag.slackSignatureAgeSeconds = ageSeconds;
         diag.slackSignatureResigned = shouldResign;
+        diag.slackSignatureResignThresholdSeconds = SLACK_RESIGN_AGE_SECONDS;
+        diag.slackSignatureResignReason = shouldResign
+          ? "always-resign-workflow-forward"
+          : "missing-signing-secret";
+        logInfo("channels.slack_signature_decision", {
+          requestId,
+          deliveryId,
+          resigned: shouldResign,
+          ageSeconds,
+          thresholdSeconds: SLACK_RESIGN_AGE_SECONDS,
+          hasSigningSecret: Boolean(signingSecret),
+          reason: shouldResign
+            ? "always-resign-workflow-forward"
+            : "missing-signing-secret",
+        });
         if (shouldResign && signingSecret) {
           const freshTs = String(nowSeconds);
           const baseString = `v0:${freshTs}:${slackRawBody}`;
@@ -659,6 +677,7 @@ export async function processChannelStep(
           };
           logInfo("channels.slack_signature_resigned", {
             requestId,
+            deliveryId,
             originalTs,
             ageSeconds,
             freshTs,
