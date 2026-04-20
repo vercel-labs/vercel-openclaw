@@ -176,6 +176,13 @@ export async function POST(request: Request): Promise<Response> {
           forwardHeaders[headerName] = headerValue;
         }
       }
+      const messageIdForForward = extractWhatsAppMessageId(payload);
+      const fastPathDeliveryId = messageIdForForward
+        ? `whatsapp:${messageIdForForward}`
+        : null;
+      if (fastPathDeliveryId) {
+        forwardHeaders["x-openclaw-delivery-id"] = fastPathDeliveryId;
+      }
 
       try {
         const sandboxUrl = await getSandboxDomain();
@@ -187,6 +194,7 @@ export async function POST(request: Request): Promise<Response> {
         if (forwardResponse.ok) {
           logInfo("channels.whatsapp_fast_path_ok", withOperationContext(op, {
             sandboxId: effectiveMeta.sandboxId,
+            deliveryId: fastPathDeliveryId,
           }));
         } else {
           logWarn("channels.whatsapp_fast_path_non_ok", withOperationContext(op, {
