@@ -1,5 +1,6 @@
 import * as workflowApi from "workflow/api";
 
+import { recordChannelDlqFailure } from "@/server/channels/dlq";
 import { getPublicOrigin } from "@/server/public-url";
 import {
   channelDedupKey,
@@ -620,6 +621,26 @@ export async function POST(request: Request): Promise<Response> {
       retryable: true,
       ...eventInfo,
     }));
+    const dlqDeliveryId = dedupId
+      ? `slack:${dedupId}`
+      : `slack:request:${requestId ?? receivedAtMs}`;
+    await recordChannelDlqFailure({
+      channel: "slack",
+      deliveryId: dlqDeliveryId,
+      phase: "workflow-start-failed",
+      terminal: false,
+      retryable: true,
+      requestId: requestId ?? null,
+      receivedAtMs,
+      error,
+      diag: {
+        dedupId,
+        bootMessageTs,
+        dedupLockReleased: dedupRelease.released,
+        userMessageDedupLockReleased: userMessageRelease.released,
+        eventInfo,
+      },
+    });
     return workflowStartFailedResponse();
   }
 

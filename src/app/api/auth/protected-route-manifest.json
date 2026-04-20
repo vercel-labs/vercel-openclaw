@@ -1,12 +1,12 @@
 {
   "version": 3,
-  "generatedAt": "2026-04-17T11:29:15.569Z",
+  "generatedAt": "2026-04-20T01:16:52.703Z",
   "roots": [
     "src/app/api/admin",
     "src/app/api/firewall",
     "src/app/api/debug"
   ],
-  "discoveredRouteCount": 46,
+  "discoveredRouteCount": 47,
   "unauthenticatedRouteCount": 0,
   "violationCount": 0,
   "routes": [
@@ -29,6 +29,10 @@
     {
       "method": "GET",
       "path": "/api/admin/channel-forward-diag"
+    },
+    {
+      "method": "GET",
+      "path": "/api/admin/channels/dlq"
     },
     {
       "method": "GET",

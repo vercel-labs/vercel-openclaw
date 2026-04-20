@@ -87,6 +87,14 @@ export function channelFailedKey(
   return buildKey(deliveryId ? `${base}:${deliveryId}` : base);
 }
 
+export function channelFailedIndexKey(): string {
+  return buildKey("channels:failed:index");
+}
+
+export function channelFailedIndexLockKey(): string {
+  return buildKey("channels:failed:index-lock");
+}
+
 export function channelDrainLockKey(channel: ChannelName): string {
   return buildKey(`channels:${channel}:drain-lock`);
 }

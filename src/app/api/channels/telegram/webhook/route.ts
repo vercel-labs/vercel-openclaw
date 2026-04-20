@@ -1,6 +1,7 @@
 import { after } from "next/server";
 import * as workflowApi from "workflow/api";
 
+import { recordChannelDlqFailure } from "@/server/channels/dlq";
 import { getPublicOrigin } from "@/server/public-url";
 import { channelDedupKey } from "@/server/channels/keys";
 import { drainChannelWorkflow } from "@/server/workflows/channels/drain-channel-workflow";
@@ -418,6 +419,25 @@ export async function POST(request: Request): Promise<Response> {
         dedupLockReleased: dedupRelease.released,
         dedupLockReleaseError: dedupRelease.releaseError,
         outcome: "workflow-start-failed",
+      });
+      const tgDeliveryId = updateId
+        ? `telegram:${updateId}`
+        : `telegram:request:${requestId ?? receivedAtMs}`;
+      await recordChannelDlqFailure({
+        channel: "telegram",
+        deliveryId: tgDeliveryId,
+        phase: "workflow-start-failed",
+        terminal: false,
+        retryable: true,
+        requestId: requestId ?? null,
+        receivedAtMs,
+        error,
+        diag: {
+          updateId,
+          chatId,
+          bootMessageId,
+          dedupLockReleased: dedupRelease.released,
+        },
       });
       return workflowStartFailedResponse();
     }

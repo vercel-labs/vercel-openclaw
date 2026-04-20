@@ -1,5 +1,6 @@
 import * as workflowApi from "workflow/api";
 
+import { recordChannelDlqFailure } from "@/server/channels/dlq";
 import { getPublicOrigin } from "@/server/public-url";
 import { verifyDiscordRequestSignature } from "@/server/channels/discord/adapter";
 import { channelDedupKey } from "@/server/channels/keys";
@@ -63,6 +64,7 @@ async function releaseDiscordWebhookDedupLockForRetry(
 }
 
 export async function POST(request: Request): Promise<Response> {
+  const receivedAtMs = Date.now();
   const requestId = extractRequestId(request);
   const meta = await getInitializedMeta();
   const config = meta.channels.discord;
@@ -133,6 +135,7 @@ export async function POST(request: Request): Promise<Response> {
         payload,
         origin,
         requestId: requestId ?? null,
+        receivedAtMs,
       },
     ]);
     logInfo("channels.discord_workflow_started", withOperationContext(op));
@@ -147,6 +150,23 @@ export async function POST(request: Request): Promise<Response> {
       dedupLockReleaseError: dedupRelease.releaseError,
       retryable: true,
     }));
+    const discordDeliveryId = interactionId
+      ? `discord:${interactionId}`
+      : `discord:request:${requestId ?? receivedAtMs}`;
+    await recordChannelDlqFailure({
+      channel: "discord",
+      deliveryId: discordDeliveryId,
+      phase: "workflow-start-failed",
+      terminal: false,
+      retryable: true,
+      requestId: requestId ?? null,
+      receivedAtMs,
+      error,
+      diag: {
+        interactionId,
+        dedupLockReleased: dedupRelease.released,
+      },
+    });
     return workflowStartFailedResponse();
   }
 

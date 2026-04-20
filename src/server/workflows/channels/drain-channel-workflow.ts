@@ -8,6 +8,7 @@ import type { QueuedChannelJob } from "@/server/channels/driver";
 import { extractTelegramChatId } from "@/server/channels/telegram/adapter";
 import { deleteMessage, editMessageText } from "@/server/channels/telegram/bot-api";
 import { deleteMessage as deleteWhatsAppMessage } from "@/server/channels/whatsapp/whatsapp-api";
+import { recordChannelDlqFailure } from "@/server/channels/dlq";
 import { logError, logInfo, logWarn } from "@/server/log";
 import { ensureUsableAiGatewayCredential } from "@/server/sandbox/lifecycle";
 import { getInitializedMeta } from "@/server/store/store";
@@ -15,13 +16,11 @@ import { getStore } from "@/server/store/store";
 import { mutateMeta } from "@/server/store/store";
 import { createHash, createHmac } from "node:crypto";
 import {
-  channelFailedKey,
   channelForwardDiagnosticKey,
   channelPendingBootMessageKey,
   channelPendingBootMessageLockKey,
 } from "@/server/store/keyspace";
 
-const WORKFLOW_FAILED_RECORD_TTL_SECONDS = 30 * 24 * 60 * 60;
 // OpenClaw turns can run for tens of minutes (long tool chains, image
 // generation, MCP calls). Keep the pending-boot-ts entries alive long
 // enough to cover a reasonable long-turn window so the bot-reply
@@ -107,48 +106,25 @@ async function recordWorkflowFailure(input: {
   diag: Record<string, unknown>;
   receivedAtMs: number | null;
 }): Promise<void> {
-  const errorMessage =
-    input.error instanceof Error ? input.error.message : String(input.error);
-  const errorName =
-    input.error instanceof Error ? input.error.name : null;
-  const record = {
-    channel: input.channel,
-    requestId: input.requestId,
+  const record = await recordChannelDlqFailure({
+    channel: input.channel as ChannelName,
     deliveryId: input.deliveryId,
+    phase: "workflow-step-failed",
     terminal: input.terminal,
-    errorName,
-    errorMessage,
-    failedAt: Date.now(),
+    retryable: !input.terminal,
+    requestId: input.requestId,
     receivedAtMs: input.receivedAtMs,
-    ageMs:
-      typeof input.receivedAtMs === "number"
-        ? Date.now() - input.receivedAtMs
-        : null,
+    error: input.error,
     diag: input.diag,
-  };
-  try {
-    await getStore().setValue(
-      channelFailedKey(input.channel as ChannelName, input.deliveryId),
+  });
+  if (record) {
+    logError(
+      input.terminal
+        ? "channels.workflow_terminal_failure_recorded"
+        : "channels.workflow_retryable_failure_recorded",
       record,
-      WORKFLOW_FAILED_RECORD_TTL_SECONDS,
     );
-  } catch (writeError) {
-    logError("channels.workflow_failed_record_write_failed", {
-      channel: input.channel,
-      deliveryId: input.deliveryId,
-      requestId: input.requestId,
-      error:
-        writeError instanceof Error
-          ? writeError.message
-          : String(writeError),
-    });
   }
-  logError(
-    input.terminal
-      ? "channels.workflow_terminal_failure_recorded"
-      : "channels.workflow_retryable_failure_recorded",
-    record,
-  );
 }
 
 export type RetryingForwardResult = {

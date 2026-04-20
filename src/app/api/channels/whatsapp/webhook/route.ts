@@ -1,5 +1,6 @@
 import * as workflowApi from "workflow/api";
 
+import { recordChannelDlqFailure } from "@/server/channels/dlq";
 import { hasWhatsAppBusinessCredentials } from "@/shared/channels";
 import { getPublicOrigin } from "@/server/public-url";
 import { channelDedupKey } from "@/server/channels/keys";
@@ -93,6 +94,7 @@ export async function GET(request: Request): Promise<Response> {
 }
 
 export async function POST(request: Request): Promise<Response> {
+  const receivedAtMs = Date.now();
   const requestId = extractRequestId(request);
   const rawBody = await request.text().catch(() => "");
   const signatureHeader = request.headers.get("x-hub-signature-256");
@@ -252,6 +254,7 @@ export async function POST(request: Request): Promise<Response> {
           origin,
           requestId: requestId ?? null,
           bootMessageId,
+          receivedAtMs,
         },
       ]);
       logInfo("channels.whatsapp_workflow_started", withOperationContext(op));
@@ -266,6 +269,25 @@ export async function POST(request: Request): Promise<Response> {
         dedupLockReleaseError: dedupRelease.releaseError,
         retryable: true,
       }));
+      const whatsappMessageId = extractWhatsAppMessageId(payload);
+      const waDeliveryId = whatsappMessageId
+        ? `whatsapp:${whatsappMessageId}`
+        : `whatsapp:request:${requestId ?? receivedAtMs}`;
+      await recordChannelDlqFailure({
+        channel: "whatsapp",
+        deliveryId: waDeliveryId,
+        phase: "workflow-start-failed",
+        terminal: false,
+        retryable: true,
+        requestId: requestId ?? null,
+        receivedAtMs,
+        error,
+        diag: {
+          whatsappMessageId,
+          bootMessageId,
+          dedupLockReleased: dedupRelease.released,
+        },
+      });
       return workflowStartFailedResponse();
     }
 
