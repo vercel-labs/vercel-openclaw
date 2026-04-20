@@ -115,6 +115,19 @@ function createWorkflowDependencies(
     buildExistingBootHandle: async () => undefined,
     RetryableError: TestRetryableError as never,
     FatalError: TestFatalError as never,
+    // Workflow DevKit metadata helpers. In a normal step these would
+    // come from AsyncLocalStorage; here we stub sensible defaults.
+    getStepMetadata: (() => ({
+      stepName: "processChannelStep",
+      stepId: "test-step-id",
+      stepStartedAt: new Date(),
+      attempt: 1,
+    })) as never,
+    getWorkflowMetadata: (() => ({
+      workflowId: "test-workflow-id",
+      workflowRunId: "test-run-id",
+      workflowStartedAt: new Date(),
+    })) as never,
     ...overrides,
   };
 }

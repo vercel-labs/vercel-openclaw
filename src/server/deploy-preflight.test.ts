@@ -1243,6 +1243,13 @@ test("getLaunchVerifyBlocking: synthetic webhook-bypass warn does not block", ()
       { id: "ai-gateway" as const, status: "pass" as const, message: "ok" },
     ],
     nextSteps: [],
+    dlq: {
+      indexSize: 0,
+      channelCounts: { slack: 0, telegram: 0, whatsapp: 0, discord: 0 },
+      terminalCount: 0,
+      oldestFailedAt: null,
+      newestFailedAt: null,
+    },
   };
 
   const result = getLaunchVerifyBlocking(syntheticPayload);

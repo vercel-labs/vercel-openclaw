@@ -109,6 +109,74 @@ export async function recordChannelDlqFailure(input: {
   return record;
 }
 
+export type ChannelDlqSummary = {
+  indexSize: number;
+  channelCounts: Record<ChannelName, number>;
+  terminalCount: number;
+  oldestFailedAt: number | null;
+  newestFailedAt: number | null;
+  unavailable?: boolean;
+};
+
+/**
+ * Best-effort aggregate of the bounded DLQ index. Safe to call from
+ * preflight / health routes — a store read failure returns an empty
+ * summary with `unavailable: true` rather than throwing, so it never
+ * flips a config preflight from ok to not-ok.
+ */
+export async function getChannelDlqSummary(): Promise<ChannelDlqSummary> {
+  const base: ChannelDlqSummary = {
+    indexSize: 0,
+    channelCounts: { slack: 0, telegram: 0, whatsapp: 0, discord: 0 },
+    terminalCount: 0,
+    oldestFailedAt: null,
+    newestFailedAt: null,
+  };
+  try {
+    const store = getStore();
+    const indexRaw = await store
+      .getValue<ChannelDlqIndexEntry[] | null>(channelFailedIndexKey())
+      .catch(() => null);
+    const index: ChannelDlqIndexEntry[] = Array.isArray(indexRaw)
+      ? indexRaw.filter((entry): entry is ChannelDlqIndexEntry => {
+          return (
+            entry != null &&
+            typeof entry === "object" &&
+            typeof (entry as ChannelDlqIndexEntry).key === "string" &&
+            typeof (entry as ChannelDlqIndexEntry).channel === "string"
+          );
+        })
+      : [];
+    const summary: ChannelDlqSummary = {
+      ...base,
+      indexSize: index.length,
+    };
+    for (const entry of index) {
+      if (entry.channel in summary.channelCounts) {
+        summary.channelCounts[entry.channel] += 1;
+      }
+      if (entry.terminal) summary.terminalCount += 1;
+      if (typeof entry.failedAt === "number") {
+        if (
+          summary.oldestFailedAt === null ||
+          entry.failedAt < summary.oldestFailedAt
+        ) {
+          summary.oldestFailedAt = entry.failedAt;
+        }
+        if (
+          summary.newestFailedAt === null ||
+          entry.failedAt > summary.newestFailedAt
+        ) {
+          summary.newestFailedAt = entry.failedAt;
+        }
+      }
+    }
+    return summary;
+  } catch {
+    return { ...base, unavailable: true };
+  }
+}
+
 async function indexDlqRecord(record: ChannelDlqRecord): Promise<void> {
   const store = getStore();
   const indexKey = channelFailedIndexKey();

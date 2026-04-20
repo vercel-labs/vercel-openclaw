@@ -6,6 +6,10 @@ import {
 import { getConfiguredAdminSecret } from "@/server/auth/admin-secret";
 import { isPublicUrl } from "@/server/channels/discord/application";
 import { buildChannelPrerequisiteReport } from "@/server/channels/connectability";
+import {
+  getChannelDlqSummary,
+  type ChannelDlqSummary,
+} from "@/server/channels/dlq";
 import type { ChannelConnectability } from "@/shared/channel-connectability";
 import type { ChannelName } from "@/shared/channels";
 import {
@@ -94,6 +98,11 @@ export type PreflightPayload = {
   actions: PreflightAction[];
   checks: PreflightCheck[];
   nextSteps: PreflightNextStep[];
+  // Runtime DLQ aggregate. Observability only — does not flip
+  // preflight.ok. Operators use this to see whether deliveries are
+  // failing at a rate that needs intervention, independent of
+  // config readiness.
+  dlq: ChannelDlqSummary;
 };
 
 // ---------------------------------------------------------------------------
@@ -649,6 +658,11 @@ export async function buildDeployPreflight(
 
   const nextSteps = buildNextSteps({ ok, channels, actions });
 
+  // Best-effort runtime health snapshot. Never fails preflight; a
+  // store read error returns { unavailable: true } so config readiness
+  // and runtime DLQ observability stay separate concerns.
+  const dlq = await getChannelDlqSummary();
+
   const payload: PreflightPayload = {
     ok,
     authMode,
@@ -665,6 +679,7 @@ export async function buildDeployPreflight(
     actions,
     checks,
     nextSteps,
+    dlq,
   };
 
   // Log which contract requirement IDs this surface consumed so drift is inspectable.
