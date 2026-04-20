@@ -26,6 +26,116 @@ import {
 // enough to cover a reasonable long-turn window so the bot-reply
 // cleanup path still finds them. Short TTL (10 min) left orphans.
 const PENDING_BOOT_MESSAGE_TTL_SECONDS = 60 * 60;
+
+// Discord deferred-interaction tokens are valid for 15 minutes. Soft-
+// deadline a little under that so a reply attempt at 13.5min still
+// has wall-clock to land before Discord starts returning 404
+// INVALID_WEBHOOK_TOKEN. If we're already past this when a workflow
+// step enters (long retries, long sandbox wake, or long OpenClaw
+// turn), abort and send the user an out-of-band "took too long"
+// notice via the interaction token while it's still valid.
+const DISCORD_INTERACTION_SOFT_DEADLINE_MS = 13.5 * 60 * 1000;
+
+type DiscordInteractionContext = {
+  applicationId: string;
+  token: string;
+  channelId: string | null;
+  userId: string | null;
+};
+
+function extractDiscordInteractionForTimeout(
+  payload: unknown,
+): DiscordInteractionContext | null {
+  if (!payload || typeof payload !== "object") return null;
+  const p = payload as {
+    application_id?: unknown;
+    token?: unknown;
+    channel_id?: unknown;
+    user?: { id?: unknown };
+    member?: { user?: { id?: unknown } };
+  };
+  if (typeof p.application_id !== "string" || typeof p.token !== "string") {
+    return null;
+  }
+  return {
+    applicationId: p.application_id,
+    token: p.token,
+    channelId: typeof p.channel_id === "string" ? p.channel_id : null,
+    userId:
+      typeof p.member?.user?.id === "string"
+        ? p.member.user.id
+        : typeof p.user?.id === "string"
+          ? p.user.id
+          : null,
+  };
+}
+
+type DiscordTimeoutNoticeResult = {
+  ok: boolean;
+  method: "interaction-edit" | "channel-fallback" | "none";
+  status: number | null;
+};
+
+async function sendDiscordTimeoutNotice(input: {
+  payload: unknown;
+  botToken: string | null;
+  content: string;
+}): Promise<DiscordTimeoutNoticeResult> {
+  const parsed = extractDiscordInteractionForTimeout(input.payload);
+  if (!parsed) return { ok: false, method: "none", status: null };
+
+  // Attempt the interaction-token edit first — this is the Discord-native
+  // path and preserves the original ephemeral/deferred response flow.
+  const editUrl = `https://discord.com/api/v10/webhooks/${parsed.applicationId}/${parsed.token}/messages/@original`;
+  const edit = await fetch(editUrl, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      content: input.content,
+      allowed_mentions: { parse: [] },
+    }),
+    signal: AbortSignal.timeout(5_000),
+  }).catch(() => null);
+  if (edit?.ok) {
+    return { ok: true, method: "interaction-edit", status: edit.status };
+  }
+
+  // Interaction token may have already expired; fall back to a bot-token
+  // channel message so the user still sees something instead of a silent
+  // "Thinking…" indicator that never resolves.
+  if (!input.botToken || !parsed.channelId) {
+    return {
+      ok: false,
+      method: "interaction-edit",
+      status: edit?.status ?? null,
+    };
+  }
+  const fallbackContent = parsed.userId
+    ? `<@${parsed.userId}> ${input.content}`
+    : input.content;
+  const fallback = await fetch(
+    `https://discord.com/api/v10/channels/${parsed.channelId}/messages`,
+    {
+      method: "POST",
+      headers: {
+        authorization: `Bot ${input.botToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        content: fallbackContent,
+        allowed_mentions: parsed.userId
+          ? { users: [parsed.userId] }
+          : { parse: [] },
+      }),
+      signal: AbortSignal.timeout(5_000),
+    },
+  ).catch(() => null);
+  return {
+    ok: fallback?.ok === true,
+    method: "channel-fallback",
+    status: fallback?.status ?? null,
+  };
+}
 // Bounded list so a pathological channel cannot balloon Redis on repeated
 // failed wakes. 20 is well above the realistic concurrent-wake count in
 // a single Slack thread and below "this thread is clearly pathological."
@@ -459,6 +569,37 @@ export async function processChannelStep(
   const existingBootHandle = await buildExistingBootHandle(channel, payload, bootMessageId);
   diag.hasExistingBootHandle = Boolean(existingBootHandle);
 
+  // Discord interaction tokens expire 15 minutes after the user's slash
+  // command. If we're already past the soft deadline on step entry
+  // (Workflow DevKit long retries, or an unusually slow queue handoff),
+  // skip the wake entirely and send an out-of-band "took too long"
+  // notice while the token is still valid. Throwing a plain Error puts
+  // this on the FatalError side of toWorkflowProcessingError so the
+  // workflow does NOT retry — the interaction is permanently expired.
+  if (channel === "discord" && typeof receivedAtMs === "number") {
+    const ageMs = Date.now() - receivedAtMs;
+    diag.discordInteractionAgeMsAtStepStart = ageMs;
+    if (ageMs >= DISCORD_INTERACTION_SOFT_DEADLINE_MS) {
+      const metaForDiscord = await getInitializedMeta();
+      const notice = await sendDiscordTimeoutNotice({
+        payload,
+        botToken: metaForDiscord.channels.discord?.botToken ?? null,
+        content: "🦞 Sorry — I took too long waking up. Try again.",
+      });
+      diag.discordInteractionExpiredPreempt = notice;
+      logWarn("channels.discord_interaction_expired_preempt", {
+        requestId,
+        deliveryId,
+        ageMs,
+        notice,
+        phase: "step-start",
+      });
+      throw new Error(
+        `discord_interaction_expired_preempt ageMs=${ageMs} phase=step-start`,
+      );
+    }
+  }
+
   try {
     // --- Phase 1: Wake the sandbox ---
     console.log(`[DIAG] Phase 1: runWithBootMessages starting`);
@@ -824,6 +965,33 @@ export async function processChannelStep(
       );
       forwardResult = { ok: retryingResult.ok, status: retryingResult.status };
     } else {
+      // Second Discord deadline check: sandbox wake can eat most of the
+      // 15-minute interaction token budget. If we're past the soft
+      // deadline now, don't bother forwarding — OpenClaw's native
+      // Discord handler will race the expired token and the user just
+      // sees "Thinking…" forever. Preempt with an out-of-band notice.
+      if (channel === "discord" && typeof receivedAtMs === "number") {
+        const ageMs = Date.now() - receivedAtMs;
+        diag.discordInteractionAgeMsBeforeForward = ageMs;
+        if (ageMs >= DISCORD_INTERACTION_SOFT_DEADLINE_MS) {
+          const notice = await sendDiscordTimeoutNotice({
+            payload,
+            botToken: effectiveReadyMeta.channels.discord?.botToken ?? null,
+            content: "🦞 Sorry — I took too long waking up. Try again.",
+          });
+          diag.discordInteractionExpiredPreempt = notice;
+          logWarn("channels.discord_interaction_expired_preempt", {
+            requestId,
+            deliveryId,
+            ageMs,
+            notice,
+            phase: "pre-forward",
+          });
+          throw new Error(
+            `discord_interaction_expired_preempt ageMs=${ageMs} phase=pre-forward`,
+          );
+        }
+      }
       forwardResult = await forwardToNativeHandler(
         channel as ChannelName,
         payload,
