@@ -1759,13 +1759,36 @@ export async function getRunningSandboxTimeoutRemainingMs(): Promise<number | nu
 }
 
 /**
- * Check if a sandbox that metadata says is "running" has actually stopped
- * (e.g. platform timeout). If the SDK confirms it's stopped/failed, update
- * metadata to "stopped" so the UI shows the truth instead of a stale status.
+ * Debounce + in-flight coalesce for reconcileStaleRunningStatus. When a
+ * burst of fast-path fetches fails simultaneously (sandbox just went
+ * stopped, 5 webhooks arrive in the same second), every webhook falls
+ * through to reconcile. Without coalescing, each takes the lifecycle
+ * lock serially and does the same @vercel/sandbox `get()` + mutateMeta
+ * dance — linear latency pile-up for duplicate work.
  *
- * Returns the reconciled metadata.
+ * This state is module-scoped, not Redis-backed. That gives per-Vercel-
+ * function-instance coalescing, which is sufficient for bursty webhook
+ * storms hitting the same instance. Multi-instance deployments each
+ * get independent debounces — the cost of an extra reconcile per
+ * instance during a storm is negligible compared to the cost of
+ * coordinating via Redis.
  */
-export async function reconcileStaleRunningStatus(): Promise<SingleMeta> {
+const RECONCILE_STALE_RUNNING_DEBOUNCE_MS = 5_000;
+let reconcileStaleRunningInFlight: Promise<SingleMeta> | null = null;
+let lastReconcileStaleRunningResult:
+  | { reconciledAtMs: number; meta: SingleMeta }
+  | null = null;
+
+/**
+ * Test-only helper to clear the debounce state between tests. The
+ * module-scoped cache would otherwise leak across test cases.
+ */
+export function _resetReconcileStaleRunningDebounceForTesting(): void {
+  reconcileStaleRunningInFlight = null;
+  lastReconcileStaleRunningResult = null;
+}
+
+async function runReconcileStaleRunningStatus(): Promise<SingleMeta> {
   const meta = await getInitializedMeta();
   if (!meta.sandboxId || meta.status !== "running") {
     return meta;
@@ -1800,6 +1823,50 @@ export async function reconcileStaleRunningStatus(): Promise<SingleMeta> {
       next.lastGatewayProbeReady = false;
     });
   }
+}
+
+/**
+ * Check if a sandbox that metadata says is "running" has actually stopped
+ * (e.g. platform timeout). If the SDK confirms it's stopped/failed, update
+ * metadata to "stopped" so the UI shows the truth instead of a stale status.
+ *
+ * Returns the reconciled metadata. Concurrent calls within the debounce
+ * window share one underlying reconcile; subsequent calls within 5s
+ * reuse the cached result.
+ */
+export async function reconcileStaleRunningStatus(): Promise<SingleMeta> {
+  const now = Date.now();
+  if (
+    lastReconcileStaleRunningResult &&
+    now - lastReconcileStaleRunningResult.reconciledAtMs <=
+      RECONCILE_STALE_RUNNING_DEBOUNCE_MS
+  ) {
+    logInfo("sandbox.reconcile_stale_running_status_debounced", {
+      ageMs: now - lastReconcileStaleRunningResult.reconciledAtMs,
+      status: lastReconcileStaleRunningResult.meta.status,
+      sandboxId: lastReconcileStaleRunningResult.meta.sandboxId,
+    });
+    return structuredClone(lastReconcileStaleRunningResult.meta);
+  }
+
+  if (reconcileStaleRunningInFlight) {
+    logInfo("sandbox.reconcile_stale_running_status_joined_in_flight", {});
+    return structuredClone(await reconcileStaleRunningInFlight);
+  }
+
+  reconcileStaleRunningInFlight = runReconcileStaleRunningStatus()
+    .then((meta) => {
+      lastReconcileStaleRunningResult = {
+        reconciledAtMs: Date.now(),
+        meta: structuredClone(meta),
+      };
+      return meta;
+    })
+    .finally(() => {
+      reconcileStaleRunningInFlight = null;
+    });
+
+  return structuredClone(await reconcileStaleRunningInFlight);
 }
 
 /**

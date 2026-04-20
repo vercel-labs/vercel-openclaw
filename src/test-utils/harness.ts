@@ -32,6 +32,7 @@ import {
   SIGN_IN_ENV,
   ADMIN_SECRET_ENV,
 } from "@/test-utils/auth-fixtures";
+import { _resetReconcileStaleRunningDebounceForTesting } from "@/server/sandbox/lifecycle";
 import { resetAfterCallbacks } from "@/test-utils/route-caller";
 import {
   FakeSandboxController,
@@ -276,6 +277,7 @@ export function createScenarioHarness(options?: {
 
   // Reset module singletons so tests get a fresh memory store
   _resetStoreForTesting();
+  _resetReconcileStaleRunningDebounceForTesting();
 
   // Install fake sandbox controller
   const controller = new FakeSandboxController({
@@ -331,6 +333,7 @@ export function createScenarioHarness(options?: {
 
       // Reset store singleton
       _resetStoreForTesting();
+      _resetReconcileStaleRunningDebounceForTesting();
 
       // Clear after callbacks
       resetAfterCallbacks();
