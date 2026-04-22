@@ -528,8 +528,8 @@ test("CLI: all-pass report has passed=true and exit 0", async () => {
     assert.equal(typeof report.totalMs, "number");
     assert.ok(report.totalMs >= 0);
 
-    // Safe-only: 8 phases
-    assert.equal(report.phases.length, 8);
+    // Safe-only: 9 phases
+    assert.equal(report.phases.length, 9);
     for (const phase of report.phases) {
       assertPhaseShape(phase, phase.phase);
       assert.equal(phase.passed, true);
@@ -544,6 +544,7 @@ test("CLI: all-pass report has passed=true and exit 0", async () => {
       "firewallRead",
       "channelsSummary",
       "sshEcho",
+      "codexStatus",
       "chatCompletions",
       "channelRoundTrip",
     ]);
@@ -838,12 +839,18 @@ test("CLI: safe-only mode runs 8 phases, --destructive runs 16", async () => {
 
     const report = JSON.parse(result.stdout);
     assert.equal(report.passed, true);
-    assert.equal(report.phases.length, 16);
+    // Safe (9) + Destructive (10: ensureRunning, chatCompletions,
+    // channelRoundTrip, codexChatCompletions, codexWakeFromSleep,
+    // channelWakeFromSleep, chatCompletions, selfHeal × 3) = 19
+    assert.equal(report.phases.length, 19);
 
     // Verify destructive phase names are present
     const names = report.phases.map((p: PhaseResult) => p.phase);
     assert.ok(names.includes("ensureRunning"));
     assert.ok(names.includes("channelWakeFromSleep"));
+    assert.ok(names.includes("codexStatus"));
+    assert.ok(names.includes("codexChatCompletions"));
+    assert.ok(names.includes("codexWakeFromSleep"));
     assert.ok(names.includes("selfHealTokenRefresh:slack"));
     assert.ok(names.includes("selfHealTokenRefresh:telegram"));
     assert.ok(names.includes("selfHealTokenRefresh:discord"));
@@ -1623,9 +1630,9 @@ test("event stream: --json-only emits smoke-start, phase-end, and smoke-finish e
     assert.equal(typeof starts[0].requestTimeoutMs, "number");
     assert.equal(typeof starts[0].authSource, "string");
 
-    // Must have phase-end for each of the 7 safe phases
+    // Must have phase-end for each of the 9 safe phases
     const phaseEnds = eventsOfType(events, "phase-end");
-    assert.equal(phaseEnds.length, 8, "8 phase-end events for safe phases");
+    assert.equal(phaseEnds.length, 9, "9 phase-end events for safe phases");
     for (const pe of phaseEnds) {
       assert.equal(typeof pe.phase, "string");
       assert.equal(typeof pe.passed, "boolean");
@@ -1643,8 +1650,8 @@ test("event stream: --json-only emits smoke-start, phase-end, and smoke-finish e
     const finishes = eventsOfType(events, "smoke-finish");
     assert.equal(finishes.length, 1, "exactly one smoke-finish event");
     assert.equal(finishes[0].passed, true);
-    assert.equal(finishes[0].phaseCount, 8);
-    assert.equal(finishes[0].passedCount, 8);
+    assert.equal(finishes[0].phaseCount, 9);
+    assert.equal(finishes[0].passedCount, 9);
     assert.equal(finishes[0].failedCount, 0);
     assert.equal(typeof finishes[0].totalMs, "number");
     assert.equal(typeof finishes[0].timestamp, "string");
@@ -1704,7 +1711,7 @@ test("event stream: non-json-only mode emits events AND human-readable text", as
 
     // Structured events still present
     assert.equal(eventsOfType(events, "smoke-start").length, 1);
-    assert.equal(eventsOfType(events, "phase-end").length, 8);
+    assert.equal(eventsOfType(events, "phase-end").length, 9);
     assert.equal(eventsOfType(events, "smoke-finish").length, 1);
 
     // Human-readable text also present
@@ -1809,6 +1816,7 @@ test("event stream: phase-end events have correct phase order", async () => {
       "firewallRead",
       "channelsSummary",
       "sshEcho",
+      "codexStatus",
       "chatCompletions",
       "channelRoundTrip",
     ]);

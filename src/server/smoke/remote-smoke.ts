@@ -26,6 +26,9 @@ import {
   chatCompletions,
   channelRoundTrip,
   channelWakeFromSleep,
+  codexStatus,
+  codexChatCompletions,
+  codexWakeFromSleep,
   ensureRunning,
   snapshotStop as _snapshotStop,
   restoreFromSnapshot as _restoreFromSnapshot,
@@ -84,6 +87,18 @@ Options:
   --json-only             Suppress human-readable stderr; emit only JSON to stdout.
   --help                  Show this help message.
 
+Phases:
+  Safe (always run):      health, status, gatewayProbe, firewallRead,
+                          channelsSummary, sshEcho, codexStatus,
+                          chatCompletions, channelRoundTrip
+  Destructive (opt-in):   ensureRunning, chatCompletions, channelRoundTrip,
+                          codexChatCompletions, codexWakeFromSleep,
+                          channelWakeFromSleep, chatCompletions (post-wake),
+                          selfHealTokenRefresh (slack/telegram/discord)
+
+  Codex phases skip gracefully when Codex credentials are not configured
+  on the target deployment. They never log tokens.
+
 Environment:
   SMOKE_AUTH_COOKIE                  Encrypted session cookie for sign-in-with-vercel mode.
   VERCEL_AUTOMATION_BYPASS_SECRET    Deployment protection bypass secret.`);
@@ -138,6 +153,9 @@ function buildPhaseList(destructive: boolean): PhaseFn[] {
     (b, _t, r) => firewallRead(b, { requestTimeoutMs: r }),
     (b, _t, r) => channelsSummary(b, { requestTimeoutMs: r }),
     (b, _t, r) => sshEcho(b, { requestTimeoutMs: r }),
+    // codexStatus is read-only — passes when Codex is unconfigured or
+    // when configured and the response shape is well-formed.
+    (b, _t, r) => codexStatus(b, { requestTimeoutMs: r }),
     // chatCompletions needs a running sandbox — gracefully fails with
     // SANDBOX_NOT_READY (202) if sandbox is not running.
     (b, _t, _r) => chatCompletions(b, { requestTimeoutMs: 60_000 }),
@@ -153,6 +171,9 @@ function buildPhaseList(destructive: boolean): PhaseFn[] {
     // Test completions + channels while running
     (b, _t, _r) => chatCompletions(b, { requestTimeoutMs: 60_000 }),
     (b, t, _r) => channelRoundTrip(b, { requestTimeoutMs: 30_000, pollTimeoutMs: t }),
+    // Codex probes — skip gracefully when Codex creds aren't pasted.
+    (b, _t, _r) => codexChatCompletions(b, { requestTimeoutMs: 60_000 }),
+    (b, t, _r) => codexWakeFromSleep(b, t, { requestTimeoutMs: 30_000 }),
     // Stop sandbox, then test channel-triggered wake-up
     // channelWakeFromSleep stops the sandbox internally if needed,
     // sends a webhook, and verifies the sandbox wakes up and drains

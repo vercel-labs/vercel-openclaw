@@ -76,10 +76,12 @@ Output:
 - Human-readable progress to stderr (suppressed by `--json-only`)
 - Exit code 0 (all pass) or 1 (any fail)
 
-Safe phases (always run): `health`, `status`, `gatewayProbe`, `firewallRead`, `channelsSummary`, `sshEcho`, `chatCompletions`, `channelRoundTrip`.
-Destructive phases (opt-in): `ensureRunning`, `chatCompletions`, `channelRoundTrip`, `channelWakeFromSleep`, `chatCompletions` (post-wake), `selfHealTokenRefresh`.
+Safe phases (always run): `health`, `status`, `gatewayProbe`, `firewallRead`, `channelsSummary`, `sshEcho`, `codexStatus`, `chatCompletions`, `channelRoundTrip`.
+Destructive phases (opt-in): `ensureRunning`, `chatCompletions`, `channelRoundTrip`, `codexChatCompletions`, `codexWakeFromSleep`, `channelWakeFromSleep`, `chatCompletions` (post-wake), `selfHealTokenRefresh`.
 
 Channel phases (`channelRoundTrip`, `channelWakeFromSleep`) call `POST /api/admin/channel-secrets` with `{ channel, body }` so the server signs and dispatches synthetic webhooks. Raw channel secrets never leave the server, and the phases still verify the full ingestion + drain + completions pipeline. They gracefully skip if no channels are configured.
+
+Codex phases (`codexStatus`, `codexChatCompletions`, `codexWakeFromSleep`) read `GET /api/admin/auth/codex` to detect whether Codex credentials are configured. They skip gracefully (`passed: true`, `detail.skipped: true`) when `connected: false` or the endpoint is not deployed (404). Any response body tail included in failure detail is sanitized: `sk-*`, `rt_*`, and `Bearer ...` substrings are replaced with `[REDACTED]` before logging.
 
 ## Routes
 

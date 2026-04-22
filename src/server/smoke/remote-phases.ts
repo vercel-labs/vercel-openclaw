@@ -1425,3 +1425,355 @@ export async function selfHealTokenRefresh(
     return failFromError(phase, endpoint, err);
   }
 }
+
+// ---------------------------------------------------------------------------
+// Codex (openai-codex) phases
+// ---------------------------------------------------------------------------
+
+/**
+ * Strip token-like substrings from text so failure detail bodies never carry
+ * a raw Codex access/refresh token. Patterns covered: `sk-*`, `rt_*`, and
+ * `Bearer ...` prefixes.
+ */
+export function sanitizeCodexBody(text: string, max = 400): string {
+  const tail = text.length > max ? text.slice(text.length - max) : text;
+  return tail
+    .replace(/sk-[A-Za-z0-9_-]{10,}/g, "sk-[REDACTED]")
+    .replace(/rt_[A-Za-z0-9_-]{10,}/g, "rt_[REDACTED]")
+    .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, "Bearer [REDACTED]");
+}
+
+/** Narrow shape of `GET /api/admin/auth/codex` — redacted by design. */
+export interface CodexStatusBody {
+  connected: boolean;
+  expires?: number | string | null;
+  accountId?: string | null;
+  updatedAt?: number | string | null;
+}
+
+/**
+ * Fetch `/api/admin/auth/codex` and return the parsed connection state,
+ * or null when the endpoint is unreachable / unparseable. Never logs the
+ * response body (the endpoint is redacted but we avoid all tokens in logs).
+ */
+async function fetchCodexStatus(
+  baseUrl: string,
+  requestTimeoutMs: number,
+): Promise<{ status: number; body: CodexStatusBody | null }> {
+  const hdrs = authHeaders();
+  const res = await fetchWithTimeout(
+    url(baseUrl, "/api/admin/auth/codex"),
+    { headers: hdrs },
+    requestTimeoutMs,
+  );
+  if (!res.ok) return { status: res.status, body: null };
+  const text = await res.text();
+  const parsed = parseJsonBody(text);
+  if (!parsed.ok) return { status: res.status, body: null };
+  const data = parsed.data;
+  const connected = data.connected === true;
+  return {
+    status: res.status,
+    body: {
+      connected,
+      expires: (data.expires as CodexStatusBody["expires"]) ?? null,
+      accountId: (data.accountId as CodexStatusBody["accountId"]) ?? null,
+      updatedAt: (data.updatedAt as CodexStatusBody["updatedAt"]) ?? null,
+    },
+  };
+}
+
+function expiresEpochMs(value: CodexStatusBody["expires"]): number | null {
+  if (value == null) return null;
+  if (typeof value === "number") {
+    // Accept seconds or ms — treat values below 10^12 as seconds.
+    return value < 1e12 ? value * 1000 : value;
+  }
+  const n = Date.parse(value);
+  return Number.isNaN(n) ? null : n;
+}
+
+/**
+ * Read-only phase: fetches Codex auth status.  Pass when either Codex is
+ * not configured (`connected: false`) or Codex is configured and the
+ * response shape is well-formed.
+ */
+export async function codexStatus(
+  baseUrl: string,
+  opts?: PhaseOptions,
+): Promise<PhaseResult> {
+  const phase = "codexStatus";
+  const endpoint = "/api/admin/auth/codex";
+  const timeout = opts?.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+  try {
+    const { status, body } = await fetchCodexStatus(baseUrl, timeout);
+    if (body === null) {
+      // Treat 404 as "codex endpoint not deployed" — skip rather than fail.
+      if (status === 404) {
+        log(phase, "skipped", { reason: "codex-endpoint-not-deployed" });
+        return {
+          phase, passed: true, durationMs: 0, endpoint,
+          detail: { skipped: true, reason: "Codex endpoint not deployed" },
+        };
+      }
+      return failFromHttp(phase, endpoint, status, `HTTP ${status}`, {
+        durationMs: 0,
+      });
+    }
+
+    if (!body.connected) {
+      log(phase, "ok-disconnected");
+      return {
+        phase, passed: true, durationMs: 0, endpoint,
+        detail: { connected: false },
+      };
+    }
+
+    const now = Date.now();
+    const expiresMs = expiresEpochMs(body.expires);
+    const expired = expiresMs !== null ? expiresMs < now : false;
+    const expiresIn = expiresMs !== null ? expiresMs - now : null;
+    log(phase, expired ? "connected-expired" : "connected", {
+      expired, expiresIn,
+    });
+    return {
+      phase, passed: true, durationMs: 0, endpoint,
+      detail: {
+        connected: true,
+        expired,
+        ...(expiresIn !== null ? { expiresIn } : {}),
+      },
+    };
+  } catch (err) {
+    return failFromError(phase, endpoint, err);
+  }
+}
+
+/**
+ * Destructive phase: run a Codex-specific chat completion probe against the
+ * gateway. Skips gracefully when Codex is not configured (`connected:false`).
+ * Relies on `activeProvider === "codex"` reported by `/api/status` (Unit 7).
+ */
+export async function codexChatCompletions(
+  baseUrl: string,
+  opts?: PhaseOptions,
+): Promise<PhaseResult> {
+  const phase = "codexChatCompletions";
+  const endpoint = "/gateway/v1/chat/completions";
+  const timeout = opts?.requestTimeoutMs ?? 60_000;
+
+  try {
+    const statusTimeout = Math.min(timeout, DEFAULT_REQUEST_TIMEOUT_MS);
+    const codex = await fetchCodexStatus(baseUrl, statusTimeout);
+    if (!codex.body?.connected) {
+      log(phase, "skipped", { reason: "codex-not-configured" });
+      return {
+        phase, passed: true, durationMs: 0, endpoint,
+        detail: { skipped: true, reason: "Codex not configured on this deployment" },
+      };
+    }
+
+    // Confirm the deployment reports Codex as the active provider. If the
+    // status endpoint doesn't expose activeProvider yet (older deployments),
+    // we still proceed — the gateway probe will surface the real problem.
+    let activeProvider: unknown;
+    try {
+      const sRes = await fetchWithTimeout(
+        url(baseUrl, "/api/status"),
+        { headers: authHeaders() },
+        statusTimeout,
+      );
+      if (sRes.ok) {
+        const sBody = (await sRes.json()) as Record<string, unknown>;
+        activeProvider = sBody.activeProvider;
+      }
+    } catch {
+      // ignore — status fetch failures are handled by the gateway probe below
+    }
+
+    const hdrs = {
+      ...authHeaders({ mutation: true }),
+      "Content-Type": "application/json",
+    };
+    const body = JSON.stringify({
+      model: "openai-codex/gpt-5.4",
+      messages: [{ role: "user", content: "Reply with exactly: smoke-ok" }],
+      stream: false,
+    });
+    const [res, ms] = await timed(() =>
+      fetchWithTimeout(
+        url(baseUrl, endpoint),
+        { method: "POST", headers: hdrs, body },
+        timeout,
+      ),
+    );
+    const bodyText = await res.text();
+
+    const classified = classifyResponse(res.status, bodyText, res.headers);
+    if (classified) {
+      log(phase, "classified", { errorCode: classified.errorCode, httpStatus: res.status });
+      return {
+        phase, passed: false, durationMs: ms, endpoint,
+        httpStatus: res.status,
+        error: classified.error,
+        errorCode: classified.errorCode,
+        hint: classified.hint,
+      };
+    }
+
+    if (!res.ok) {
+      return failFromHttp(phase, endpoint, res.status, `HTTP ${res.status}`, {
+        durationMs: ms,
+        detail: { bodyTail: sanitizeCodexBody(bodyText), activeProvider },
+      });
+    }
+
+    const parsed = parseJsonBody(bodyText);
+    if (!parsed.ok) {
+      return {
+        phase, passed: false, durationMs: ms, endpoint,
+        error: parsed.classification.error,
+        errorCode: parsed.classification.errorCode,
+        hint: parsed.classification.hint,
+        detail: { bodyTail: sanitizeCodexBody(bodyText), activeProvider },
+      };
+    }
+
+    const data = parsed.data;
+    const choices = data.choices as Array<{ message?: { content?: string } }> | undefined;
+    const content = choices?.[0]?.message?.content ?? "";
+    const passed = typeof content === "string" && content.length > 0;
+
+    log(phase, passed ? "ok" : "empty-content", {
+      model: data.model,
+      contentLength: content.length,
+      activeProvider,
+    });
+
+    return {
+      phase,
+      passed,
+      durationMs: ms,
+      endpoint,
+      detail: {
+        model: data.model,
+        contentLength: content.length,
+        activeProvider,
+        ...(data.usage ? { usage: data.usage } : {}),
+      },
+      ...(passed
+        ? {}
+        : {
+            error: "Codex completions response had no content",
+            errorCode: "EMPTY_CONTENT",
+            hint: "Gateway responded with valid JSON but assistant content was empty",
+          }),
+    };
+  } catch (err) {
+    return failFromError(phase, endpoint, err);
+  }
+}
+
+/**
+ * Destructive phase: stop the sandbox (if running) and verify the Codex
+ * provider is still active after wake. Skips gracefully when Codex is not
+ * configured.
+ */
+export async function codexWakeFromSleep(
+  baseUrl: string,
+  timeoutMs = 120_000,
+  opts?: PhaseOptions,
+): Promise<PhaseResult> {
+  const phase = "codexWakeFromSleep";
+  const endpoint = "/api/status";
+  const reqTimeout = opts?.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+
+  try {
+    const codex = await fetchCodexStatus(baseUrl, reqTimeout);
+    if (!codex.body?.connected) {
+      log(phase, "skipped", { reason: "codex-not-configured" });
+      return {
+        phase, passed: true, durationMs: 0, endpoint,
+        detail: { skipped: true, reason: "Codex not configured on this deployment" },
+      };
+    }
+
+    const t0 = performance.now();
+
+    // 1. If running, stop the sandbox to force a wake path
+    const statusRes = await fetchWithTimeout(
+      url(baseUrl, "/api/status"),
+      { headers: authHeaders() },
+      reqTimeout,
+    );
+    const statusBody = (await statusRes.json()) as Record<string, unknown>;
+    if (statusBody.status === "running") {
+      log(phase, "stopping-sandbox");
+      const stopRes = await fetchWithTimeout(
+        url(baseUrl, "/api/admin/snapshot"),
+        {
+          method: "POST",
+          headers: { ...authHeaders({ mutation: true }), "Content-Type": "application/json" },
+          body: "{}",
+        },
+        reqTimeout,
+      );
+      if (!stopRes.ok) {
+        return failFromHttp(phase, "/api/admin/snapshot", stopRes.status,
+          "Failed to stop sandbox for Codex wake test", {
+            durationMs: Math.round(performance.now() - t0),
+          });
+      }
+    }
+
+    // 2. Trigger ensure to wake the sandbox
+    const ensureRes = await fetchWithTimeout(
+      url(baseUrl, "/api/admin/ensure"),
+      {
+        method: "POST",
+        headers: { ...authHeaders({ mutation: true }), "Content-Type": "application/json" },
+        body: "{}",
+      },
+      reqTimeout,
+    );
+    if (!ensureRes.ok && ensureRes.status !== 202) {
+      return failFromHttp(phase, "/api/admin/ensure", ensureRes.status,
+        `Ensure failed with HTTP ${ensureRes.status}`, {
+          durationMs: Math.round(performance.now() - t0),
+        });
+    }
+
+    // 3. Poll until running, confirm Codex is still the active provider
+    const poll = await pollUntilRunning(baseUrl, timeoutMs, reqTimeout);
+    const totalMs = Math.round(performance.now() - t0);
+    if (!poll.running) {
+      return {
+        phase, passed: false, durationMs: totalMs, endpoint,
+        error: "Sandbox did not wake up within timeout",
+        errorCode: "WAKE_TIMEOUT",
+        hint: "Increase --timeout or check sandbox logs",
+        detail: { lastBody: poll.lastBody ?? null },
+      };
+    }
+
+    const activeProvider = poll.lastBody?.activeProvider;
+    const codexActive = activeProvider === "codex";
+    log(phase, codexActive ? "ok" : "wrong-provider", { activeProvider });
+    return {
+      phase,
+      passed: codexActive,
+      durationMs: totalMs,
+      endpoint,
+      detail: { activeProvider, sandboxRunning: true },
+      ...(codexActive
+        ? {}
+        : {
+            error: `Expected activeProvider=\"codex\" after wake, got ${JSON.stringify(activeProvider)}`,
+            errorCode: "WRONG_PROVIDER_AFTER_WAKE",
+            hint: "Restore did not preserve Codex selection — check restore asset sync",
+          }),
+    };
+  } catch (err) {
+    return failFromError(phase, endpoint, err);
+  }
+}
