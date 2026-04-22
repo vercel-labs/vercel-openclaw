@@ -5,6 +5,7 @@ export type View =
   | "terminal"
   | "logs"
   | "snapshots"
+  | "auth"
   | "diagnostics"
   | "faq";
 
@@ -15,6 +16,7 @@ export const VIEW_SLUGS: readonly View[] = [
   "terminal",
   "logs",
   "snapshots",
+  "auth",
   "diagnostics",
   "faq",
 ] as const;

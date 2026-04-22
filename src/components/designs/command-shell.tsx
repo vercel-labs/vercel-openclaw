@@ -9,7 +9,12 @@ import type {
   StatusPayload,
 } from "@/components/admin-types";
 import { requestJsonCore } from "@/components/admin-action-core";
+import { fetchAdminJsonCore } from "@/components/admin-request-core";
 import { ChannelsPanel } from "@/components/panels/channels-panel";
+import {
+  CodexPanel,
+  type CodexAuthStatus,
+} from "@/components/panels/codex-panel";
 import type { LogEntry, LogLevel, LogSource, SnapshotRecord } from "@/shared/types";
 import type { AdminFaqPayload } from "@/shared/admin-faq";
 import type { PublicChannelState } from "@/shared/channel-admin-state";
@@ -300,6 +305,9 @@ export function CommandShell({ initialStatus, initialView = "status" }: Props) {
   const [faqLoading, setFaqLoading] = useState(false);
   const [faqError, setFaqError] = useState<string | null>(null);
 
+  // Codex provider — populated by /api/admin/auth/codex when the panel mounts.
+  const [codexAuth, setCodexAuth] = useState<CodexAuthStatus | null>(null);
+
   const actionMsgTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Tick every second so uptime/relative times update without refetching.
@@ -442,6 +450,14 @@ export function CommandShell({ initialStatus, initialView = "status" }: Props) {
     [requestJson],
   );
 
+  const readDeps = useMemo(
+    () => ({
+      setStatus: () => setStatus(null),
+      toastError: (msg: string) => toast.error(msg),
+    }),
+    [],
+  );
+
   const doAction = useCallback(
     async (
       label: string,
@@ -542,6 +558,31 @@ export function CommandShell({ initialStatus, initialView = "status" }: Props) {
     if (view === "snapshots") void fetchSnapshots();
     if (view === "faq" && !faq) void fetchFaq();
   }, [view, fetchSnapshots, fetchFaq, faq]);
+
+  // Load Codex auth status once per session so the top provider chip renders
+  // on any view. CodexPanel handles its own refresh while active.
+  const authedForCodex = status !== null;
+  useEffect(() => {
+    if (!authedForCodex) return;
+    let cancelled = false;
+    void (async () => {
+      const result = await fetchAdminJsonCore<CodexAuthStatus>(
+        "/api/admin/auth/codex",
+        readDeps,
+        { toastError: false },
+      );
+      if (cancelled) return;
+      if (result.ok) {
+        setCodexAuth(result.data);
+      } else if (result.status === 404) {
+        // Route not yet merged (Unit 2) — leave chip in AI Gateway default.
+        setCodexAuth(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [authedForCodex, readDeps]);
 
   const handleLogin = useCallback(
     async (e: React.FormEvent) => {
@@ -774,6 +815,11 @@ export function CommandShell({ initialStatus, initialView = "status" }: Props) {
             onClick={() => selectView("snapshots")}
           />
           <NavItem
+            label="Auth"
+            active={view === "auth"}
+            onClick={() => selectView("auth")}
+          />
+          <NavItem
             label="Diagnostics"
             active={view === "diagnostics"}
             onClick={() => selectView("diagnostics")}
@@ -883,7 +929,7 @@ export function CommandShell({ initialStatus, initialView = "status" }: Props) {
           <section>
             <div className="hero-panel">
               <div className="hero-info">
-                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
                   <div className="status-badge">
                     <span className={`status-dot ${tone}`}></span>
                     {status.status.toUpperCase()}
@@ -891,6 +937,21 @@ export function CommandShell({ initialStatus, initialView = "status" }: Props) {
                   <div className="hero-id">
                     {sandboxId ?? "—"}
                   </div>
+                  <button
+                    type="button"
+                    className="pill provider-chip"
+                    onClick={() => selectView("auth")}
+                    title={
+                      codexAuth?.connected
+                        ? "OpenAI Codex active — open Auth"
+                        : "AI Gateway active — open Auth"
+                    }
+                    aria-label="Open Auth"
+                  >
+                    {codexAuth?.connected
+                      ? "OpenAI Codex · gpt-5.4"
+                      : "AI Gateway"}
+                  </button>
                 </div>
                 <div className="hero-meta">
                   <span className="hero-meta-item">
@@ -1798,6 +1859,22 @@ export function CommandShell({ initialStatus, initialView = "status" }: Props) {
             </section>
           )}
 
+          {view === "auth" && (
+            <section className="cmd-channels">
+              <div className="section-header">
+                <h2 className="section-title">Providers</h2>
+                <span className="eyebrow">active · {codexAuth?.connected ? "openai-codex" : "ai-gateway"}</span>
+              </div>
+              <CodexPanel
+                active={view === "auth"}
+                busy={pending !== null}
+                requestJson={requestJson}
+                readDeps={readDeps}
+                onStatusChange={setCodexAuth}
+              />
+            </section>
+          )}
+
           {view === "faq" && (
             <section>
               <div className="section-header">
@@ -2515,6 +2592,15 @@ function Style() {
           font-family: var(--font-geist-mono, ui-monospace, monospace);
           font-size: 11px; border: 1px solid var(--border);
         }
+        button.pill {
+          cursor: pointer;
+          transition: border-color 150ms ease, background 150ms ease, color 150ms ease;
+        }
+        button.pill:hover {
+          border-color: var(--border-strong);
+          background: var(--background);
+        }
+        .provider-chip { letter-spacing: 0.02em; }
 
         .login-wrap {
           min-height: 100vh; display: flex; align-items: center; justify-content: center;
