@@ -311,6 +311,29 @@ export type HotSpareState = {
   updatedAt: number | null;
 };
 
+/**
+ * OpenClaw Codex provider credentials.
+ *
+ * When `SingleMeta.codexCredentials` is non-null, the sandbox uses the
+ * `openai-codex` OpenClaw provider (GPT-5.4 via ChatGPT backend) instead
+ * of the Vercel AI Gateway.
+ *
+ * @note Unit 1 of the codex worker batch canonicalises this type in
+ * `src/server/codex/credentials.ts`. This inline copy lets Unit 2
+ * (`src/app/api/admin/auth/codex/route.ts`) land cleanly on `main`
+ * before Unit 1 merges. Once Unit 1 is merged, this can be re-exported
+ * from that module without breaking consumers.
+ */
+export type CodexCredentials = {
+  access: string;
+  refresh: string;
+  /** Expiration time in ms since epoch. */
+  expires: number;
+  accountId?: string | null;
+  /** When this record was last written to the store. */
+  updatedAt: number;
+};
+
 export type CronRestoreOutcome =
   | "no-store-jobs"
   | "already-present"
@@ -463,6 +486,12 @@ export type SingleMeta = {
   restoreOracle: RestoreOracleState;
   /** Optional hot-spare sandbox candidate state (feature-flagged, disabled by default). */
   hotSpare?: HotSpareState;
+  /**
+   * OpenClaw Codex provider credentials. When non-null, the sandbox is
+   * configured to use `openai-codex` instead of the AI Gateway.
+   * Managed via `PUT /api/admin/auth/codex`.
+   */
+  codexCredentials?: CodexCredentials | null;
 };
 
 export const CURRENT_SCHEMA_VERSION = 3;
@@ -733,6 +762,46 @@ export function ensureMetaShape(
     ...((raw as Record<string, unknown>).hotSpare
       ? { hotSpare: ensureHotSpareState((raw as Record<string, unknown>).hotSpare) }
       : {}),
+    ...((raw as Record<string, unknown>).codexCredentials !== undefined
+      ? {
+          codexCredentials: ensureCodexCredentials(
+            (raw as Record<string, unknown>).codexCredentials,
+          ),
+        }
+      : {}),
+  };
+}
+
+/**
+ * Hydrate persisted codex credentials into the canonical shape, or return
+ * null if the input is missing, malformed, or cleared.
+ */
+export function ensureCodexCredentials(
+  raw: unknown,
+): CodexCredentials | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return null;
+  }
+  const obj = raw as Record<string, unknown>;
+  if (typeof obj.access !== "string" || obj.access.length === 0) return null;
+  if (typeof obj.refresh !== "string" || obj.refresh.length === 0) return null;
+  if (typeof obj.expires !== "number" || !Number.isFinite(obj.expires)) return null;
+  const accountId =
+    typeof obj.accountId === "string"
+      ? obj.accountId
+      : obj.accountId === null
+        ? null
+        : undefined;
+  const updatedAt =
+    typeof obj.updatedAt === "number" && Number.isFinite(obj.updatedAt)
+      ? obj.updatedAt
+      : Date.now();
+  return {
+    access: obj.access,
+    refresh: obj.refresh,
+    expires: obj.expires,
+    ...(accountId !== undefined ? { accountId } : {}),
+    updatedAt,
   };
 }
 

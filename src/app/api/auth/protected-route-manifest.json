@@ -1,15 +1,19 @@
 {
   "version": 3,
-  "generatedAt": "2026-04-20T01:16:52.703Z",
+  "generatedAt": "2026-04-22T09:07:05.643Z",
   "roots": [
     "src/app/api/admin",
     "src/app/api/firewall",
     "src/app/api/debug"
   ],
-  "discoveredRouteCount": 47,
+  "discoveredRouteCount": 50,
   "unauthenticatedRouteCount": 0,
   "violationCount": 0,
   "routes": [
+    {
+      "method": "DELETE",
+      "path": "/api/admin/auth/codex"
+    },
     {
       "method": "DELETE",
       "path": "/api/admin/channel-secrets"
@@ -25,6 +29,10 @@
     {
       "method": "DELETE",
       "path": "/api/firewall/learned"
+    },
+    {
+      "method": "GET",
+      "path": "/api/admin/auth/codex"
     },
     {
       "method": "GET",
@@ -189,6 +197,10 @@
     {
       "method": "POST",
       "path": "/api/firewall/test"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/admin/auth/codex"
     },
     {
       "method": "PUT",
