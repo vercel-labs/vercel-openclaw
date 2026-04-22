@@ -319,6 +319,35 @@ export type CronRestoreOutcome =
   | "restore-unverified"
   | "store-invalid";
 
+// ---------------------------------------------------------------------------
+// OpenAI Codex OAuth credentials (first-class provider replacing AI Gateway)
+// ---------------------------------------------------------------------------
+
+/**
+ * OAuth credentials for OpenClaw's `openai-codex` provider.
+ *
+ * When `SingleMeta.codexCredentials` is non-null, the sandbox uses OpenAI's
+ * ChatGPT backend (`chatgpt.com/backend-api/codex/responses`) for inference
+ * instead of the Vercel AI Gateway. This is a data-driven feature flag —
+ * the presence of credentials activates Codex mode.
+ *
+ * `access` / `refresh` are raw OAuth token strings and MUST NEVER be returned
+ * to the browser or logged. Admin surfaces should use
+ * `redactCodexCredentials()` from `@/server/codex/credentials`.
+ */
+export type CodexCredentials = {
+  /** JWT access token (short-lived bearer for chatgpt.com/backend-api). */
+  access: string;
+  /** `rt_...` refresh token used to mint new access tokens. */
+  refresh: string;
+  /** Access-token expiry in milliseconds since epoch. */
+  expires: number;
+  /** ChatGPT account ID the tokens are bound to, or null when unknown. */
+  accountId?: string | null;
+  /** Unix-epoch ms when these credentials were last written to metadata. */
+  updatedAt: number;
+};
+
 /**
  * Structured record persisted to the store as `CRON_JOBS_KEY`.
  * Wraps the raw jobs.json with metadata for change detection,
@@ -463,6 +492,10 @@ export type SingleMeta = {
   restoreOracle: RestoreOracleState;
   /** Optional hot-spare sandbox candidate state (feature-flagged, disabled by default). */
   hotSpare?: HotSpareState;
+  /** OAuth credentials for OpenClaw's `openai-codex` provider. When non-null,
+   *  the sandbox uses ChatGPT backend for inference and skips the AI Gateway
+   *  credential transform. `null` / absent = AI Gateway mode (default). */
+  codexCredentials?: CodexCredentials | null;
 };
 
 export const CURRENT_SCHEMA_VERSION = 3;
@@ -733,6 +766,45 @@ export function ensureMetaShape(
     ...((raw as Record<string, unknown>).hotSpare
       ? { hotSpare: ensureHotSpareState((raw as Record<string, unknown>).hotSpare) }
       : {}),
+    ...(hasCodexCredentials(raw)
+      ? { codexCredentials: ensureCodexCredentials((raw as Record<string, unknown>).codexCredentials) }
+      : {}),
+  };
+}
+
+function hasCodexCredentials(raw: unknown): boolean {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false;
+  return "codexCredentials" in (raw as Record<string, unknown>);
+}
+
+/**
+ * Coerce a persisted value into `CodexCredentials | null`. Strings/numbers
+ * on the token fields are treated as-is; anything malformed collapses to `null`
+ * so stale or partial Redis state can't activate Codex mode by accident.
+ */
+export function ensureCodexCredentials(raw: unknown): CodexCredentials | null {
+  if (raw === null || raw === undefined) return null;
+  if (typeof raw !== "object" || Array.isArray(raw)) return null;
+  const obj = raw as Record<string, unknown>;
+  if (typeof obj.access !== "string" || obj.access.length === 0) return null;
+  if (typeof obj.refresh !== "string" || obj.refresh.length === 0) return null;
+  if (typeof obj.expires !== "number" || !Number.isFinite(obj.expires)) return null;
+  const accountId =
+    typeof obj.accountId === "string"
+      ? obj.accountId
+      : obj.accountId === null
+        ? null
+        : undefined;
+  const updatedAt =
+    typeof obj.updatedAt === "number" && Number.isFinite(obj.updatedAt)
+      ? obj.updatedAt
+      : Date.now();
+  return {
+    access: obj.access,
+    refresh: obj.refresh,
+    expires: obj.expires,
+    ...(accountId !== undefined ? { accountId } : {}),
+    updatedAt,
   };
 }
 

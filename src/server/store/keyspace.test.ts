@@ -13,6 +13,7 @@ import {
   channelQueueKey,
   channelSessionHistoryKey,
   channelUserMessageDedupKey,
+  codexCredentialsKey,
   cronJobsKey,
   cronNextWakeKey,
   debugLockKey,
@@ -80,6 +81,13 @@ test("keyspace: default instance id preserves existing keys", () => {
     assert.equal(learningLockKey(), "openclaw-single:lock:learning-refresh");
     assert.equal(debugLockKey(), "openclaw-single:lock:debug-timing");
     assert.equal(setupProgressKey(), "openclaw-single:setup-progress");
+    assert.equal(codexCredentialsKey(), "openclaw-single:codex:credentials");
+  });
+});
+
+test("keyspace: codexCredentialsKey follows the instance prefix", () => {
+  withInstanceId("fork-codex", () => {
+    assert.equal(codexCredentialsKey(), "fork-codex:codex:credentials");
   });
 });
 
