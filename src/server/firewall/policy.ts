@@ -5,6 +5,16 @@ import { logInfo } from "@/server/log";
 import type { SandboxHandle } from "@/server/sandbox/controller";
 
 const AI_GATEWAY_DOMAIN = "ai-gateway.vercel.sh";
+export const CODEX_AUTH_DOMAIN = "auth.openai.com";
+export const CODEX_INFERENCE_DOMAIN = "chatgpt.com";
+
+/**
+ * Hosts that `toNetworkPolicy()` always folds into the allow map when Codex
+ * mode is active, regardless of user allowlist manipulation. These pair with
+ * the `CODEX_SYSTEM_DOMAINS` re-export in `firewall/domains.ts` so the domain
+ * module remains the single source of truth for system-allowed hosts.
+ */
+const CODEX_SYSTEM_DOMAINS = [CODEX_AUTH_DOMAIN, CODEX_INFERENCE_DOMAIN] as const;
 
 /**
  * Build the network policy transform rules that inject an Authorization header
@@ -21,11 +31,54 @@ export function buildAiGatewayTransformRules(
   ];
 }
 
+export type ToNetworkPolicyOptions = {
+  aiGatewayToken?: string;
+  /**
+   * When true, Codex mode is active: the AI Gateway header transform is
+   * suppressed and the OpenAI inference/auth hosts are always included in
+   * the allow map. When false/absent, behavior is byte-identical to legacy.
+   */
+  codexMode?: boolean;
+};
+
 export function toNetworkPolicy(
   mode: SingleMeta["firewall"]["mode"],
   allowlist: string[],
-  aiGatewayToken?: string,
+  aiGatewayTokenOrOptions?: string | ToNetworkPolicyOptions,
 ): NetworkPolicy {
+  const options: ToNetworkPolicyOptions =
+    typeof aiGatewayTokenOrOptions === "string"
+      ? { aiGatewayToken: aiGatewayTokenOrOptions }
+      : aiGatewayTokenOrOptions ?? {};
+
+  const { aiGatewayToken, codexMode = false } = options;
+
+  // Codex path: AI Gateway header transform is suppressed; OpenAI hosts are
+  // always allowed regardless of user allowlist manipulation.
+  if (codexMode) {
+    switch (mode) {
+      case "disabled":
+      case "learning": {
+        const allow: Record<string, NetworkPolicyRule[]> = {};
+        for (const domain of CODEX_SYSTEM_DOMAINS) {
+          allow[domain] = [];
+        }
+        allow["*"] = [];
+        return { allow };
+      }
+      case "enforcing": {
+        const allow: Record<string, NetworkPolicyRule[]> = {};
+        for (const domain of [...allowlist].sort((a, b) => a.localeCompare(b))) {
+          allow[domain] = [];
+        }
+        for (const domain of CODEX_SYSTEM_DOMAINS) {
+          allow[domain] = [];
+        }
+        return { allow };
+      }
+    }
+  }
+
   // When a token is provided, always use the object form so the transform
   // injects the Authorization header at the firewall layer — the credential
   // never enters the sandbox.
@@ -67,28 +120,41 @@ export function toNetworkPolicy(
   }
 }
 
+export type ApplyFirewallPolicyOptions = {
+  aiGatewayToken?: string;
+  codexMode?: boolean;
+};
+
 export async function applyFirewallPolicyToSandbox(
   sandbox: SandboxHandle,
   meta: SingleMeta,
-  aiGatewayToken?: string,
+  aiGatewayTokenOrOptions?: string | ApplyFirewallPolicyOptions,
 ): Promise<NetworkPolicy> {
-  const policy = toNetworkPolicy(
-    meta.firewall.mode,
-    meta.firewall.allowlist,
+  const options: ApplyFirewallPolicyOptions =
+    typeof aiGatewayTokenOrOptions === "string"
+      ? { aiGatewayToken: aiGatewayTokenOrOptions }
+      : aiGatewayTokenOrOptions ?? {};
+
+  const { aiGatewayToken, codexMode = false } = options;
+
+  const policy = toNetworkPolicy(meta.firewall.mode, meta.firewall.allowlist, {
     aiGatewayToken,
-  );
+    codexMode,
+  });
   logInfo("firewall.policy_requested", {
     operation: "sync",
     mode: meta.firewall.mode,
     allowlistCount: meta.firewall.allowlist.length,
-    hasAiGatewayTransform: !!aiGatewayToken,
+    hasAiGatewayTransform: !codexMode && !!aiGatewayToken,
+    codexMode,
   });
   await sandbox.updateNetworkPolicy(policy);
   logInfo("firewall.policy_applied", {
     operation: "sync",
     mode: meta.firewall.mode,
     allowlistCount: meta.firewall.allowlist.length,
-    hasAiGatewayTransform: !!aiGatewayToken,
+    hasAiGatewayTransform: !codexMode && !!aiGatewayToken,
+    codexMode,
   });
   return policy;
 }

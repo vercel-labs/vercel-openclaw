@@ -7,6 +7,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import type { NetworkPolicyRule } from "@vercel/sandbox";
+
 import { createDefaultMeta } from "@/shared/types";
 import { toNetworkPolicy, applyFirewallPolicyToSandbox } from "@/server/firewall/policy";
 import { FakeSandboxHandle, type SandboxEvent } from "@/test-utils/fake-sandbox-controller";
@@ -207,4 +209,168 @@ test("policy: applyFirewallPolicyToSandbox with token passes transform to handle
     },
   });
   assert.deepEqual(handle.networkPolicies[0], result);
+});
+
+// ---------------------------------------------------------------------------
+// Codex mode — AI Gateway transform suppressed + OpenAI hosts always allowed
+// ---------------------------------------------------------------------------
+
+// Codex off: assert behavior matches the legacy paths byte-for-byte.
+
+test("policy: codexMode=false disabled matches legacy allow-all", () => {
+  const legacy = toNetworkPolicy("disabled", ["example.com"]);
+  const codexOff = toNetworkPolicy("disabled", ["example.com"], { codexMode: false });
+  assert.deepEqual(codexOff, legacy);
+  assert.equal(codexOff, "allow-all");
+});
+
+test("policy: codexMode=false learning matches legacy allow-all", () => {
+  const legacy = toNetworkPolicy("learning", ["example.com"]);
+  const codexOff = toNetworkPolicy("learning", ["example.com"], { codexMode: false });
+  assert.deepEqual(codexOff, legacy);
+  assert.equal(codexOff, "allow-all");
+});
+
+test("policy: codexMode=false enforcing matches legacy simple allow array", () => {
+  const legacy = toNetworkPolicy("enforcing", ["b.com", "a.com"]);
+  const codexOff = toNetworkPolicy("enforcing", ["b.com", "a.com"], { codexMode: false });
+  assert.deepEqual(codexOff, legacy);
+  assert.deepEqual(codexOff, { allow: ["a.com", "b.com"] });
+});
+
+// Codex on + disabled/learning: new shape with OpenAI hosts and catch-all.
+
+test("policy: codexMode=true disabled returns OpenAI hosts + catch-all, no AI gateway transform", () => {
+  const policy = toNetworkPolicy("disabled", ["example.com"], { codexMode: true });
+  assert.deepEqual(policy, {
+    allow: {
+      "auth.openai.com": [],
+      "chatgpt.com": [],
+      "*": [],
+    },
+  });
+  const allow = (policy as { allow: Record<string, NetworkPolicyRule[]> }).allow;
+  assert.ok(!("ai-gateway.vercel.sh" in allow));
+});
+
+test("policy: codexMode=true learning returns OpenAI hosts + catch-all, no AI gateway transform", () => {
+  const policy = toNetworkPolicy("learning", [], { codexMode: true });
+  assert.deepEqual(policy, {
+    allow: {
+      "auth.openai.com": [],
+      "chatgpt.com": [],
+      "*": [],
+    },
+  });
+});
+
+test("policy: codexMode=true disabled ignores aiGatewayToken and emits no transform", () => {
+  const policy = toNetworkPolicy("disabled", [], {
+    codexMode: true,
+    aiGatewayToken: TEST_TOKEN,
+  });
+  const allow = (policy as { allow: Record<string, NetworkPolicyRule[]> }).allow;
+  assert.ok(!("ai-gateway.vercel.sh" in allow));
+  for (const rules of Object.values(allow)) {
+    for (const rule of rules) {
+      assert.ok(
+        !("transform" in rule),
+        "codex mode must not emit transform rules even when a token is supplied",
+      );
+    }
+  }
+});
+
+// Codex on + enforcing: allow contains OpenAI hosts with empty rules; no transform.
+
+test("policy: codexMode=true enforcing merges OpenAI hosts with user allowlist", () => {
+  const policy = toNetworkPolicy("enforcing", ["api.example.com", "registry.npmjs.org"], {
+    codexMode: true,
+  });
+  assert.deepEqual(policy, {
+    allow: {
+      "api.example.com": [],
+      "registry.npmjs.org": [],
+      "auth.openai.com": [],
+      "chatgpt.com": [],
+    },
+  });
+});
+
+test("policy: codexMode=true enforcing adds OpenAI hosts even when allowlist is empty", () => {
+  const policy = toNetworkPolicy("enforcing", [], { codexMode: true });
+  assert.deepEqual(policy, {
+    allow: {
+      "auth.openai.com": [],
+      "chatgpt.com": [],
+    },
+  });
+});
+
+test("policy: codexMode=true enforcing does not emit ai-gateway transform even with token", () => {
+  const policy = toNetworkPolicy("enforcing", ["ai-gateway.vercel.sh", "api.example.com"], {
+    codexMode: true,
+    aiGatewayToken: TEST_TOKEN,
+  });
+  const allow = (policy as { allow: Record<string, NetworkPolicyRule[]> }).allow;
+  // ai-gateway can still appear (user put it in allowlist), but with no transform.
+  if ("ai-gateway.vercel.sh" in allow) {
+    assert.deepEqual(allow["ai-gateway.vercel.sh"], []);
+  }
+  // No rule in the map should carry a transform.
+  for (const rules of Object.values(allow)) {
+    for (const rule of rules) {
+      assert.ok(
+        !("transform" in rule),
+        "codex mode must not emit transform rules even when a token is supplied",
+      );
+    }
+  }
+  assert.deepEqual(allow["auth.openai.com"], []);
+  assert.deepEqual(allow["chatgpt.com"], []);
+});
+
+test("policy: codexMode=true enforcing cannot be bypassed by stripping OpenAI hosts from allowlist", () => {
+  // Even if the user's allowlist tries to exclude the OpenAI hosts, the policy
+  // layer folds them back in so Codex continues to function.
+  const policy = toNetworkPolicy("enforcing", ["evil.example"], { codexMode: true });
+  const allow = (policy as { allow: Record<string, NetworkPolicyRule[]> }).allow;
+  assert.ok("auth.openai.com" in allow);
+  assert.ok("chatgpt.com" in allow);
+});
+
+test("policy: applyFirewallPolicyToSandbox with codexMode option skips transform", async () => {
+  const events: SandboxEvent[] = [];
+  const handle = new FakeSandboxHandle("sbx-codex", events);
+  const meta = createDefaultMeta(Date.now(), "tok");
+  meta.firewall.mode = "enforcing";
+  meta.firewall.allowlist = ["api.example.com"];
+
+  const result = await applyFirewallPolicyToSandbox(handle, meta, {
+    aiGatewayToken: TEST_TOKEN,
+    codexMode: true,
+  });
+  assert.deepEqual(result, {
+    allow: {
+      "api.example.com": [],
+      "auth.openai.com": [],
+      "chatgpt.com": [],
+    },
+  });
+  assert.deepEqual(handle.networkPolicies[0], result);
+});
+
+test("policy: applyFirewallPolicyToSandbox preserves legacy string-token signature", async () => {
+  const events: SandboxEvent[] = [];
+  const handle = new FakeSandboxHandle("sbx-legacy", events);
+  const meta = createDefaultMeta(Date.now(), "tok");
+  meta.firewall.mode = "disabled";
+
+  const result = await applyFirewallPolicyToSandbox(handle, meta, TEST_TOKEN);
+  assert.deepEqual(result, {
+    allow: {
+      "ai-gateway.vercel.sh": expectedTransform,
+      "*": [],
+    },
+  });
 });

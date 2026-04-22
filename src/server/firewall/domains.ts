@@ -3,6 +3,13 @@ import { domainToASCII } from "node:url";
 import type { DomainCategory, LearnedDomain } from "@/shared/types";
 import { getRegistrableDomain } from "@/shared/domain-grouping";
 
+/**
+ * Hosts that `toNetworkPolicy()` always folds into the allow map when Codex
+ * mode is active. User allowlist manipulation cannot strip these — the policy
+ * layer re-adds them. Defined alongside the policy that enforces them.
+ */
+export { CODEX_AUTH_DOMAIN, CODEX_INFERENCE_DOMAIN } from "@/server/firewall/policy";
+
 const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
 const UNICODE_DOTS = /[\u3002\uFF0E\uFF61]/g;
 const URL_SCHEME = /^[a-z][a-z0-9+.-]*:\/\//i;
