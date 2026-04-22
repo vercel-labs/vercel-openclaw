@@ -484,6 +484,9 @@ export type GatewayConfigHashInput = {
   telegramWebhookSecret?: string;
   slackCredentials?: { botToken: string; signingSecret: string };
   whatsappConfig?: WhatsAppGatewayConfig;
+  // Codex credential rotation must invalidate restore assets even when no other
+  // config changes. We fold `updatedAt` into the hash so rotation alone bumps it.
+  codexCredentialsUpdatedAt?: number | null;
 };
 
 export function computeGatewayConfigHash(input: GatewayConfigHashInput): string {
@@ -495,10 +498,13 @@ export function computeGatewayConfigHash(input: GatewayConfigHashInput): string 
     input.telegramWebhookSecret,
     input.whatsappConfig,
   );
-  return createHash("sha256")
+  const hash = createHash("sha256")
     .update(`gateway-config-hash:v${GATEWAY_CONFIG_HASH_VERSION}\0`)
-    .update(configJson)
-    .digest("hex");
+    .update(configJson);
+  if (input.codexCredentialsUpdatedAt != null) {
+    hash.update("\0codex-updated-at:").update(String(input.codexCredentialsUpdatedAt));
+  }
+  return hash.digest("hex");
 }
 
 export function buildForcePairScript(): string {

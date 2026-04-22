@@ -8,8 +8,11 @@ import {
   buildRestoreRuntimeEnv,
   buildStaticRestoreFiles,
   buildWorkerSandboxRestoreFiles,
+  OPENCLAW_CODEX_AUTH_PROFILES_PATH,
   OPENCLAW_RESTORE_ASSET_MANIFEST_PATH,
+  type CodexCredentials,
 } from "@/server/openclaw/restore-assets";
+import { computeGatewayConfigHash } from "@/server/openclaw/config";
 import {
   OPENCLAW_CONFIG_PATH,
   OPENCLAW_FORCE_PAIR_SCRIPT_PATH,
@@ -297,4 +300,97 @@ test("buildBootstrapFiles manifest matches buildRestoreAssetManifest", () => {
   const embedded = JSON.parse(manifestFile!.content.toString());
   const standalone = buildRestoreAssetManifest();
   assert.deepStrictEqual(embedded, standalone);
+});
+
+// --- codex auth-profiles ---
+
+const fakeCodexCreds: CodexCredentials = {
+  access: "jwt-access-token",
+  refresh: "rt_refresh_token",
+  expires: 1713801600000,
+  accountId: "chatgpt-account-id",
+  updatedAt: 1_700_000_000_000,
+};
+
+test("dynamic restore files omit auth-profiles.json when codexCredentials is absent", () => {
+  const without = buildDynamicRestoreFiles({ proxyOrigin: "https://no-codex.test" });
+  const withNull = buildDynamicRestoreFiles({
+    proxyOrigin: "https://no-codex.test",
+    codexCredentials: null,
+  });
+
+  for (const files of [without, withNull]) {
+    assert.ok(
+      !files.some((f) => f.path === OPENCLAW_CODEX_AUTH_PROFILES_PATH),
+      "auth-profiles.json should NOT be included",
+    );
+  }
+});
+
+test("dynamic restore files include auth-profiles.json when codexCredentials is present", () => {
+  const files = buildDynamicRestoreFiles({
+    proxyOrigin: "https://codex.test",
+    codexCredentials: fakeCodexCreds,
+  });
+
+  const authFile = files.find((f) => f.path === OPENCLAW_CODEX_AUTH_PROFILES_PATH);
+  assert.ok(authFile, "auth-profiles.json should be included");
+
+  const payload = JSON.parse(authFile!.content.toString("utf8")) as Record<
+    string,
+    Record<string, unknown>
+  >;
+  assert.deepStrictEqual(payload, {
+    "openai-codex:default": {
+      type: "oauth",
+      provider: "openai-codex",
+      access: fakeCodexCreds.access,
+      refresh: fakeCodexCreds.refresh,
+      expires: fakeCodexCreds.expires,
+      accountId: fakeCodexCreds.accountId,
+    },
+  });
+});
+
+test("auth-profiles.json omits accountId field when undefined", () => {
+  const credsNoAccount: CodexCredentials = { ...fakeCodexCreds };
+  delete credsNoAccount.accountId;
+
+  const files = buildDynamicRestoreFiles({
+    proxyOrigin: "https://codex.test",
+    codexCredentials: credsNoAccount,
+  });
+
+  const authFile = files.find((f) => f.path === OPENCLAW_CODEX_AUTH_PROFILES_PATH);
+  assert.ok(authFile);
+  const entry = (
+    JSON.parse(authFile!.content.toString("utf8")) as Record<string, Record<string, unknown>>
+  )["openai-codex:default"]!;
+  assert.equal("accountId" in entry, false);
+});
+
+test("auth-profiles.json path is under the openclaw agents/main/agent directory", () => {
+  assert.ok(OPENCLAW_CODEX_AUTH_PROFILES_PATH.endsWith("/agents/main/agent/auth-profiles.json"));
+});
+
+test("buildBootstrapFiles includes auth-profiles.json when codexCredentials is provided", () => {
+  const files = buildBootstrapFiles({
+    gatewayToken: "tok",
+    proxyOrigin: "https://bootstrap-codex.test",
+    codexCredentials: fakeCodexCreds,
+  });
+  assert.ok(
+    files.some((f) => f.path === OPENCLAW_CODEX_AUTH_PROFILES_PATH),
+    "bootstrap file list should include auth-profiles.json",
+  );
+});
+
+test("computeGatewayConfigHash differs when codexCredentialsUpdatedAt changes", () => {
+  const a = computeGatewayConfigHash({ codexCredentialsUpdatedAt: 1 });
+  const b = computeGatewayConfigHash({ codexCredentialsUpdatedAt: 2 });
+  const baseline = computeGatewayConfigHash({});
+
+  assert.notEqual(a, b);
+  assert.notEqual(a, baseline);
+  assert.notEqual(b, baseline);
 });

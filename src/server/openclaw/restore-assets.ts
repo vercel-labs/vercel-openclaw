@@ -73,6 +73,36 @@ import {
 export const OPENCLAW_RESTORE_ASSET_MANIFEST_PATH =
   `${OPENCLAW_STATE_DIR}/.restore-assets-manifest.json`;
 
+// OpenClaw agent auth-profiles file for OAuth providers (ChatGPT/Codex).
+// The agent id "main" is hardcoded — follow-up needed if operators customize
+// the agent id in openclaw.json.
+export const OPENCLAW_CODEX_AUTH_PROFILES_PATH =
+  `${OPENCLAW_STATE_DIR}/agents/main/agent/auth-profiles.json`;
+
+// Inlined here while Unit 1 (src/server/codex/credentials.ts) is unmerged.
+// When that lands, re-import from the canonical module.
+export type CodexCredentials = {
+  access: string;
+  refresh: string;
+  expires: number;
+  accountId?: string;
+  updatedAt: number;
+};
+
+export function buildAuthProfilesJson(creds: CodexCredentials): string {
+  const entry: Record<string, unknown> = {
+    type: "oauth",
+    provider: "openai-codex",
+    access: creds.access,
+    refresh: creds.refresh,
+    expires: creds.expires,
+  };
+  if (creds.accountId !== undefined) {
+    entry.accountId = creds.accountId;
+  }
+  return JSON.stringify({ "openai-codex:default": entry });
+}
+
 export type RestoreAssetManifest = {
   version: 1;
   sha256: string;
@@ -142,7 +172,10 @@ export function buildDynamicRestoreFiles(options: {
   telegramWebhookSecret?: string;
   slackCredentials?: { botToken: string; signingSecret: string };
   whatsappConfig?: WhatsAppGatewayConfig;
+  codexCredentials?: CodexCredentials | null;
 }): { path: string; content: Buffer }[] {
+  // TODO(codex): when Unit 3 lands, pass `codexProfile: options.codexCredentials != null`
+  // to buildGatewayConfig so openclaw.json declares the openai-codex provider.
   const files: { path: string; content: Buffer }[] = [
     {
       path: OPENCLAW_CONFIG_PATH,
@@ -163,6 +196,13 @@ export function buildDynamicRestoreFiles(options: {
     files.push({
       path: OPENCLAW_TELEGRAM_BOT_TOKEN_PATH,
       content: Buffer.from(options.telegramBotToken),
+    });
+  }
+
+  if (options.codexCredentials) {
+    files.push({
+      path: OPENCLAW_CODEX_AUTH_PROFILES_PATH,
+      content: Buffer.from(buildAuthProfilesJson(options.codexCredentials)),
     });
   }
 
@@ -220,6 +260,7 @@ export type BootstrapFilesOptions = {
   telegramWebhookSecret?: string;
   slackCredentials?: { botToken: string; signingSecret: string };
   whatsappConfig?: WhatsAppGatewayConfig;
+  codexCredentials?: CodexCredentials | null;
 };
 
 /**
@@ -245,6 +286,7 @@ export function buildBootstrapFiles(
       telegramWebhookSecret: options.telegramWebhookSecret,
       slackCredentials: options.slackCredentials,
       whatsappConfig: options.whatsappConfig,
+      codexCredentials: options.codexCredentials,
     }),
     {
       path: OPENCLAW_GATEWAY_TOKEN_PATH,
