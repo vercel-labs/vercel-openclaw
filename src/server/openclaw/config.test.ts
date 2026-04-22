@@ -608,6 +608,94 @@ test("computeGatewayConfigHash changes when whatsapp policy changes", () => {
 });
 
 // ---------------------------------------------------------------------------
+// buildGatewayConfig — openai-codex profile
+// ---------------------------------------------------------------------------
+
+type CodexConfig = {
+  auth?: { profiles?: Record<string, { provider: string; mode: string }> };
+  agents: { defaults: { model: { primary: string; fallbacks: string[] } } };
+};
+
+function buildCodexGatewayConfig(): CodexConfig {
+  return JSON.parse(
+    buildGatewayConfig(undefined, undefined, undefined, undefined, undefined, undefined, true),
+  ) as CodexConfig;
+}
+
+test("buildGatewayConfig output is byte-identical when codexProfile is false vs unset", () => {
+  const positional = [
+    "api-key",
+    "https://app.example.com",
+    "telegram-token",
+    { botToken: "xoxb-test", signingSecret: "slack-secret" },
+    "telegram-secret",
+    { enabled: true, dmPolicy: "open" },
+  ] as const;
+  const unset = buildGatewayConfig(...positional);
+  const explicitFalse = buildGatewayConfig(...positional, false);
+
+  assert.equal(unset, explicitFalse);
+});
+
+test("buildGatewayConfig omits auth and keeps default primary when codexProfile is false", () => {
+  const config = JSON.parse(buildGatewayConfig()) as {
+    auth?: unknown;
+    agents: { defaults: { model: { primary: string } } };
+  };
+
+  assert.equal(config.auth, undefined);
+  assert.equal(
+    config.agents.defaults.model.primary,
+    "vercel-ai-gateway/anthropic/claude-sonnet-4.6",
+  );
+});
+
+test("buildGatewayConfig adds openai-codex auth profile when codexProfile is true", () => {
+  const config = buildCodexGatewayConfig();
+
+  assert.deepEqual(config.auth?.profiles?.["openai-codex:default"], {
+    provider: "openai-codex",
+    mode: "oauth",
+  });
+});
+
+test("buildGatewayConfig overrides default model primary to openai-codex when codexProfile is true", () => {
+  const config = buildCodexGatewayConfig();
+
+  assert.equal(config.agents.defaults.model.primary, "openai-codex/gpt-5.4");
+  assert.equal(config.agents.defaults.model.fallbacks[0], "openai/gpt-5.4");
+});
+
+test("buildGatewayConfig prepends openai fallback and preserves existing fallbacks when codexProfile is true", () => {
+  const { fallbacks } = buildCodexGatewayConfig().agents.defaults.model;
+
+  assert.equal(fallbacks[0], "openai/gpt-5.4");
+  assert.ok(
+    fallbacks.includes("vercel-ai-gateway/openai/gpt-5.3-chat"),
+    "existing fallbacks must be preserved",
+  );
+});
+
+test("buildGatewayConfig deduplicates fallbacks when codexProfile is true", () => {
+  const { fallbacks } = buildCodexGatewayConfig().agents.defaults.model;
+
+  assert.equal(fallbacks.length, new Set(fallbacks).size, "fallbacks must be unique");
+});
+
+test("computeGatewayConfigHash differs between codexProfile false and true", () => {
+  const baseline = computeGatewayConfigHash({});
+  const withCodex = computeGatewayConfigHash({ codexProfile: true });
+
+  assert.notEqual(baseline, withCodex);
+});
+
+test("computeGatewayConfigHash stays stable for identical codexProfile inputs", () => {
+  const input = { codexProfile: true, telegramBotToken: "tt" };
+
+  assert.equal(computeGatewayConfigHash(input), computeGatewayConfigHash(input));
+});
+
+// ---------------------------------------------------------------------------
 // toWhatsAppGatewayConfig helper
 // ---------------------------------------------------------------------------
 
