@@ -4,7 +4,23 @@ import test from "node:test";
 import { buildDeployPreflight, getLaunchVerifyBlocking } from "@/server/deploy-preflight";
 import { _setProbeResultForTesting, _resetProbeForTesting } from "@/server/deployment-protection-probe";
 import { _setAiGatewayTokenOverrideForTesting, _setAiGatewayCredentialOverrideForTesting } from "@/server/env";
-import { _resetStoreForTesting } from "@/server/store/store";
+import { _resetStoreForTesting, getStore } from "@/server/store/store";
+import type { SingleMeta } from "@/shared/types";
+
+async function seedCodexCredentials(): Promise<void> {
+  const codexStub = {
+    codexCredentials: {
+      access: "codex-access",
+      refresh: "codex-refresh",
+      expires: Date.now() + 3_600_000,
+      updatedAt: Date.now(),
+    },
+    gatewayToken: "stub-gateway-token",
+    id: "test-instance",
+    version: 1,
+  } as unknown as SingleMeta;
+  await getStore().setMeta(codexStub);
+}
 
 let envMutationQueue = Promise.resolve();
 
@@ -531,8 +547,16 @@ test("preflight checks do not include launch-verification (config-only guarantee
       // Verify the canonical set of config-only check IDs
       assert.deepEqual(
         checkIds.sort(),
-        ["ai-gateway", "bootstrap-exposure", "cron-secret", "public-origin", "store", "webhook-bypass"],
-        "preflight checks should be exactly the 6 config-only checks",
+        [
+          "ai-gateway",
+          "bootstrap-exposure",
+          "codex-credentials",
+          "cron-secret",
+          "public-origin",
+          "store",
+          "webhook-bypass",
+        ],
+        "preflight checks should be exactly the 7 config-only checks",
       );
     },
   );
@@ -1229,6 +1253,8 @@ test("getLaunchVerifyBlocking: synthetic webhook-bypass warn does not block", ()
     deploymentProtectionDetected: false,
     storeBackend: "redis" as const,
     aiGatewayAuth: "oidc" as const,
+    codexAuth: "unavailable" as const,
+    activeProvider: "ai-gateway" as const,
     cronSecretConfigured: true,
     cronSecretExplicitlyConfigured: true,
     cronSecretSource: "cron-secret" as const,
@@ -1680,6 +1706,139 @@ test("preflight accepts AI_GATEWAY_API_KEY fallback on Vercel", async () => {
         payload.checks.find((check) => check.id === "ai-gateway")?.status,
         "pass",
       );
+    },
+  );
+});
+
+// ===========================================================================
+// Codex provider surfacing
+// ===========================================================================
+
+test("preflight: no Codex credentials — activeProvider is ai-gateway, codexAuth unavailable", async () => {
+  await withEnv(
+    {
+      VERCEL_AUTH_MODE: "admin-secret",
+      NEXT_PUBLIC_APP_URL: "https://app.example.com",
+      VERCEL_AUTOMATION_BYPASS_SECRET: "bypass-secret",
+      REDIS_URL: "redis://default:token@example.com:6379",
+      CRON_SECRET: "cron-secret",
+    },
+    async () => {
+      _setAiGatewayTokenOverrideForTesting("oidc-token");
+
+      const payload = await buildDeployPreflight(
+        new Request("https://app.example.com/api/admin/preflight"),
+      );
+
+      assert.equal(payload.activeProvider, "ai-gateway");
+      assert.equal(payload.codexAuth, "unavailable");
+
+      const codexCheck = payload.checks.find((c) => c.id === "codex-credentials");
+      assert.ok(codexCheck, "codex-credentials check should be present");
+      assert.equal(codexCheck.status, "warn");
+
+      const gwCheck = payload.checks.find((c) => c.id === "ai-gateway");
+      assert.equal(gwCheck?.status, "pass");
+      assert.equal(payload.ok, true);
+    },
+  );
+});
+
+test("preflight: Codex credentials configured — activeProvider is codex", async () => {
+  await withEnv(
+    {
+      VERCEL_AUTH_MODE: "admin-secret",
+      NEXT_PUBLIC_APP_URL: "https://app.example.com",
+      VERCEL_AUTOMATION_BYPASS_SECRET: "bypass-secret",
+      REDIS_URL: "redis://default:token@example.com:6379",
+      CRON_SECRET: "cron-secret",
+    },
+    async () => {
+      _setAiGatewayTokenOverrideForTesting("oidc-token");
+      await seedCodexCredentials();
+
+      const payload = await buildDeployPreflight(
+        new Request("https://app.example.com/api/admin/preflight"),
+      );
+
+      assert.equal(payload.activeProvider, "codex");
+      assert.equal(payload.codexAuth, "configured");
+
+      const codexCheck = payload.checks.find((c) => c.id === "codex-credentials");
+      assert.equal(codexCheck?.status, "pass");
+    },
+  );
+});
+
+test("preflight: Codex creds override missing AI Gateway on Vercel (no blocker)", async () => {
+  await withEnv(
+    {
+      VERCEL: "1",
+      VERCEL_AUTH_MODE: "admin-secret",
+      NEXT_PUBLIC_APP_URL: "https://app.example.com",
+      VERCEL_AUTOMATION_BYPASS_SECRET: "bypass-secret",
+      REDIS_URL: "redis://default:token@example.com:6379",
+      OPENCLAW_PACKAGE_SPEC: "openclaw@1.0.0",
+      CRON_SECRET: "cron-secret",
+      AI_GATEWAY_API_KEY: undefined,
+    },
+    async () => {
+      _setAiGatewayTokenOverrideForTesting(undefined);
+      await seedCodexCredentials();
+
+      const payload = await buildDeployPreflight(
+        new Request("https://app.example.com/api/admin/preflight"),
+      );
+
+      assert.equal(payload.activeProvider, "codex");
+      assert.equal(payload.aiGatewayAuth, "unavailable");
+
+      const gwCheck = payload.checks.find((c) => c.id === "ai-gateway");
+      assert.equal(
+        gwCheck?.status,
+        "pass",
+        "ai-gateway must be downgraded to pass when Codex is active",
+      );
+      assert.equal(payload.ok, true, "Codex creds should satisfy provider readiness");
+
+      // Channels should still be connectable
+      for (const ch of Object.values(payload.channels)) {
+        assert.equal(
+          ch.canConnect,
+          true,
+          `channel ${ch.channel} should connect when Codex is the active provider`,
+        );
+      }
+    },
+  );
+});
+
+test("preflight: missing AI Gateway AND missing Codex creds still fails on Vercel", async () => {
+  await withEnv(
+    {
+      VERCEL: "1",
+      VERCEL_AUTH_MODE: "admin-secret",
+      NEXT_PUBLIC_APP_URL: "https://app.example.com",
+      VERCEL_AUTOMATION_BYPASS_SECRET: "bypass-secret",
+      REDIS_URL: "redis://default:token@example.com:6379",
+      OPENCLAW_PACKAGE_SPEC: "openclaw@1.0.0",
+      CRON_SECRET: "cron-secret",
+      AI_GATEWAY_API_KEY: undefined,
+    },
+    async () => {
+      _setAiGatewayTokenOverrideForTesting(undefined);
+
+      const payload = await buildDeployPreflight(
+        new Request("https://app.example.com/api/admin/preflight"),
+      );
+
+      assert.equal(payload.activeProvider, "ai-gateway");
+      assert.equal(payload.codexAuth, "unavailable");
+      assert.equal(
+        payload.checks.find((c) => c.id === "ai-gateway")?.status,
+        "fail",
+      );
+      assert.equal(payload.ok, false);
     },
   );
 });

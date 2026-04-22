@@ -197,7 +197,13 @@ test("sign-in-with-vercel on Vercel with all config passes", async () => {
   assert.equal(contract.ok, true);
   assert.equal(contract.authMode, "sign-in-with-vercel");
 
+  // Codex is opt-in — warn is expected when codex creds are not configured.
+  // All other requirements must pass.
   for (const req of contract.requirements) {
+    if (req.id === "codex-credentials") {
+      assert.equal(req.status, "warn");
+      continue;
+    }
     assert.equal(
       req.status,
       "pass",
@@ -442,4 +448,136 @@ test("webhook-bypass passes when bypass secret is configured", async () => {
   const bypassReq = contract.requirements.find((r) => r.id === "webhook-bypass");
   assert.ok(bypassReq, "webhook-bypass requirement should be present");
   assert.equal(bypassReq.status, "pass");
+});
+
+// ---------------------------------------------------------------------------
+// Codex provider quadrant matrix
+// ---------------------------------------------------------------------------
+
+import type { SingleMeta } from "@/shared/types";
+
+function metaWithCodex(hasCreds: boolean): SingleMeta {
+  const base = {
+    codexCredentials: hasCreds
+      ? {
+          access: "codex-access",
+          refresh: "codex-refresh",
+          expires: Date.now() + 3_600_000,
+          updatedAt: Date.now(),
+        }
+      : null,
+  };
+  // Return via `as` — contract only looks at meta.codexCredentials, so a
+  // partial stub is sufficient.
+  return base as unknown as SingleMeta;
+}
+
+test("quadrant: Codex off, AI Gateway on — gateway passes, codex warns", async () => {
+  process.env.VERCEL = "1";
+  _setAiGatewayTokenOverrideForTesting("oidc-token");
+
+  const contract = await buildDeploymentContract({ meta: metaWithCodex(false) });
+  assert.equal(contract.activeProvider, "ai-gateway");
+  assert.equal(contract.codexAuth, "unavailable");
+  assert.equal(
+    contract.requirements.find((r) => r.id === "ai-gateway")?.status,
+    "pass",
+  );
+  assert.equal(
+    contract.requirements.find((r) => r.id === "codex-credentials")?.status,
+    "warn",
+  );
+});
+
+test("quadrant: Codex off, AI Gateway off — gateway fails on Vercel", async () => {
+  process.env.VERCEL = "1";
+  delete process.env.AI_GATEWAY_API_KEY;
+  _setAiGatewayTokenOverrideForTesting(undefined);
+
+  const contract = await buildDeploymentContract({ meta: metaWithCodex(false) });
+  assert.equal(contract.activeProvider, "ai-gateway");
+  assert.equal(
+    contract.requirements.find((r) => r.id === "ai-gateway")?.status,
+    "fail",
+  );
+  assert.equal(
+    contract.requirements.find((r) => r.id === "codex-credentials")?.status,
+    "warn",
+  );
+});
+
+test("quadrant: Codex on, AI Gateway on — both pass, activeProvider is codex", async () => {
+  process.env.VERCEL = "1";
+  _setAiGatewayTokenOverrideForTesting("oidc-token");
+
+  const contract = await buildDeploymentContract({ meta: metaWithCodex(true) });
+  assert.equal(contract.activeProvider, "codex");
+  assert.equal(contract.codexAuth, "configured");
+  assert.equal(
+    contract.requirements.find((r) => r.id === "ai-gateway")?.status,
+    "pass",
+  );
+  assert.equal(
+    contract.requirements.find((r) => r.id === "codex-credentials")?.status,
+    "pass",
+  );
+});
+
+test("quadrant: Codex on, AI Gateway off — gateway downgraded to pass because codex active", async () => {
+  process.env.VERCEL = "1";
+  delete process.env.AI_GATEWAY_API_KEY;
+  _setAiGatewayTokenOverrideForTesting(undefined);
+
+  const contract = await buildDeploymentContract({ meta: metaWithCodex(true) });
+  assert.equal(contract.activeProvider, "codex");
+  assert.equal(contract.codexAuth, "configured");
+
+  const gw = contract.requirements.find((r) => r.id === "ai-gateway");
+  assert.ok(gw);
+  assert.equal(
+    gw.status,
+    "pass",
+    "AI Gateway must be downgraded to pass when Codex is the active provider",
+  );
+  assert.match(gw.message, /Codex/i);
+
+  assert.equal(
+    contract.requirements.find((r) => r.id === "codex-credentials")?.status,
+    "pass",
+  );
+  // Codex opt-in warn should never fail contract; and gateway is downgraded,
+  // so provider readiness should not push contract.ok to false (other blockers
+  // like missing store may still fail — assert gateway itself doesn't).
+  const gwFailing = contract.requirements
+    .filter((r) => r.status === "fail")
+    .some((r) => r.id === "ai-gateway");
+  assert.equal(gwFailing, false);
+});
+
+test("codex expired creds still make Codex the active provider", async () => {
+  process.env.VERCEL = "1";
+  _setAiGatewayTokenOverrideForTesting("oidc-token");
+
+  const expiredMeta = {
+    codexCredentials: {
+      access: "expired-access",
+      refresh: "refresh",
+      expires: Date.now() - 1_000_000,
+      updatedAt: Date.now() - 1_000_000,
+    },
+  } as unknown as SingleMeta;
+
+  const contract = await buildDeploymentContract({ meta: expiredMeta });
+  assert.equal(contract.activeProvider, "codex");
+  assert.equal(contract.codexAuth, "configured");
+});
+
+test("codex-credentials is never fail — opt-in is warn at worst", async () => {
+  process.env.VERCEL = "1";
+  _setAiGatewayTokenOverrideForTesting("oidc-token");
+
+  const contract = await buildDeploymentContract({ meta: metaWithCodex(false) });
+  const codexReq = contract.requirements.find((r) => r.id === "codex-credentials");
+  assert.ok(codexReq);
+  assert.notEqual(codexReq.status, "fail");
 });

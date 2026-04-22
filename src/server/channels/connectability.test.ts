@@ -14,6 +14,23 @@ import {
 } from "@/server/channels/webhook-urls";
 import { buildDeploymentContract } from "@/server/deployment-contract";
 import { _setAiGatewayTokenOverrideForTesting } from "@/server/env";
+import { _resetStoreForTesting, getStore } from "@/server/store/store";
+import type { SingleMeta } from "@/shared/types";
+
+async function seedCodexCredentials(): Promise<void> {
+  const codexStub = {
+    codexCredentials: {
+      access: "codex-access",
+      refresh: "codex-refresh",
+      expires: Date.now() + 3_600_000,
+      updatedAt: Date.now(),
+    },
+    gatewayToken: "stub-gateway-token",
+    id: "test-instance",
+    version: 1,
+  } as unknown as SingleMeta;
+  await getStore().setMeta(codexStub);
+}
 
 const ORIGINAL_ENV = { ...process.env };
 const LOCAL_ORIGIN = "http://localhost:3000";
@@ -49,6 +66,7 @@ function makeRequest(origin: string): Request {
 afterEach(() => {
   resetEnv();
   _setAiGatewayTokenOverrideForTesting(null);
+  _resetStoreForTesting();
 });
 
 test("fails when the webhook url is not public https", async () => {
@@ -633,4 +651,80 @@ test("webhook-proxied channels include mode field", async () => {
     const result = await buildChannelConnectability(channel, request);
     assert.equal(result.mode, "webhook-proxied", `${channel} should be webhook-proxied`);
   }
+});
+
+// ---------------------------------------------------------------------------
+// Codex as a satisfying alternative to AI Gateway
+// ---------------------------------------------------------------------------
+
+test("Codex creds satisfy AI Gateway requirement — channel connects on Vercel without OIDC", async () => {
+  process.env.VERCEL = "1";
+  process.env.NEXT_PUBLIC_APP_URL = PUBLIC_ORIGIN;
+  process.env.VERCEL_AUTOMATION_BYPASS_SECRET = "bypass";
+  process.env.REDIS_URL = "redis://default:token@example.com:6379";
+  process.env.OPENCLAW_PACKAGE_SPEC = "openclaw@1.0.0";
+  process.env.CRON_SECRET = "test-cron-secret";
+  delete process.env.AI_GATEWAY_API_KEY;
+  _setAiGatewayTokenOverrideForTesting(undefined);
+  await seedCodexCredentials();
+
+  const result = await buildChannelConnectability(
+    "slack",
+    makeRequest(PUBLIC_ORIGIN),
+  );
+
+  assert.equal(
+    result.canConnect,
+    true,
+    "channel must connect when Codex is configured even without AI Gateway",
+  );
+  const gwIssue = result.issues.find((i) => i.id === "ai-gateway");
+  assert.equal(
+    gwIssue,
+    undefined,
+    "ai-gateway should not be an issue when Codex is the active provider",
+  );
+});
+
+test("codex-credentials is never a channel-blocking issue", async () => {
+  process.env.VERCEL = "1";
+  process.env.NEXT_PUBLIC_APP_URL = PUBLIC_ORIGIN;
+  process.env.VERCEL_AUTOMATION_BYPASS_SECRET = "bypass";
+  process.env.REDIS_URL = "redis://default:token@example.com:6379";
+  process.env.OPENCLAW_PACKAGE_SPEC = "openclaw@1.0.0";
+  process.env.CRON_SECRET = "test-cron-secret";
+  _setAiGatewayTokenOverrideForTesting("oidc-token");
+  // No codex creds seeded — codex-credentials is "warn" on the contract
+
+  const result = await buildChannelConnectability(
+    "slack",
+    makeRequest(PUBLIC_ORIGIN),
+  );
+
+  assert.equal(result.canConnect, true);
+  const codexIssue = result.issues.find((i) => i.id === "codex-credentials");
+  assert.equal(
+    codexIssue,
+    undefined,
+    "codex-credentials warn should never appear as a channel issue",
+  );
+});
+
+test("both AI Gateway and Codex missing still blocks channels on Vercel", async () => {
+  process.env.VERCEL = "1";
+  process.env.NEXT_PUBLIC_APP_URL = PUBLIC_ORIGIN;
+  process.env.REDIS_URL = "redis://default:token@example.com:6379";
+  delete process.env.AI_GATEWAY_API_KEY;
+  _setAiGatewayTokenOverrideForTesting(undefined);
+  // No codex creds seeded
+
+  const result = await buildChannelConnectability(
+    "slack",
+    makeRequest(PUBLIC_ORIGIN),
+  );
+
+  assert.equal(result.canConnect, false);
+  const gwIssue = result.issues.find((i) => i.id === "ai-gateway");
+  assert.ok(gwIssue, "ai-gateway issue must still surface when neither provider is available");
+  assert.equal(gwIssue.status, "fail");
 });

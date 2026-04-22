@@ -8,6 +8,7 @@ export type DeploymentRequirementId =
   | "webhook-bypass"
   | "store"
   | "ai-gateway"
+  | "codex-credentials"
   | "openclaw-package-spec"
   | "oauth-client-id"
   | "oauth-client-secret"

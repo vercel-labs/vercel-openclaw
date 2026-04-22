@@ -9,6 +9,8 @@ import {
 import type { OpenclawPackageSpecConfig } from "@/server/env";
 import { logDebug, logInfo, logWarn } from "@/server/log";
 import { getProtectionBypassSecret, resolvePublicOrigin } from "@/server/public-url";
+import { getStore } from "@/server/store/store";
+import type { SingleMeta } from "@/shared/types";
 
 // Re-export shared types so existing consumers keep working.
 export type {
@@ -38,6 +40,8 @@ export type DeploymentContract = {
   authMode: "admin-secret" | "sign-in-with-vercel";
   storeBackend: "redis" | "memory";
   aiGatewayAuth: "oidc" | "api-key" | "unavailable";
+  codexAuth: "configured" | "unavailable";
+  activeProvider: "ai-gateway" | "codex";
   openclawPackageSpec: string | null;
   openclawPackageSpecSource: "explicit" | "fallback";
   requirements: DeploymentRequirement[];
@@ -45,6 +49,12 @@ export type DeploymentContract = {
 
 export type BuildDeploymentContractOptions = {
   request?: Request;
+  /**
+   * Optional meta override. When omitted, buildDeploymentContract() reads
+   * meta from the store — callers that already have meta in hand can pass
+   * it to avoid a redundant read. Passing `null` skips the read entirely.
+   */
+  meta?: SingleMeta | null;
 };
 
 // ---------------------------------------------------------------------------
@@ -218,8 +228,21 @@ function checkCronSecret(onVercel: boolean): DeploymentRequirement {
 function checkAiGateway(
   onVercel: boolean,
   aiGatewayAuth: "oidc" | "api-key" | "unavailable",
+  activeProvider: "ai-gateway" | "codex",
 ): DeploymentRequirement {
   if (aiGatewayAuth === "unavailable") {
+    // When Codex is the active provider, AI Gateway is not required.
+    // Downgrade to pass so preflight does not block on it.
+    if (activeProvider === "codex") {
+      return {
+        id: "ai-gateway",
+        status: "pass",
+        message:
+          "AI Gateway is not configured, but Codex credentials are active and supersede it.",
+        remediation: "",
+        env: [],
+      };
+    }
     return {
       id: "ai-gateway",
       status: onVercel ? "fail" : "warn",
@@ -240,6 +263,31 @@ function checkAiGateway(
       ? "AI Gateway auth uses OIDC."
       : "AI Gateway auth uses a static API key.",
     remediation: "",
+    env: [],
+  };
+}
+
+function checkCodexCredentials(
+  codexAuth: "configured" | "unavailable",
+): DeploymentRequirement {
+  if (codexAuth === "configured") {
+    return {
+      id: "codex-credentials",
+      status: "pass",
+      message: "Codex credentials are configured.",
+      remediation: "",
+      env: [],
+    };
+  }
+
+  // Codex is opt-in — missing credentials are never a fail, only a warn.
+  return {
+    id: "codex-credentials",
+    status: "warn",
+    message:
+      "Codex credentials are not configured. OpenClaw's openai-codex provider is unavailable until they are set.",
+    remediation:
+      "Configure Codex credentials in the admin panel if you want to use the openai-codex provider.",
     env: [],
   };
 }
@@ -359,6 +407,36 @@ function checkSessionSecret(
 // Contract builder
 // ---------------------------------------------------------------------------
 
+/**
+ * Returns true when the operator has configured Codex credentials on meta,
+ * regardless of whether they are currently expired. Even expired creds mean
+ * the operator has chosen Codex as the active provider — callers that need
+ * a stricter "usable now" check should consult the credential expiry field
+ * directly. Inlined here while Unit 1 (canonical `isCodexActive`) is not yet
+ * merged; once merged, import that helper instead.
+ */
+function isCodexActiveFromMeta(meta: SingleMeta | null | undefined): boolean {
+  if (!meta) return false;
+  return (meta as unknown as { codexCredentials?: unknown }).codexCredentials != null;
+}
+
+async function resolveMeta(
+  options: BuildDeploymentContractOptions,
+): Promise<SingleMeta | null> {
+  if (options.meta !== undefined) {
+    return options.meta;
+  }
+
+  try {
+    return await getStore().getMeta();
+  } catch (error) {
+    logWarn("deployment_contract.meta_read_failed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+}
+
 export async function buildDeploymentContract(
   options: BuildDeploymentContractOptions = {},
 ): Promise<DeploymentContract> {
@@ -377,6 +455,10 @@ export async function buildDeploymentContract(
     aiGatewayAuth = "unavailable";
   }
 
+  const codexActive = isCodexActiveFromMeta(await resolveMeta(options));
+  const codexAuth = codexActive ? "configured" : "unavailable";
+  const activeProvider = codexActive ? "codex" : "ai-gateway";
+
   const openclawPackageSpecConfig = getOpenclawPackageSpecConfig();
 
   const requirements = [
@@ -384,7 +466,8 @@ export async function buildDeploymentContract(
     checkWebhookBypass(),
     checkStore(onVercel),
     checkCronSecret(onVercel),
-    checkAiGateway(onVercel, aiGatewayAuth),
+    checkAiGateway(onVercel, aiGatewayAuth, activeProvider),
+    checkCodexCredentials(codexAuth),
     checkOpenclawPackageSpec(onVercel, openclawPackageSpecConfig),
     checkOauthClientId(authMode),
     checkOauthClientSecret(authMode),
@@ -398,6 +481,8 @@ export async function buildDeploymentContract(
     authMode,
     storeBackend,
     aiGatewayAuth,
+    codexAuth,
+    activeProvider,
     onVercel,
     openclawPackageSpecSource: openclawPackageSpecConfig.source,
     requirementIds: requirements.map((r) => `${r.id}:${r.status}`),
@@ -408,6 +493,8 @@ export async function buildDeploymentContract(
     authMode,
     storeBackend,
     aiGatewayAuth,
+    codexAuth,
+    activeProvider,
     openclawPackageSpec: openclawPackageSpecConfig.value,
     openclawPackageSpecSource: openclawPackageSpecConfig.source,
     requirements,

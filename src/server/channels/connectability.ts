@@ -122,11 +122,17 @@ function contractRequirementToIssue(
  * Contract requirements that affect determinism or benchmarking but do not
  * prevent channels from functioning. These are excluded from channel
  * connectability checks.
+ *
+ * `codex-credentials` is opt-in and warn-only — never a hard blocker. When
+ * Codex is configured, the contract downgrades `ai-gateway` to pass, so
+ * channels can connect without AI Gateway. When Codex is not configured,
+ * AI Gateway remains the blocker (if unavailable).
  */
 const NON_CHANNEL_BLOCKING_REQUIREMENTS: Set<string> = new Set([
   "openclaw-package-spec",
   "webhook-bypass",
   "cron-secret",
+  "codex-credentials",
 ]);
 
 function collectContractIssues(
@@ -232,6 +238,7 @@ export async function buildChannelPrerequisite(
     issueCount: issues.length,
     issueIds: issues.map((i) => i.id),
     excludedContractIds,
+    activeProvider: contract.activeProvider,
   });
 
   return buildResult(channel, webhookUrl, issues);

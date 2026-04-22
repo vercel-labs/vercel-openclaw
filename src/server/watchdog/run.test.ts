@@ -64,6 +64,8 @@ function makeDeps(overrides: Partial<Parameters<typeof runSandboxWatchdog>[1]> =
       authMode: "admin-secret" as const,
       storeBackend: "redis" as const,
       aiGatewayAuth: "oidc" as const,
+      codexAuth: "unavailable" as const,
+      activeProvider: "ai-gateway" as const,
       openclawPackageSpec: "openclaw@1.2.3",
       openclawPackageSpecSource: "explicit" as const,
       requirements: [],

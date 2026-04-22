@@ -40,6 +40,7 @@ export type PreflightCheckId =
   | "webhook-bypass"
   | "store"
   | "ai-gateway"
+  | "codex-credentials"
   | "openclaw-package-spec"
   | "auth-config"
   | "bootstrap-exposure"
@@ -50,6 +51,7 @@ export type PreflightActionId =
   | "configure-webhook-bypass"
   | "configure-redis"
   | "configure-ai-gateway-auth"
+  | "configure-codex-credentials"
   | "configure-openclaw-package-spec"
   | "configure-oauth"
   | "configure-cron-secret";
@@ -89,6 +91,8 @@ export type PreflightPayload = {
   deploymentProtectionDetected: boolean;
   storeBackend: "redis" | "memory";
   aiGatewayAuth: "oidc" | "api-key" | "unavailable";
+  codexAuth: "configured" | "unavailable";
+  activeProvider: "ai-gateway" | "codex";
   cronSecretConfigured: boolean;
   cronSecretExplicitlyConfigured: boolean;
   cronSecretSource: ReturnType<typeof getCronSecretConfig>["source"];
@@ -198,6 +202,7 @@ const EXPLICITLY_HANDLED_REQUIREMENT_IDS = new Set([
   "webhook-bypass",
   "store",
   "ai-gateway",
+  "codex-credentials",
   "cron-secret",
 ]);
 
@@ -530,6 +535,8 @@ export async function buildDeployPreflight(
   const storeBackend = contract.storeBackend;
 
   const aiGatewayAuth = contract.aiGatewayAuth;
+  const codexAuth = contract.codexAuth;
+  const activeProvider = contract.activeProvider;
 
   const cronState = buildCronPreflightState();
   const webhookDiagnostics = buildWebhookDiagnostics(
@@ -553,6 +560,7 @@ export async function buildDeployPreflight(
   const contractOriginReq = byId.get("public-origin");
   const contractStoreReq = byId.get("store");
   const contractGatewayReq = byId.get("ai-gateway");
+  const contractCodexReq = byId.get("codex-credentials");
   const packageSpecReq = byId.get("openclaw-package-spec");
   const cronSecretReq = byId.get("cron-secret");
 
@@ -600,13 +608,24 @@ export async function buildDeployPreflight(
       message: contractStoreReq?.message ??
         "Using in-memory state. Channel reliability requires Redis in production.",
     },
-    // ai-gateway — derived from contract (warn locally, fail on Vercel)
+    // ai-gateway — derived from contract (warn locally, fail on Vercel).
+    // When Codex is the active provider, the contract downgrades this to pass.
     {
       id: "ai-gateway",
       status: (contractGatewayReq?.status ?? "fail") as PreflightStatus,
       message: contractGatewayReq?.message ??
         "OIDC token is not available.",
     },
+    // codex-credentials — pass when configured, warn otherwise (opt-in).
+    ...(contractCodexReq
+      ? [
+          {
+            id: "codex-credentials" as const,
+            status: contractCodexReq.status as PreflightStatus,
+            message: contractCodexReq.message,
+          },
+        ]
+      : []),
     // Contract-derived checks
     ...(packageSpecReq
       ? [
@@ -672,6 +691,8 @@ export async function buildDeployPreflight(
     deploymentProtectionDetected,
     storeBackend,
     aiGatewayAuth,
+    codexAuth,
+    activeProvider,
     ...cronState,
     publicOriginResolution,
     webhookDiagnostics,
@@ -696,6 +717,8 @@ export async function buildDeployPreflight(
     deploymentProtectionDetected: payload.deploymentProtectionDetected,
     storeBackend: payload.storeBackend,
     aiGatewayAuth: payload.aiGatewayAuth,
+    codexAuth: payload.codexAuth,
+    activeProvider: payload.activeProvider,
     ...cronState,
     actionCount: payload.actions.length,
     consumedContractIds,
