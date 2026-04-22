@@ -43,6 +43,10 @@ export function tokenRefreshLockKey(): string {
   return buildKey("lock:token-refresh");
 }
 
+export function codexTokenRefreshLockKey(): string {
+  return buildKey("lock:codex-token-refresh");
+}
+
 export function cronNextWakeKey(): string {
   return buildKey("cron-next-wake-ms");
 }

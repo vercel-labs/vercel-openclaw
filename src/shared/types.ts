@@ -320,6 +320,27 @@ export type CronRestoreOutcome =
   | "store-invalid";
 
 /**
+ * Credentials for OpenClaw's openai-codex provider.
+ *
+ * Presence of this field activates the Codex provider inside the sandbox;
+ * absence falls back to the AI Gateway broker. Refresh tokens are rotated
+ * by the OpenAI auth service on every refresh, so this record is treated
+ * as the single source of truth and rewritten atomically.
+ */
+export type CodexCredentials = {
+  /** Short-lived OAuth access token (JWT, typically ~1 hour TTL). */
+  access: string;
+  /** Long-lived OAuth refresh token (~30 days), rotated on every refresh. */
+  refresh: string;
+  /** Absolute ms-since-epoch when the access token expires. */
+  expires: number;
+  /** Optional chatgpt_account_id claim extracted from the access token. */
+  accountId?: string | null;
+  /** Ms-since-epoch when this record was last written to meta. */
+  updatedAt: number;
+};
+
+/**
  * Structured record persisted to the store as `CRON_JOBS_KEY`.
  * Wraps the raw jobs.json with metadata for change detection,
  * staleness checks, and partial-loss detection.
@@ -463,6 +484,9 @@ export type SingleMeta = {
   restoreOracle: RestoreOracleState;
   /** Optional hot-spare sandbox candidate state (feature-flagged, disabled by default). */
   hotSpare?: HotSpareState;
+  /** OpenClaw Codex provider credentials. When present, the sandbox uses
+   *  the openai-codex provider instead of the AI Gateway broker. */
+  codexCredentials?: CodexCredentials | null;
 };
 
 export const CURRENT_SCHEMA_VERSION = 3;
@@ -733,7 +757,27 @@ export function ensureMetaShape(
     ...((raw as Record<string, unknown>).hotSpare
       ? { hotSpare: ensureHotSpareState((raw as Record<string, unknown>).hotSpare) }
       : {}),
+    ...(isCodexCredentials((raw as Record<string, unknown>).codexCredentials)
+      ? {
+          codexCredentials: (raw as Record<string, unknown>)
+            .codexCredentials as CodexCredentials,
+        }
+      : {}),
   };
+}
+
+function isCodexCredentials(value: unknown): value is CodexCredentials {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const v = value as Record<string, unknown>;
+  return (
+    typeof v.access === "string" &&
+    typeof v.refresh === "string" &&
+    typeof v.expires === "number" &&
+    typeof v.updatedAt === "number" &&
+    (v.accountId === undefined ||
+      v.accountId === null ||
+      typeof v.accountId === "string")
+  );
 }
 
 export const DOMAIN_PRESETS: Record<string, { label: string; domains: string[] }> = {

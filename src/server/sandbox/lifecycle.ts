@@ -20,6 +20,7 @@ import {
   resolveAiGatewayCredentialOptional,
   isVercelDeployment,
 } from "@/server/env";
+import { refreshCodexCredentialsIfExpiring } from "@/server/codex/refresh";
 import { applyFirewallPolicyToSandbox, toNetworkPolicy } from "@/server/firewall/policy";
 import { logError, logInfo, logWarn } from "@/server/log";
 import { setupOpenClaw, CommandFailedError } from "@/server/openclaw/bootstrap";
@@ -2666,6 +2667,26 @@ async function createAndBootstrapSandboxWithinLifecycleLock(
         "OIDC may be temporarily unavailable — retry will be attempted automatically.";
     });
     return getInitializedMeta();
+  }
+
+  // Preemptively refresh Codex credentials if the operator has connected the
+  // openai-codex provider and the access token is nearing expiry. Failures
+  // here are logged but do not block startup — the sandbox will start with
+  // stale creds, OpenClaw will retry on its own, and the next ensure cycle
+  // will try again.
+  try {
+    const codexRefresh = await refreshCodexCredentialsIfExpiring({ meta: current });
+    if (codexRefresh.refreshed) {
+      logInfo("sandbox.codex.refreshed_before_restore", ctx({}));
+    } else if (codexRefresh.error) {
+      logWarn("sandbox.codex.refresh_failed_before_restore", ctx({
+        error: codexRefresh.error,
+      }));
+    }
+  } catch (err) {
+    logWarn("sandbox.codex.refresh_threw_before_restore", ctx({
+      error: err instanceof Error ? err.message : String(err),
+    }));
   }
 
   await clearSetupProgress(instanceId);
