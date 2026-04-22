@@ -57,6 +57,16 @@ Policy details that matter to automation:
 - `warningChannelIds` is deprecated (compatibility alias for `failingChannelIds`); prefer `failingChannelIds` in new automation.
 - Admin-visible URLs must never include the `x-vercel-protection-bypass` secret.
 
+### Testing the Codex provider locally
+
+To exercise the `openai-codex` provider end-to-end against a dev server:
+
+1. Ensure you have a local `~/.codex/auth.json` (OpenAI Codex CLI) or `~/.openclaw/agents/<agentId>/agent/auth-profiles.json` (OpenClaw onboarding).
+2. Run `pnpm dev` in admin-secret mode (unset `VERCEL_AUTH_MODE`).
+3. Sign in, open the **OpenAI Codex** panel, paste the JSON, and click **Connect**.
+4. Stop the sandbox, then resume it.
+5. Check `GET /api/status` — `activeProvider` should be `"codex"`. Send a completion through `/gateway` to confirm routing.
+
 ### Remote smoke testing
 
 ```bash

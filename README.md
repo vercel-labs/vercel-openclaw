@@ -191,6 +191,21 @@ Switching to `VERCEL_AUTH_MODE=sign-in-with-vercel` also requires `NEXT_PUBLIC_V
 
 See [docs/environment-variables.md](docs/environment-variables.md) for the full reference, including optional tuning (vCPU count, sleep timeout, version pinning) and alternative auth modes.
 
+## Using your ChatGPT / Codex subscription (optional)
+
+Route inference through OpenClaw's `openai-codex` provider using your ChatGPT Plus/Pro/Team subscription (GPT-5.4). AI Gateway remains the default when no Codex credentials are configured.
+
+1. On your local machine, install openclaw and run `openclaw onboard --auth-choice openai-codex` (or `openclaw models auth login --provider openai-codex`). This creates `~/.openclaw/agents/<agentId>/agent/auth-profiles.json`. If you already use the OpenAI `codex` CLI, `~/.codex/auth.json` also works.
+2. Copy the JSON payload: `cat ~/.codex/auth.json` (or the openclaw path above).
+3. In the deployed admin UI, open the **OpenAI Codex** panel, paste the JSON, and click **Connect**.
+4. Stop and resume the sandbox. `GET /api/status` should report `activeProvider: "codex"`.
+
+Caveats:
+
+- **Refresh-token rotation.** OpenAI rotates the refresh token on every refresh. If you run the `codex` CLI locally on the same account while this app is also active, one side will invalidate the other's refresh token. Either avoid dual-use or re-paste after local rotation.
+- **Embeddings.** ChatGPT subscriptions do not grant embeddings API access. OpenClaw skills that depend on embeddings still require a separate `OPENAI_API_KEY`.
+- **Egress.** Codex mode allows `chatgpt.com` and `auth.openai.com` in the firewall; in enforcing mode these are always added, regardless of your user allowlist.
+
 ## Local development
 
 ```bash
