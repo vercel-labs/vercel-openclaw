@@ -7,6 +7,7 @@ import {
   type ChannelDedupLock,
 } from "@/server/channels/dedup";
 import { recordChannelDlqFailure } from "@/server/channels/dlq";
+import { refreshChannelFastPathGatewayToken } from "@/server/channels/fast-path-token";
 import { getPublicOrigin } from "@/server/public-url";
 import { channelDedupKey } from "@/server/channels/keys";
 import { drainChannelWorkflow } from "@/server/workflows/channels/drain-channel-workflow";
@@ -19,7 +20,7 @@ import { deleteMessage, sendMessage } from "@/server/channels/telegram/bot-api";
 import { extractRequestId, logError, logInfo, logWarn } from "@/server/log";
 import { createOperationContext, withOperationContext } from "@/server/observability/operation-context";
 import { OPENCLAW_TELEGRAM_WEBHOOK_PORT } from "@/server/openclaw/config";
-import { ensureFreshGatewayToken, getSandboxDomain, reconcileStaleRunningStatus } from "@/server/sandbox/lifecycle";
+import { getSandboxDomain, reconcileStaleRunningStatus } from "@/server/sandbox/lifecycle";
 
 // The fast path awaits the native handler's full turn (including long
 // AI work like image generation). This timeout guards against wedged
@@ -229,6 +230,12 @@ export async function POST(request: Request): Promise<Response> {
         const sandboxWebhookUrl = await getSandboxDomain(OPENCLAW_TELEGRAM_WEBHOOK_PORT);
         const forwardUrl = `${sandboxWebhookUrl}/telegram-webhook`;
         const fastPathStartedAt = Date.now();
+        await refreshChannelFastPathGatewayToken({
+          channel: "telegram",
+          requestId: requestId ?? null,
+          sandboxId: effectiveMeta.sandboxId,
+          op,
+        });
         const fastPathHeaders: Record<string, string> = {
           "content-type": "application/json",
           "x-telegram-bot-api-secret-token": secretHeader,
@@ -259,23 +266,42 @@ export async function POST(request: Request): Promise<Response> {
             bodyLength: forwardBody.length,
             bodyHead: forwardBody.slice(0, 200),
             responseHeaders: forwardHeaders,
+            suspiciousEmpty200,
           }));
           return Response.json({ ok: true });
         }
 
         // Fast path did not genuinely deliver. Fall through to the workflow
-        // wake path so Telegram is not silently dropped.
-        logWarn("channels.telegram_fast_path_fallback_to_workflow", withOperationContext(op, {
-          reason: suspiciousEmpty200 ? "suspicious_empty_200" : "non_ok",
-          status: forwardResponse.status,
-          sandboxId: effectiveMeta.sandboxId,
-          forwardUrl,
-          durationMs: fastPathDurationMs,
-          bodyLength: forwardBody.length,
-          bodyHead: forwardBody.slice(0, 200),
-          responseHeaders: forwardHeaders,
-          action: "start_drain_channel_workflow",
-        }));
+        // wake path so Telegram is not silently dropped. Distinguish gateway
+        // errors (502/503/504, sandbox unreachable) from suspicious-empty-200
+        // and other non-OK results for log triage.
+        const telegramFallbackReason =
+          suspiciousEmpty200
+            ? "suspicious_empty_200"
+            : forwardResponse.status === 502 ||
+                forwardResponse.status === 503 ||
+                forwardResponse.status === 504
+              ? "gateway_error"
+              : "non_ok";
+        logWarn(
+          telegramFallbackReason === "gateway_error"
+            ? "channels.telegram_fast_path_gateway_error"
+            : "channels.telegram_fast_path_fallback_to_workflow",
+          withOperationContext(op, {
+            reason: telegramFallbackReason,
+            status: forwardResponse.status,
+            sandboxId: effectiveMeta.sandboxId,
+            forwardUrl,
+            durationMs: fastPathDurationMs,
+            bodyLength: forwardBody.length,
+            bodyHead: forwardBody.slice(0, 200),
+            responseHeaders: forwardHeaders,
+            action:
+              telegramFallbackReason === "gateway_error"
+                ? "reconcile_and_wake"
+                : "start_drain_channel_workflow",
+          }),
+        );
         const staleMeta = effectiveMeta;
         effectiveMeta = await reconcileStaleRunningStatus();
         logInfo("channels.telegram_fast_path_reconciled", withOperationContext(op, {

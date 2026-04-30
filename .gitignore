@@ -46,3 +46,7 @@ next-env.d.ts
 /pnpm
 /tsx
 /.demo/
+.mcp.json
+.codex
+.claude/
+bun.lock

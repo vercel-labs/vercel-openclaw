@@ -23,6 +23,8 @@ import {
   resetAfterCallbacks,
 } from "@/test-utils/route-caller";
 import { telegramWebhookWorkflowRuntime } from "@/app/api/channels/telegram/webhook/route";
+import { _setAiGatewayTokenOverrideForTesting } from "@/server/env";
+import { getServerLogs, _resetLogBuffer } from "@/server/log";
 
 const TELEGRAM_WEBHOOK_SECRET = "test-telegram-webhook-secret-direct";
 
@@ -380,6 +382,75 @@ test("Telegram webhook: fast path fires when status=running AND telegramListener
       resetAfterCallbacks();
     } finally {
       startMock.mock.restore();
+    }
+  });
+});
+
+test("Telegram webhook: fast path refreshes AI Gateway token before native forward", async () => {
+  await withHarness(async (h) => {
+    await configureTelegram(h);
+    _resetLogBuffer();
+    _setAiGatewayTokenOverrideForTesting("fresh-telegram-fast-path-token");
+    await h.mutateMeta((meta) => {
+      meta.status = "running";
+      meta.sandboxId = "sbx-telegram-token-refresh";
+      meta.snapshotId = "snap-telegram-token-refresh";
+      meta.portUrls = {
+        "3000": "https://sbx-telegram-token-refresh-3000.fake.vercel.run",
+        "8787": "https://sbx-telegram-token-refresh-8787.fake.vercel.run",
+      };
+      meta.lastTokenRefreshAt = Date.now() - 60 * 60 * 1000;
+      meta.lastTokenExpiresAt = Math.floor(Date.now() / 1000) - 60;
+      meta.lastTokenSource = "oidc";
+      meta.lastRestoreMetrics = {
+        sandboxCreateMs: 0,
+        tokenWriteMs: 0,
+        assetSyncMs: 0,
+        startupScriptMs: 0,
+        forcePairMs: 0,
+        firewallSyncMs: 0,
+        localReadyMs: 0,
+        publicReadyMs: 0,
+        totalMs: 0,
+        skippedStaticAssetSync: false,
+        assetSha256: null,
+        vcpus: 1,
+        recordedAt: Date.now(),
+        telegramListenerReady: true,
+      };
+    });
+    await h.controller.get({ sandboxId: "sbx-telegram-token-refresh" });
+
+    let networkPolicyCountAtForward = -1;
+    h.fakeFetch.onPost(/telegram-webhook$/, () => {
+      networkPolicyCountAtForward =
+        h.controller.getHandle("sbx-telegram-token-refresh")?.networkPolicies.length ?? -1;
+      return new Response("ok", { status: 200 });
+    });
+
+    const route = getTelegramWebhookRoute();
+    const startMock = mock.method(telegramWebhookWorkflowRuntime, "start", async () => {});
+
+    try {
+      const result = await callRoute(
+        route.POST,
+        buildTelegramWebhook({ webhookSecret: TELEGRAM_WEBHOOK_SECRET }),
+      );
+      assert.equal(result.status, 200);
+      assert.equal(startMock.mock.callCount(), 0);
+      assert.equal(
+        networkPolicyCountAtForward,
+        1,
+        "AI Gateway network policy must be refreshed before native Telegram forward",
+      );
+      assert.ok(
+        getServerLogs().some((entry) => entry.message === "channels.fast_path_token_refresh"),
+        "token refresh outcome should be logged for fast-path triage",
+      );
+      resetAfterCallbacks();
+    } finally {
+      startMock.mock.restore();
+      _setAiGatewayTokenOverrideForTesting(null);
     }
   });
 });

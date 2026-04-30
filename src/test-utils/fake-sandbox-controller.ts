@@ -342,6 +342,7 @@ export class FakeSandboxHandle implements SandboxHandle {
 export class FakeSandboxController implements SandboxController {
   created: FakeSandboxHandle[] = [];
   retrieved: string[] = [];
+  getCalls: Array<{ sandboxId: string; resume?: boolean }> = [];
   handlesByIds = new Map<string, FakeSandboxHandle>();
 
   /** Ordered event log shared across all handles. */
@@ -406,8 +407,9 @@ export class FakeSandboxController implements SandboxController {
     return handle;
   }
 
-  async get(params: { sandboxId: string }): Promise<SandboxHandle> {
+  async get(params: { sandboxId: string; resume?: boolean }): Promise<SandboxHandle> {
     this.retrieved.push(params.sandboxId);
+    this.getCalls.push({ sandboxId: params.sandboxId, resume: params.resume });
     const existing = this.handlesByIds.get(params.sandboxId);
     if (existing) {
       return existing;

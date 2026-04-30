@@ -525,8 +525,10 @@ export async function POST(request: Request): Promise<Response> {
     const queryMode = url.searchParams.get("mode");
     let bodyMode: string | undefined;
     try {
-      const body = (await request.json()) as { mode?: string };
-      bodyMode = body.mode;
+      const body = (await request.json()) as { mode?: string; destructive?: boolean };
+      // Legacy vclaw clients (<= 0.3.8) sent `{ destructive: true }`; accept
+      // both shapes so older deployers keep working.
+      bodyMode = body.mode ?? (body.destructive === true ? "destructive" : undefined);
     } catch {
       // No JSON body — use query param or default to safe.
     }

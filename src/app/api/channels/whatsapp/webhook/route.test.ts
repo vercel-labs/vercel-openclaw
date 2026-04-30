@@ -4,6 +4,8 @@ import test from "node:test";
 
 import { whatsappWebhookWorkflowRuntime } from "@/app/api/channels/whatsapp/webhook/route";
 import { channelDedupKey } from "@/server/channels/keys";
+import { _setAiGatewayTokenOverrideForTesting } from "@/server/env";
+import { getServerLogs, _resetLogBuffer } from "@/server/log";
 import { getStore } from "@/server/store/store";
 import { FakeSandboxHandle } from "@/test-utils/fake-sandbox-controller";
 import { withHarness, type ScenarioHarness } from "@/test-utils/harness";
@@ -161,7 +163,7 @@ test("WhatsApp webhook: duplicate message id is deduplicated", async () => {
   });
 });
 
-test("WhatsApp webhook: fast path non-ok response returns 200 without falling through to workflow", async () => {
+test("WhatsApp webhook: fast path gateway response falls through to workflow", async () => {
   await withHarness(async (h) => {
     await configureWhatsApp(h);
     await h.mutateMeta((meta) => {
@@ -187,8 +189,96 @@ test("WhatsApp webhook: fast path non-ok response returns 200 without falling th
       assert.deepEqual(result.json, { ok: true });
       assert.equal(
         startMock.mock.callCount(),
+        1,
+        "workflow must start when the native handler returned a gateway error so the event is not silently dropped",
+      );
+      resetAfterCallbacks();
+    } finally {
+      startMock.mock.restore();
+    }
+  });
+});
+
+test("WhatsApp webhook: fast path refreshes AI Gateway token before native forward", async () => {
+  await withHarness(async (h) => {
+    await configureWhatsApp(h);
+    _resetLogBuffer();
+    _setAiGatewayTokenOverrideForTesting("fresh-whatsapp-fast-path-token");
+    await h.mutateMeta((meta) => {
+      meta.status = "running";
+      meta.sandboxId = "sbx-whatsapp-token-refresh";
+      meta.snapshotId = "snap-whatsapp-token-refresh";
+      meta.portUrls = {
+        "3000": "https://sbx-whatsapp-token-refresh-3000.fake.vercel.run",
+      };
+      meta.lastTokenRefreshAt = Date.now() - 60 * 60 * 1000;
+      meta.lastTokenExpiresAt = Math.floor(Date.now() / 1000) - 60;
+      meta.lastTokenSource = "oidc";
+    });
+    await h.controller.get({ sandboxId: "sbx-whatsapp-token-refresh" });
+
+    let networkPolicyCountAtForward = -1;
+    h.fakeFetch.onPost(/whatsapp-webhook$/, () => {
+      networkPolicyCountAtForward =
+        h.controller.getHandle("sbx-whatsapp-token-refresh")?.networkPolicies.length ?? -1;
+      return new Response("ok", { status: 200 });
+    });
+
+    const route = getWhatsAppWebhookRoute();
+    const startMock = mock.method(whatsappWebhookWorkflowRuntime, "start", async () => {});
+
+    try {
+      const result = await callRoute(
+        route.POST,
+        buildWhatsAppWebhook({ appSecret: APP_SECRET }),
+      );
+      assert.equal(result.status, 200);
+      assert.equal(startMock.mock.callCount(), 0);
+      assert.equal(
+        networkPolicyCountAtForward,
+        1,
+        "AI Gateway network policy must be refreshed before native WhatsApp forward",
+      );
+      assert.ok(
+        getServerLogs().some((entry) => entry.message === "channels.fast_path_token_refresh"),
+        "token refresh outcome should be logged for fast-path triage",
+      );
+      resetAfterCallbacks();
+    } finally {
+      startMock.mock.restore();
+      _setAiGatewayTokenOverrideForTesting(null);
+    }
+  });
+});
+
+test("WhatsApp webhook: fast path non-gateway response returns 200 without workflow", async () => {
+  await withHarness(async (h) => {
+    await configureWhatsApp(h);
+    await h.mutateMeta((meta) => {
+      meta.status = "running";
+      meta.sandboxId = "sbx-whatsapp-handler-error";
+      meta.snapshotId = "snap-whatsapp-handler-error";
+      meta.portUrls = {
+        "3000": "https://sbx-whatsapp-handler-error-3000.fake.vercel.run",
+      };
+    });
+
+    h.fakeFetch.onPost(/whatsapp-webhook$/, () =>
+      new Response("handler rejected", { status: 500 }),
+    );
+
+    const route = getWhatsAppWebhookRoute();
+    const startMock = mock.method(whatsappWebhookWorkflowRuntime, "start", async () => {});
+
+    try {
+      const req = buildWhatsAppWebhook({ appSecret: APP_SECRET });
+      const result = await callRoute(route.POST, req);
+      assert.equal(result.status, 200);
+      assert.deepEqual(result.json, { ok: true });
+      assert.equal(
+        startMock.mock.callCount(),
         0,
-        "workflow must NOT start when native handler returned an HTTP response (even non-2xx) to avoid duplicate delivery",
+        "workflow must not start when a non-gateway handler response means the payload reached the native handler",
       );
       resetAfterCallbacks();
     } finally {

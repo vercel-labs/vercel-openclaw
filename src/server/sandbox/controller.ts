@@ -84,7 +84,7 @@ export interface SandboxHandle {
 
 export interface SandboxController {
   create(params: CreateParams): Promise<SandboxHandle>;
-  get(params: { sandboxId: string }): Promise<SandboxHandle>;
+  get(params: { sandboxId: string; resume?: boolean }): Promise<SandboxHandle>;
 }
 
 // ---------------------------------------------------------------------------
@@ -184,7 +184,7 @@ const realController: SandboxController = {
   },
   async get(params) {
     const { Sandbox: SandboxClass } = await import("@vercel/sandbox");
-    const sandbox = await SandboxClass.get({ name: params.sandboxId });
+    const sandbox = await SandboxClass.get({ name: params.sandboxId, resume: params.resume });
     return wrapSandbox(sandbox);
   },
 };

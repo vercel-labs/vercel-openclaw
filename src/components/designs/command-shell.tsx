@@ -9,6 +9,7 @@ import type {
   StatusPayload,
 } from "@/components/admin-types";
 import { requestJsonCore } from "@/components/admin-action-core";
+import { useSandboxStatusPoll } from "@/components/use-sandbox-status";
 import { ChannelsPanel } from "@/components/panels/channels-panel";
 import type { LogEntry, LogLevel, LogSource, SnapshotRecord } from "@/shared/types";
 import type { AdminFaqPayload } from "@/shared/admin-faq";
@@ -351,18 +352,25 @@ export function CommandShell({ initialStatus, initialView = "status" }: Props) {
     }
   }, []);
 
+  // Adaptive /api/status polling: 3s during transitional states (snapshotting,
+  // creating, setup, restoring, booting) and 30s otherwise, paused when the
+  // tab is hidden. See use-sandbox-status.ts.
+  const { isFastPolling, triggerImmediateRefresh } = useSandboxStatusPoll({
+    refresh: refreshStatus,
+    status: status?.status ?? null,
+    enabled: status !== null,
+  });
+
   useEffect(() => {
     if (!status) return;
-    refreshStatus();
+    // Initial logs fetch — status hook handles its own initial fetch.
     refreshLogs();
-    const sId = setInterval(refreshStatus, 5000);
     const paused = !logsLive || logsHoverPaused;
     const lId = paused ? null : setInterval(refreshLogs, 3000);
     return () => {
-      clearInterval(sId);
       if (lId) clearInterval(lId);
     };
-  }, [status, refreshStatus, refreshLogs, logsLive, logsHoverPaused]);
+  }, [status, refreshLogs, logsLive, logsHoverPaused]);
 
   // Keyboard: Escape collapses all expanded log rows in main view.
   useEffect(() => {
@@ -416,19 +424,26 @@ export function CommandShell({ initialStatus, initialView = "status" }: Props) {
       action: string,
       input: RequestInit & { label: string; refreshAfter?: boolean },
     ): Promise<ActionResult<T>> => {
+      const isLifecycleMutation =
+        action === "/api/admin/stop" ||
+        action === "/api/admin/ensure" ||
+        action === "/api/admin/reset";
+      const refresh = isLifecycleMutation
+        ? async () => triggerImmediateRefresh()
+        : refreshStatus;
       return requestJsonCore<T>(
         action,
         { ...input, toastSuccess: false },
         {
           setPendingAction: (label) => setPending(label),
           setStatus: () => setStatus(null),
-          refreshPassive: refreshStatus,
+          refreshPassive: refresh,
           toastSuccess: () => {},
           toastError: (msg) => toast.error(msg),
         },
       );
     },
-    [refreshStatus],
+    [refreshStatus, triggerImmediateRefresh],
   );
 
   const runAction = useCallback(
@@ -479,7 +494,18 @@ export function CommandShell({ initialStatus, initialView = "status" }: Props) {
         }
         setActionMsg(`${label} ok`);
         actionMsgTimerRef.current = setTimeout(() => setActionMsg(null), 3000);
-        await refreshStatus();
+        // Lifecycle-mutating endpoints push the sandbox into a transitional
+        // state. Force fast-poll so the badge tracks the state machine
+        // without waiting for the slow 30s cadence.
+        if (
+          path === "/api/admin/stop" ||
+          path === "/api/admin/ensure" ||
+          path === "/api/admin/reset"
+        ) {
+          triggerImmediateRefresh();
+        } else {
+          await refreshStatus();
+        }
         await refreshLogs();
         return { ok: true, data: payload };
       } catch (err) {
@@ -490,7 +516,7 @@ export function CommandShell({ initialStatus, initialView = "status" }: Props) {
         setPending(null);
       }
     },
-    [refreshStatus, refreshLogs],
+    [refreshStatus, refreshLogs, triggerImmediateRefresh],
   );
 
   // Snapshot fetch
@@ -884,7 +910,10 @@ export function CommandShell({ initialStatus, initialView = "status" }: Props) {
             <div className="hero-panel">
               <div className="hero-info">
                 <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                  <div className="status-badge">
+                  <div
+                    className={`status-badge${isFastPolling ? " status-badge-pulse" : ""}`}
+                    aria-live="polite"
+                  >
                     <span className={`status-dot ${tone}`}></span>
                     {status.status.toUpperCase()}
                   </div>

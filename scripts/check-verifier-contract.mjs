@@ -57,7 +57,6 @@ if (!existsSync(makefilePath)) {
 const docFiles = [
   "README.md",
   "CLAUDE.md",
-  ".claude/skills/vercel-openclaw-testing/SKILL.md",
 ];
 const disallowedPatterns = [
   { pattern: /\bnpm(?:\s+run)?\s+(?:test|lint|typecheck|build)\b/g, label: "npm run <step>" },
@@ -355,18 +354,6 @@ const docsSurfaceRequirements = [
     snippet: "terminal `result` event carries the same extended payload",
     label: "launch-verify NDJSON result payload docs",
     optional: false,
-  },
-  {
-    files: [".claude/skills/vercel-openclaw-testing/SKILL.md"],
-    snippet: "node scripts/verify.mjs",
-    label: "testing skill canonical verify entrypoint",
-    optional: true,
-  },
-  {
-    files: [".claude/skills/vercel-openclaw-testing/SKILL.md"],
-    snippet: "check-deploy-readiness.mjs",
-    label: "testing skill remote readiness entrypoint",
-    optional: true,
   },
 ];
 

@@ -12,12 +12,21 @@ import type {
   RunAction,
 } from "@/components/admin-types";
 import type { SingleStatus } from "@/shared/types";
+import {
+  isSnapshottingWedged,
+  useSnapshottingFirstSeenMs,
+} from "@/components/use-sandbox-status";
 
 type StatusPanelProps = {
   status: StatusPayload;
   busy: boolean;
   pendingAction: string | null;
   runAction: RunAction;
+  /**
+   * When true the badge gets a subtle pulse so operators can tell the UI is
+   * actively monitoring (fast-poll cadence). Optional for tests / SSR.
+   */
+  isFastPolling?: boolean;
 };
 
 const NEEDS_RESTART = new Set<SingleStatus>(["error", "stopped", "uninitialized"]);
@@ -328,8 +337,15 @@ export function StatusPanel({
   busy,
   pendingAction,
   runAction,
+  isFastPolling = false,
 }: StatusPanelProps) {
   const { confirm: confirmStop, dialogProps: stopDialogProps } = useConfirm();
+
+  const snapshottingSinceMs = useSnapshottingFirstSeenMs(status.status);
+  const showWedgeBanner = isSnapshottingWedged(
+    status.status,
+    snapshottingSinceMs,
+  );
 
   const lifecycleStatus = status.status as SingleStatus;
   const effectiveStatus = deriveEffectiveStatus(
@@ -348,6 +364,13 @@ export function StatusPanel({
   function handleRestart(): void {
     void runAction("/api/admin/ensure", {
       label: primaryActionLabel,
+      method: "POST",
+    });
+  }
+
+  function handleResetWedge(): void {
+    void runAction("/api/admin/reset", {
+      label: "Reset sandbox",
       method: "POST",
     });
   }
@@ -398,8 +421,35 @@ export function StatusPanel({
         <div>
           <h2>Sandbox status</h2>
         </div>
-        <StatusBadge status={displayStatus} />
+        <span
+          className={isFastPolling ? "status-badge-pulse" : undefined}
+          aria-live="polite"
+        >
+          <StatusBadge status={displayStatus} />
+        </span>
       </div>
+
+      {showWedgeBanner ? (
+        <div className="error-banner" role="alert">
+          <p className="error-banner-headline">
+            Snapshot taking longer than expected.
+          </p>
+          <p className="error-banner-detail">
+            The sandbox may be wedged in the snapshotting state. If it does not
+            resolve shortly you can reset the sandbox to recover.
+          </p>
+          <div className="hero-actions">
+            <button
+              type="button"
+              className="button danger"
+              disabled={busy}
+              onClick={handleResetWedge}
+            >
+              Reset sandbox
+            </button>
+          </div>
+        </div>
+      ) : null}
 
       <dl className="metrics-grid">
         {primaryFacts.map((fact) => (

@@ -241,6 +241,11 @@ export async function runLaunchVerifyCompletion(options: {
               Authorization: `Bearer ${gatewayToken}`,
               "X-AI-Gateway-Token": gatewayToken,
               "x-openclaw-scopes": OPENCLAW_OPERATOR_SCOPES,
+              // Probe header: a bundle-safe deterministic branch in OpenClaw's
+              // /v1/chat/completions handler returns this token directly,
+              // bypassing the agent/onboarding path that otherwise answers a
+              // freshly-booted sandbox in character.
+              "x-openclaw-launch-verify-token": options.expectedText,
             },
             body: JSON.stringify({
               model: "openclaw",
