@@ -6,6 +6,7 @@ import {
   type ChannelDedupLock,
 } from "@/server/channels/dedup";
 import { recordChannelDlqFailure } from "@/server/channels/dlq";
+import { refreshChannelFastPathGatewayToken } from "@/server/channels/fast-path-token";
 import { hasWhatsAppBusinessCredentials } from "@/shared/channels";
 import { getPublicOrigin } from "@/server/public-url";
 import { channelDedupKey } from "@/server/channels/keys";
@@ -175,14 +176,11 @@ export async function POST(request: Request): Promise<Response> {
     // processing cycle (including long AI tasks like image generation).
     // Fluid Compute bills only for CPU cycles, not idle wait time.
     //
-    // On ANY HTTP response (2xx or not), return 200 — the native handler
-    // received the payload and may have started processing.  Falling through
-    // to the workflow would forward the same payload again, causing duplicate
-    // delivery (e.g. the same image sent multiple times).
-    //
-    // Only on network-level failure (fetch throws — connection refused, DNS
-    // failure) is it safe to fall through: the native handler never received
-    // the payload, so the workflow can retry without duplication.
+    // Return 200 when the native handler succeeds, or when it returns a
+    // non-gateway HTTP error that proves the handler received the payload.
+    // Gateway-level 502/503/504 responses and network failures mean the
+    // sandbox process may be unreachable, so reconcile and fall through to the
+    // workflow wake path.
     let effectiveMeta = meta;
     if (effectiveMeta.status === "running" && effectiveMeta.sandboxId) {
       const forwardHeaders: Record<string, string> = {};
@@ -202,6 +200,12 @@ export async function POST(request: Request): Promise<Response> {
 
       try {
         const sandboxUrl = await getSandboxDomain();
+        await refreshChannelFastPathGatewayToken({
+          channel: "whatsapp",
+          requestId: requestId ?? null,
+          sandboxId: effectiveMeta.sandboxId,
+          op,
+        });
         const forwardResponse = await fetch(`${sandboxUrl}/whatsapp-webhook`, {
           method: "POST",
           headers: forwardHeaders,
@@ -213,15 +217,23 @@ export async function POST(request: Request): Promise<Response> {
             sandboxId: effectiveMeta.sandboxId,
             deliveryId: fastPathDeliveryId,
           }));
+          return Response.json({ ok: true });
+        }
+
+        if (forwardResponse.status === 502 || forwardResponse.status === 503 || forwardResponse.status === 504) {
+          logWarn("channels.whatsapp_fast_path_gateway_error", withOperationContext(op, {
+            sandboxId: effectiveMeta.sandboxId,
+            status: forwardResponse.status,
+            action: "reconcile_and_wake",
+          }));
+          effectiveMeta = await reconcileStaleRunningStatus();
         } else {
           logWarn("channels.whatsapp_fast_path_non_ok", withOperationContext(op, {
             sandboxId: effectiveMeta.sandboxId,
             status: forwardResponse.status,
           }));
+          return Response.json({ ok: true });
         }
-        // Any HTTP response means the native handler received the payload.
-        // Return 200 to avoid duplicate delivery via the workflow path.
-        return Response.json({ ok: true });
       } catch (error) {
         // Network-level failure or AbortSignal timeout — sandbox may or
         // may not have received the payload. Reconcile stale status and

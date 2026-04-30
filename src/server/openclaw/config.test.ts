@@ -31,8 +31,10 @@ import {
   buildReasoningSkill,
   buildReasoningScript,
   buildCompareSkill,
-  buildCompareScript,
-  OPENCLAW_FORCE_PAIR_SCRIPT_PATH,
+	buildCompareScript,
+	OPENCLAW_BUNDLE_PATH,
+	OPENCLAW_BUNDLED_PLUGINS_DIR_PATH,
+	OPENCLAW_FORCE_PAIR_SCRIPT_PATH,
   OPENCLAW_STATE_DIR,
   OPENCLAW_TELEGRAM_WEBHOOK_HOST,
   OPENCLAW_TELEGRAM_INTERNAL_WEBHOOK_PATH,
@@ -1257,6 +1259,31 @@ test("buildFastRestoreScript fails fast when @buape/carbon is missing instead of
   assert.ok(
     exitLine >= 0 && exitLine - checkLine <= 2,
     "exit 1 must immediately follow the missing_dependency log",
+  );
+});
+
+test("buildFastRestoreScript validates bundle runtime marker before legacy npm dependency", () => {
+  const script = buildFastRestoreScript();
+
+  assert.ok(
+    script.includes(`[ -f "${OPENCLAW_BUNDLE_PATH}" ]`),
+    "expected bundle runtime branch",
+  );
+  assert.ok(
+    script.includes("fast_restore.missing_runtime"),
+    "expected bundle missing runtime event",
+  );
+
+  const bundleBranch = script.indexOf(`[ -f "${OPENCLAW_BUNDLE_PATH}" ]`);
+  const missingRuntime = script.indexOf("fast_restore.missing_runtime");
+  const legacyCarbon = script.indexOf("fast_restore.missing_dependency");
+
+  assert.ok(bundleBranch >= 0, "bundle branch must exist");
+  assert.ok(missingRuntime > bundleBranch, "bundle branch should report missing runtime");
+  assert.ok(legacyCarbon > missingRuntime, "legacy npm dependency check should be fallback only");
+  assert.ok(
+    script.includes(`export OPENCLAW_BUNDLED_PLUGINS_DIR="${OPENCLAW_BUNDLED_PLUGINS_DIR_PATH}"`),
+    "fast restore should set bundle plugin discovery directory",
   );
 });
 

@@ -7,6 +7,7 @@ import {
   type ChannelDedupLock,
 } from "@/server/channels/dedup";
 import { recordChannelDlqFailure } from "@/server/channels/dlq";
+import { refreshChannelFastPathGatewayToken } from "@/server/channels/fast-path-token";
 import { getPublicOrigin } from "@/server/public-url";
 import {
   channelDedupKey,
@@ -285,24 +286,24 @@ export async function POST(request: Request): Promise<Response> {
   // reply arriving means the dead-time fill has served its purpose.
   if (eventInfo.botId) {
     if (eventInfo.channel) {
-      // Bot replies always include thread_ts equal to the user's thread
-      // root. The write side keys pending-boot by the same root so this
-      // cleanup only touches the boot for this specific thread.
-      const botReplyRoot =
+      // The write side keys pending-boot by Slack's actual thread_ts.
+      //   Threaded reply: bot.thread_ts == root → scope = thread_ts.
+      //   Top-level reply: no thread_ts, and the bot's own ts is unrelated
+      //     to the user message ts, so neither side can derive that ts.
+      //     Both sides use scope=undefined (channel-wide top-level list).
+      const botReplyThreadTs =
         typeof eventInfo.threadTs === "string" && eventInfo.threadTs.length > 0
           ? eventInfo.threadTs
-          : typeof eventInfo.ts === "string" && eventInfo.ts.length > 0
-            ? eventInfo.ts
-            : null;
+          : undefined;
       const pendingKey = channelPendingBootMessageKey(
         "slack",
         eventInfo.channel,
-        botReplyRoot ?? undefined,
+        botReplyThreadTs,
       );
       const pendingLockKey = channelPendingBootMessageLockKey(
         "slack",
         eventInfo.channel,
-        botReplyRoot ?? undefined,
+        botReplyThreadTs,
       );
       const pendingLockToken = await getStore()
         .acquireLock(pendingLockKey, 5)
@@ -437,6 +438,13 @@ export async function POST(request: Request): Promise<Response> {
       const sandboxUrl = await getSandboxDomain();
       const forwardUrl = `${sandboxUrl}/slack/events`;
 
+      await refreshChannelFastPathGatewayToken({
+        channel: "slack",
+        requestId: requestId ?? null,
+        sandboxId: effectiveMeta.sandboxId,
+        op,
+      });
+
       logInfo("channels.slack_fast_path_forwarding", withOperationContext(op, {
         sandboxId: effectiveMeta.sandboxId,
         forwardUrl,
@@ -463,12 +471,23 @@ export async function POST(request: Request): Promise<Response> {
 
       // Native handler returned non-2xx — fall through to workflow wake path
       // so the event is not silently dropped. Slack does not retry on our 200.
-      logWarn("channels.slack_fast_path_fallback_to_workflow", withOperationContext(op, {
-        status: resp.status,
-        sandboxId: effectiveMeta.sandboxId,
-        action: "start_drain_channel_workflow",
-        ...eventInfo,
-      }));
+      // Distinguish gateway errors (502/503/504, sandbox unreachable) from
+      // other non-2xx (handler may already be processing) for log triage.
+      const slackFallbackIsGatewayError =
+        resp.status === 502 || resp.status === 503 || resp.status === 504;
+      logWarn(
+        slackFallbackIsGatewayError
+          ? "channels.slack_fast_path_gateway_error"
+          : "channels.slack_fast_path_fallback_to_workflow",
+        withOperationContext(op, {
+          status: resp.status,
+          sandboxId: effectiveMeta.sandboxId,
+          action: slackFallbackIsGatewayError
+            ? "reconcile_and_wake"
+            : "start_drain_channel_workflow",
+          ...eventInfo,
+        }),
+      );
       effectiveMeta = await reconcileStaleRunningStatus();
     } catch (error) {
       // Network-level failure or AbortSignal timeout — native handler

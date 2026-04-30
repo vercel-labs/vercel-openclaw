@@ -18,7 +18,6 @@ const CANDIDATE_PATHS = [
   "CLAUDE.md",
   "Makefile",
   ".github/workflows",
-  ".claude/skills",
   "scripts",
 ];
 
@@ -105,6 +104,8 @@ const EXCLUDED_FILES = new Set([
   "scripts/test-self-heal.ts",
   "scripts/vendor-openclaw-runtime-artifact.mjs",
   "scripts/bench-sandbox-direct.mjs",
+  "scripts/bench-bundle-bootstrap.mjs",
+  "scripts/bench-sdk-snapshot.mjs",
 ]);
 
 // Exclude directories whose contents legitimately shell out to npm inside
@@ -112,13 +113,6 @@ const EXCLUDED_FILES = new Set([
 const EXCLUDED_DIR_PREFIXES = [
   "scripts/experiments/",
 ];
-
-// Files that describe sandbox behavior (including the npm install it runs
-// today). These document operator-visible surface of the sandbox boot, not
-// host tooling.
-const SANDBOX_DOC_FILES = new Set([
-  ".claude/skills/vercel-openclaw-testing/SKILL.md",
-]);
 
 const packageJsonPath = join(ROOT, "package.json");
 let packageManager = null;
@@ -136,8 +130,7 @@ const findings = files
   .filter(
     (f) =>
       !EXCLUDED_FILES.has(f.file) &&
-      !EXCLUDED_DIR_PREFIXES.some((prefix) => f.file.startsWith(prefix)) &&
-      !SANDBOX_DOC_FILES.has(f.file),
+      !EXCLUDED_DIR_PREFIXES.some((prefix) => f.file.startsWith(prefix)),
   );
 
 const result = {

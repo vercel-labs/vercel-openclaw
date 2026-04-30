@@ -43,6 +43,7 @@ import {
 } from "@/server/observability/operation-context";
 import {
   OPENCLAW_BIN,
+  OPENCLAW_BUNDLE_PATH,
   OPENCLAW_CONFIG_PATH,
   OPENCLAW_FAST_RESTORE_SCRIPT_PATH,
   OPENCLAW_GATEWAY_RESTART_SCRIPT_PATH,
@@ -209,6 +210,57 @@ test("stopSandbox transitions to snapshotting and preserves sandboxId", async ()
     const handle = fake.getHandle("sbx-running-1");
     assert.ok(handle, "handle should exist");
     assert.equal(handle.stopCalled, true);
+    assert.equal(handle.lastStopOptions?.blocking, false);
+  });
+});
+
+test("stopSandbox parks meta before the SDK stop resolves", async () => {
+  const fake = new FakeSandboxController();
+  await withTestEnv(fake, async () => {
+    await mutateMeta((meta) => {
+      meta.status = "running";
+      meta.sandboxId = "sbx-stop-race";
+      meta.portUrls = { "3000": "https://sbx-stop-race-3000.fake.vercel.run" };
+    });
+
+    const handle = new FakeSandboxHandle("sbx-stop-race", fake.events);
+    fake.handlesByIds.set("sbx-stop-race", handle);
+
+    let resolveStop!: () => void;
+    const stopStarted = new Promise<void>((resolve) => {
+      handle.stop = async (options?: { blocking?: boolean }) => {
+        handle.stopCalled = true;
+        handle.lastStopOptions = options;
+        resolve();
+        await new Promise<void>((innerResolve) => {
+          resolveStop = innerResolve;
+        });
+        handle.setStatus("snapshotting");
+      };
+    });
+
+    const stopPromise = stopSandbox();
+    await stopStarted;
+
+    const duringStop = await getInitializedMeta();
+    assert.equal(
+      duringStop.status,
+      "snapshotting",
+      "metadata must leave running before the SDK stop call can race heartbeats",
+    );
+
+    const callsBeforeHeartbeat = fake.getCalls.length;
+    const heartbeatMeta = await touchRunningSandbox();
+    assert.equal(heartbeatMeta.status, "snapshotting");
+    assert.equal(
+      fake.getCalls.length,
+      callsBeforeHeartbeat,
+      "heartbeat must not look up or resume a sandbox once stop has parked snapshotting",
+    );
+
+    resolveStop();
+    const result = await stopPromise;
+    assert.equal(result.status, "snapshotting");
     assert.equal(handle.lastStopOptions?.blocking, false);
   });
 });
@@ -488,6 +540,10 @@ test("reconcileSnapshottingStatus leaves meta unchanged while SDK still snapshot
 
     const reconciled = await reconcileSnapshottingStatus();
     assert.equal(reconciled.status, "snapshotting");
+    assert.deepEqual(fake.getCalls.at(-1), {
+      sandboxId: handle.sandboxId,
+      resume: false,
+    });
   });
 });
 
@@ -1146,6 +1202,74 @@ test("restoreSandboxFromSnapshot resume syncs config regardless of stale snapsho
       assert.ok(meta.lastRestoreMetrics, "Should have restore metrics");
       assert.ok(meta.lastRestoreMetrics.totalMs >= 0, "Should have totalMs");
     } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+test("persistent bundle resume without snapshotId takes fast-restore path", async () => {
+  const fake = new FakeSandboxController();
+  const originalFetch = globalThis.fetch;
+
+  await withTestEnv(fake, async () => {
+    await mutateMeta((meta) => {
+      meta.status = "stopped";
+      meta.snapshotId = null;
+      meta.sandboxId = LIFECYCLE_SANDBOX_NAME;
+      meta.gatewayToken = "test-gw-token";
+    });
+
+    const handle = new FakeSandboxHandle(LIFECYCLE_SANDBOX_NAME, fake.events);
+    handle.responders.push(...fake.defaultResponders);
+    handle.responders.push((cmd, args) => {
+      if (
+        cmd === "bash" &&
+        args?.[0] === "-c" &&
+        args[1]?.includes(OPENCLAW_BUNDLE_PATH)
+      ) {
+        return {
+          exitCode: 0,
+          output: async (stream?: "stdout" | "stderr" | "both") => {
+            if (stream === "stderr") return "";
+            return "yes\n";
+          },
+        };
+      }
+      return undefined;
+    });
+    fake.handlesByIds.set(LIFECYCLE_SANDBOX_NAME, handle);
+
+    globalThis.fetch = async () =>
+      new Response('<div id="openclaw-app"></div>', { status: 200 });
+
+    try {
+      _setAiGatewayTokenOverrideForTesting("test-ai-key");
+      let scheduledCallback: (() => Promise<void> | void) | null = null;
+
+      await ensureSandboxRunning({
+        origin: "https://test.example.com",
+        reason: "bundle-resume-test",
+        schedule(cb) { scheduledCallback = cb; },
+      });
+
+      assert.ok(scheduledCallback, "Background resume work should have been scheduled");
+      await (scheduledCallback as () => Promise<void>)();
+
+      const fastRestoreCommand = handle.commands.find(
+        (c) => c.cmd === "bash" && c.args?.[0] === OPENCLAW_FAST_RESTORE_SCRIPT_PATH,
+      );
+      assert.ok(fastRestoreCommand, "bundle runtime marker should route to fast restore");
+
+      const fullBootstrapCommand = handle.commands.find(
+        (c) => c.cmd === "bash" && c.args?.[1]?.includes("curl -fsSL") && c.args?.[1]?.includes(OPENCLAW_BUNDLE_PATH),
+      );
+      assert.equal(fullBootstrapCommand, undefined, "resume must not re-download the bundle");
+
+      const meta = await getInitializedMeta();
+      assert.equal(meta.status, "running");
+      assert.ok(meta.lastRestoreMetrics, "fast restore metrics should be recorded");
+    } finally {
+      _setAiGatewayTokenOverrideForTesting(null);
       globalThis.fetch = originalFetch;
     }
   });

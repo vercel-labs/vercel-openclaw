@@ -29,6 +29,8 @@ import {
   resetAfterCallbacks,
 } from "@/test-utils/route-caller";
 import { slackWebhookWorkflowRuntime } from "@/app/api/channels/slack/webhook/route";
+import { _setAiGatewayTokenOverrideForTesting } from "@/server/env";
+import { getServerLogs, _resetLogBuffer } from "@/server/log";
 
 const SLACK_SIGNING_SECRET = "test-slack-signing-secret-direct";
 
@@ -283,6 +285,108 @@ test("Slack webhook: fast path non-ok response falls through to workflow wake pa
       resetAfterCallbacks();
     } finally {
       startMock.mock.restore();
+    }
+  });
+});
+
+test("Slack webhook: fast path refreshes AI Gateway token before native forward", async () => {
+  await withHarness(async (h) => {
+    await configureSlack(h);
+    _resetLogBuffer();
+    _setAiGatewayTokenOverrideForTesting("fresh-slack-fast-path-token");
+    await h.mutateMeta((meta) => {
+      meta.status = "running";
+      meta.sandboxId = "sbx-slack-token-refresh";
+      meta.snapshotId = "snap-slack-token-refresh";
+      meta.portUrls = {
+        "3000": "https://sbx-slack-token-refresh-3000.fake.vercel.run",
+      };
+      meta.lastTokenRefreshAt = Date.now() - 60 * 60 * 1000;
+      meta.lastTokenExpiresAt = Math.floor(Date.now() / 1000) - 60;
+      meta.lastTokenSource = "oidc";
+    });
+    await h.controller.get({ sandboxId: "sbx-slack-token-refresh" });
+
+    let networkPolicyCountAtForward = -1;
+    h.fakeFetch.onPost(/slack\/events$/, () => {
+      networkPolicyCountAtForward =
+        h.controller.getHandle("sbx-slack-token-refresh")?.networkPolicies.length ?? -1;
+      return new Response("ok", { status: 200 });
+    });
+
+    const route = getSlackWebhookRoute();
+    const startMock = mock.method(slackWebhookWorkflowRuntime, "start", async () => {});
+
+    try {
+      const result = await callRoute(
+        route.POST,
+        buildSlackWebhook({ signingSecret: SLACK_SIGNING_SECRET }),
+      );
+      assert.equal(result.status, 200);
+      assert.equal(startMock.mock.callCount(), 0);
+      assert.equal(
+        networkPolicyCountAtForward,
+        1,
+        "AI Gateway network policy must be refreshed before native Slack forward",
+      );
+      assert.ok(
+        getServerLogs().some((entry) => entry.message === "channels.fast_path_token_refresh"),
+        "token refresh outcome should be logged for fast-path triage",
+      );
+      resetAfterCallbacks();
+    } finally {
+      startMock.mock.restore();
+      _setAiGatewayTokenOverrideForTesting(null);
+    }
+  });
+});
+
+test("Slack webhook: fast path token refresh failure logs and still forwards", async () => {
+  await withHarness(async (h) => {
+    await configureSlack(h);
+    _resetLogBuffer();
+    _setAiGatewayTokenOverrideForTesting("fresh-slack-fast-path-token");
+    await h.mutateMeta((meta) => {
+      meta.status = "running";
+      meta.sandboxId = "sbx-slack-token-refresh-fails";
+      meta.snapshotId = "snap-slack-token-refresh-fails";
+      meta.portUrls = {
+        "3000": "https://sbx-slack-token-refresh-fails-3000.fake.vercel.run",
+      };
+      meta.lastTokenRefreshAt = Date.now() - 60 * 60 * 1000;
+      meta.lastTokenExpiresAt = Math.floor(Date.now() / 1000) - 60;
+      meta.lastTokenSource = "oidc";
+    });
+    const handle = await h.controller.get({ sandboxId: "sbx-slack-token-refresh-fails" });
+    (handle as { networkPolicyHandler?: () => Promise<never> }).networkPolicyHandler = async () => {
+      throw new Error("network policy unavailable");
+    };
+
+    let forwarded = false;
+    h.fakeFetch.onPost(/slack\/events$/, () => {
+      forwarded = true;
+      return new Response("ok", { status: 200 });
+    });
+
+    const route = getSlackWebhookRoute();
+    const startMock = mock.method(slackWebhookWorkflowRuntime, "start", async () => {});
+
+    try {
+      const result = await callRoute(
+        route.POST,
+        buildSlackWebhook({ signingSecret: SLACK_SIGNING_SECRET }),
+      );
+      assert.equal(result.status, 200);
+      assert.equal(startMock.mock.callCount(), 0);
+      assert.equal(forwarded, true, "fast path should continue after refresh failure");
+      assert.ok(
+        getServerLogs().some((entry) => entry.message === "channels.fast_path_token_refresh"),
+        "refresh failure should still produce a structured token outcome log",
+      );
+      resetAfterCallbacks();
+    } finally {
+      startMock.mock.restore();
+      _setAiGatewayTokenOverrideForTesting(null);
     }
   });
 });

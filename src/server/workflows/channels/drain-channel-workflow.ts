@@ -157,7 +157,7 @@ function coercePendingBootTsList(value: unknown): string[] {
  */
 async function appendSlackPendingBootTs(
   slackChannel: string,
-  threadRoot: string,
+  threadRoot: string | undefined,
   bootTs: string,
 ): Promise<void> {
   const listKey = channelPendingBootMessageKey("slack", slackChannel, threadRoot);
@@ -1153,18 +1153,30 @@ export async function processChannelStep(
           };
         } | null;
         const slackChannel = slackPayload?.event?.channel;
-        // Scope the pending-boot key to the thread root so multiple
-        // concurrent posts in different threads of the same channel do
-        // not collide. Top-level posts use their own ts as the root; in
-        // both cases, Slack's bot reply carries thread_ts equal to the
-        // root, so the webhook bot-message handler finds the same key.
-        const threadRoot =
-          slackPayload?.event?.thread_ts ?? slackPayload?.event?.ts ?? null;
+        // Key the pending-boot list by Slack's actual `thread_ts` so the
+        // bot-reply cleanup on the webhook side can read the same key.
+        //
+        // Threaded reply: bot reply carries thread_ts == root → both sides
+        //   agree on `<channel>:<threadTs>`.
+        // Top-level reply: bot reply has no thread_ts and its own `ts` is
+        //   unrelated to the user message ts → we cannot derive the user's
+        //   ts from the bot reply at all. Use scope=undefined (channel-wide
+        //   top-level pending-boot list) on both sides so they line up.
+        //
+        // Trade-off: concurrent top-level mentions in the same channel
+        // share one list and the first bot reply clears them all. That is
+        // strictly better than the previous behaviour, which left every
+        // top-level "🦞 Almost ready…" placeholder dangling until TTL.
+        const threadTs =
+          typeof slackPayload?.event?.thread_ts === "string" &&
+          slackPayload.event.thread_ts.length > 0
+            ? slackPayload.event.thread_ts
+            : undefined;
         const bootTs =
           typeof bootMessageId === "string" ? bootMessageId : null;
-        if (slackChannel && bootTs && threadRoot) {
+        if (slackChannel && bootTs) {
           try {
-            await appendSlackPendingBootTs(slackChannel, threadRoot, bootTs);
+            await appendSlackPendingBootTs(slackChannel, threadTs, bootTs);
           } catch {
             // Best effort — if the store write fails the boot message will
             // just stay until the next reply makes it harmless.

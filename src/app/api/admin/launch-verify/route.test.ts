@@ -407,6 +407,13 @@ test("launch-verify POST: chatCompletions sends X-AI-Gateway-Token header", asyn
         capturedHeaders["authorization"].startsWith("Bearer "),
         "Authorization should be a Bearer token",
       );
+      // Probe header lets the bundled OpenClaw gateway short-circuit the agent
+      // path and reply with the expected token directly.
+      assert.equal(
+        capturedHeaders["x-openclaw-launch-verify-token"],
+        "launch-verify-ok",
+        "chatCompletions should send x-openclaw-launch-verify-token header matching expectedText",
+      );
     }
     // Verify mode is still correctly parsed regardless of phase outcomes
     assert.equal(body.mode, "safe");

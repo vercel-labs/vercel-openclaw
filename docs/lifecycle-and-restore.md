@@ -30,6 +30,41 @@ The work is scheduled with `after()` so the API responds immediately with a wait
 
 Today, stopping and snapshotting both use the same flow: stop the sandbox. The v2 SDK automatically takes a snapshot on stop. There is no separate manual snapshot step. If that changes in the future, this page and the API reference should be updated together.
 
+The stop path parks metadata in `snapshotting` before calling `sandbox.stop({ blocking: false })`. That ordering closes the race where a concurrent heartbeat still sees `running`, calls the SDK default get path, and resumes the sandbox while the stop request is being accepted. While metadata is `snapshotting`, status reconciliation must inspect the sandbox with `Sandbox.get({ resume: false })`. The SDK resumes stopped/snapshotting sandboxes by default, so a status poll that omits `resume: false` can restart the sandbox it is trying to observe and make the UI wait until the stale guardrail fires.
+
+### Measuring snapshot duration
+
+Unit tests use `FakeSandboxHandle`, so they only prove that the host parks metadata in `snapshotting`, polls, and transitions after the SDK reports `stopped`. They do not measure Vercel's real snapshot duration.
+
+Use `scripts/bench-stop-cycle.mjs` for manual ops measurements against a deployed app. Run enough completed cycles for each workload, and prefer `--sdk-poll` so the benchmark records the platform status separately from the app's 5-minute stale guardrail.
+
+For local linked-project measurements that bypass the app entirely, use `scripts/bench-sdk-snapshot.mjs`. It creates disposable persistent sandboxes through `@vercel/sandbox`, can download the same bundle artifacts used by `vclaw create`, and measures the SDK stop result directly.
+
+Example:
+
+```bash
+ADMIN_SECRET=... node scripts/bench-stop-cycle.mjs \
+  --base-url https://your-app.vercel.app \
+  --cycles=20 \
+  --workload=home-small \
+  --sdk-poll
+```
+
+The useful fields are `platformSnapshottingDurationMs` and `platformStopToStoppedMs`. App-only fields can be lower-bounded or guardrail-capped if the host force-reconciles before the platform actually leaves `snapshotting`.
+
+If app status remains `snapshotting` while `--sdk-poll` reports platform `running`, treat that as a lifecycle bug or an accidental SDK resume, not as measured snapshot duration.
+
+Local bundle example:
+
+```bash
+node --env-file=.env.local scripts/bench-sdk-snapshot.mjs \
+  --cycles=1 \
+  --workload=bundle \
+  --bundle-url https://duiylqr0ujvwgwtm.public.blob.vercel-storage.com/openclaw.bundle.mjs \
+  --start-bundle \
+  --bundle-run-ms=30000
+```
+
 ## Resume fast path
 
 Resuming a persistent sandbox from stop is faster than creating from scratch (~10s vs full bootstrap) because most of the sandbox state is preserved automatically by v2. The resume path splits files into two groups to avoid redundant work.

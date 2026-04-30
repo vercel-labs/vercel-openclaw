@@ -4,6 +4,29 @@ import { getProtectionBypassSecret } from "@/server/public-url";
 const OPENCLAW_PORT = 3000;
 
 export const OPENCLAW_BIN = "/home/vercel-sandbox/.global/npm/bin/openclaw";
+export const OPENCLAW_BUNDLE_PATH = "/home/vercel-sandbox/openclaw.bundle.mjs";
+export const OPENCLAW_BUNDLE_CMD = `node ${OPENCLAW_BUNDLE_PATH}`;
+// In bundle mode the gateway has no extensions/ tree to discover, so channel
+// plugins (slack/telegram/discord/whatsapp/...) ship as a sibling tarball
+// extracted here. The bundle's plugin discovery code reads
+// OPENCLAW_BUNDLED_PLUGINS_DIR and finds each plugin's package.json on disk.
+export const OPENCLAW_BUNDLED_PLUGINS_DIR_PATH = "/home/vercel-sandbox/extensions";
+
+export function getOpenclawBundleUrl(): string | undefined {
+  return process.env.OPENCLAW_BUNDLE_URL?.trim() || undefined;
+}
+
+export function getOpenclawBundleUiUrl(): string | undefined {
+  return process.env.OPENCLAW_BUNDLE_UI_URL?.trim() || undefined;
+}
+
+export function isUsingBundle(): boolean {
+  return Boolean(getOpenclawBundleUrl());
+}
+
+export function getOpenclawGatewayCmd(): string {
+  return isUsingBundle() ? OPENCLAW_BUNDLE_CMD : OPENCLAW_BIN;
+}
 export const BUN_INSTALL_DIR = "/home/vercel-sandbox/.bun";
 export const BUN_BIN = `${BUN_INSTALL_DIR}/bin/bun`;
 export const BUN_VERSION = "1.3.11";
@@ -142,6 +165,13 @@ function buildGatewayEnvShell(): string {
     // Skip prewarmConfiguredPrimaryModel — sandbox network isn't ready
     // during early boot, causing a 17s model discovery timeout.
     'export OPENCLAW_AGENT_RUNTIME="none"',
+    'export OPENCLAW_DISABLE_BONJOUR="1"',
+    // Bundle-mode plugin discovery: point the loader at the extracted
+    // channels tarball. Harmless in npm-install mode (the directory simply
+    // doesn't exist; the loader falls back to package-root resolution).
+    ...(isUsingBundle()
+      ? [`export OPENCLAW_BUNDLED_PLUGINS_DIR="${OPENCLAW_BUNDLED_PLUGINS_DIR_PATH}"`]
+      : []),
     `export NODE_OPTIONS="\${NODE_OPTIONS:-} --require=${OPENCLAW_NET_LEARN_PATH}"`,
   ].join("\n");
 }
@@ -211,7 +241,8 @@ function buildGatewayKillShell(): string {
 }
 
 function buildGatewayLaunchShell(): string {
-  return `setsid ${OPENCLAW_BIN} gateway --port ${OPENCLAW_PORT} --bind loopback >> ${OPENCLAW_LOG_FILE} 2>&1 &`;
+  const cmd = getOpenclawGatewayCmd();
+  return `setsid ${cmd} gateway --port ${OPENCLAW_PORT} --bind loopback >> ${OPENCLAW_LOG_FILE} 2>&1 &`;
 }
 
 /**
@@ -285,8 +316,25 @@ export function buildGatewayConfig(
     // gateway traffic reaches the sandbox.
     dangerouslyDisableDeviceAuth: true,
   };
-  if (proxyOrigin) {
-    controlUi.allowedOrigins = [proxyOrigin];
+  // Build allowedOrigins from the request-time proxyOrigin plus any Vercel
+  // env-based aliases. The user may browse the dashboard via the canonical
+  // production URL (VERCEL_PROJECT_PRODUCTION_URL) or any alias, so we accept
+  // them all to avoid origin-mismatch errors on the WebSocket upgrade.
+  const allowedOriginsSet = new Set<string>();
+  const addOrigin = (raw: string | undefined | null) => {
+    const trimmed = raw?.trim();
+    if (!trimmed) return;
+    const withScheme = trimmed.startsWith("http://") || trimmed.startsWith("https://")
+      ? trimmed
+      : `https://${trimmed}`;
+    allowedOriginsSet.add(withScheme.replace(/\/+$/, ""));
+  };
+  addOrigin(proxyOrigin);
+  addOrigin(process.env.VERCEL_PROJECT_PRODUCTION_URL);
+  addOrigin(process.env.VERCEL_BRANCH_URL);
+  addOrigin(process.env.VERCEL_URL);
+  if (allowedOriginsSet.size > 0) {
+    controlUi.allowedOrigins = Array.from(allowedOriginsSet);
   }
 
   const config: Record<string, unknown> = {
@@ -789,19 +837,29 @@ export OPENCLAW_TEST_ONLY_PROVIDER_PLUGIN_IDS="vercel-ai-gateway"
 # handler registration.  Setting OPENCLAW_AGENT_RUNTIME=none makes the
 # prewarm return immediately.  Chat completions are unaffected — they
 # resolve the model at request time, not at startup.
-export OPENCLAW_AGENT_RUNTIME="none"
-chmod +x "${OPENCLAW_DIAG_SCRIPT_PATH}" 2>/dev/null || true
+	export OPENCLAW_AGENT_RUNTIME="none"
+	export OPENCLAW_BUNDLED_PLUGINS_DIR="${OPENCLAW_BUNDLED_PLUGINS_DIR_PATH}"
+	chmod +x "${OPENCLAW_DIAG_SCRIPT_PATH}" 2>/dev/null || true
 ${buildNetLearnWriteShell()}
 export NODE_OPTIONS="\${NODE_OPTIONS:-} --require=${OPENCLAW_NET_LEARN_PATH}"
-# Integrity check: fail fast if bundled peer dependencies are missing.
-# The artifact/snapshot must ship @buape/carbon — runtime repair is not
-# acceptable because it makes restores nondeterministic.
-OC_PKG="/home/vercel-sandbox/.global/npm/lib/node_modules/openclaw"
-OC_CARBON_PATH="\$OC_PKG/node_modules/@buape/carbon"
-if [ ! -d "\$OC_CARBON_PATH" ]; then
-  echo '{"event":"fast_restore.missing_dependency","package":"@buape/carbon","path":"'\$OC_CARBON_PATH'","action":"rebuild_artifact"}' >&2
-  exit 1
-fi
+	# Integrity check: fail fast if the runtime marker is missing. Bundle
+	# deployments do not have the legacy global npm package, so validate the
+	# bundle file when present and fall back to the npm peer dependency check for
+	# package installs. Runtime repair is not acceptable because it makes restores
+	# nondeterministic.
+	if [ -f "${OPENCLAW_BUNDLE_PATH}" ]; then
+	  if [ ! -s "${OPENCLAW_BUNDLE_PATH}" ]; then
+	    echo '{"event":"fast_restore.missing_runtime","runtime":"bundle","path":"${OPENCLAW_BUNDLE_PATH}","action":"rebuild_artifact"}' >&2
+	    exit 1
+	  fi
+	else
+	  OC_PKG="/home/vercel-sandbox/.global/npm/lib/node_modules/openclaw"
+	  OC_CARBON_PATH="\$OC_PKG/node_modules/@buape/carbon"
+	  if [ ! -d "\$OC_CARBON_PATH" ]; then
+	    echo '{"event":"fast_restore.missing_dependency","package":"@buape/carbon","path":"'\$OC_CARBON_PATH'","action":"rebuild_artifact"}' >&2
+	    exit 1
+	  fi
+	fi
 # Snapshot invariant: reject snapshots that still contain the stale
 # host-scheduler skill.  It told the agent "the cron tool is disabled"
 # and directed it to a removed script.  The native cron tool works
@@ -867,7 +925,7 @@ echo '{"event":"fast_restore.start_gateway"}' >&2
 # expose socket._socket.remoteAddress, which causes isLocalClient to return
 # false and blocks device auto-pairing for local CLI/tool connections (cron,
 # gateway status, etc.).
-setsid ${OPENCLAW_BIN} gateway --port ${OPENCLAW_PORT} --bind loopback >> ${OPENCLAW_LOG_FILE} 2>&1 &
+setsid ${getOpenclawGatewayCmd()} gateway --port ${OPENCLAW_PORT} --bind loopback >> ${OPENCLAW_LOG_FILE} 2>&1 &
 echo '{"event":"fast_restore.readiness_loop"}' >&2
 case "\${1:-}" in ''|*[!0-9]*) _ready_timeout=60 ;; *) _ready_timeout=\$1 ;; esac
 _telegram_expected=0

@@ -15,9 +15,11 @@ import { getStore } from "@/server/store/store";
 import { withHarness } from "@/test-utils/harness";
 import {
   callRoute,
+  buildAuthGetRequest,
   buildPostRequest,
   callAdminPost,
   getAdminStopRoute,
+  getStatusRoute,
 } from "@/test-utils/route-caller";
 
 // ===========================================================================
@@ -37,7 +39,7 @@ test("admin/stop POST: without auth returns 401", async () => {
 // Happy path: stop from running state
 // ===========================================================================
 
-test("admin/stop POST: stops running sandbox and returns stopped status", async () => {
+test("admin/stop POST: parks running sandbox in snapshotting", async () => {
   await withHarness(async (h) => {
     await h.driveToRunning();
     const meta = await h.getMeta();
@@ -54,6 +56,53 @@ test("admin/stop POST: stops running sandbox and returns stopped status", async 
 
     const afterMeta = await h.getMeta();
     assert.equal(afterMeta.status, "snapshotting");
+  });
+});
+
+test("admin/stop POST: status polling holds snapshotting until SDK reports stopped", async () => {
+  await withHarness(async (h) => {
+    await h.driveToRunning();
+    const handle = h.controller.lastCreated();
+    assert.ok(handle, "driveToRunning should create a sandbox handle");
+
+    handle.stop = async (options?: { blocking?: boolean }) => {
+      handle.stopCalled = true;
+      handle.lastStopOptions = options;
+      handle.setStatus("snapshotting");
+    };
+
+    const stopRoute = getAdminStopRoute();
+    const statusRoute = getStatusRoute();
+
+    const stopResult = await callAdminPost(stopRoute.POST, "/api/admin/stop");
+    assert.equal(stopResult.status, 200);
+    assert.equal((stopResult.json as { status: string }).status, "snapshotting");
+    assert.equal(handle.lastStopOptions?.blocking, false);
+
+    for (let i = 0; i < 3; i += 1) {
+      const poll = await callRoute(
+        statusRoute.GET!,
+        buildAuthGetRequest("/api/status"),
+      );
+      assert.equal(poll.status, 200);
+      assert.equal(
+        (poll.json as { status: string }).status,
+        "snapshotting",
+        `poll ${i + 1} should not force stopped while SDK is still snapshotting`,
+      );
+    }
+
+    handle.setStatus("stopped");
+    const finalPoll = await callRoute(
+      statusRoute.GET!,
+      buildAuthGetRequest("/api/status"),
+    );
+    assert.equal(finalPoll.status, 200);
+    assert.equal((finalPoll.json as { status: string }).status, "stopped");
+
+    const meta = await h.getMeta();
+    assert.equal(meta.status, "stopped");
+    assert.equal(meta.sandboxId, handle.sandboxId);
   });
 });
 

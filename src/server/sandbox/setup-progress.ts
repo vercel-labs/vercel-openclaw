@@ -6,6 +6,7 @@ import { getStore } from "@/server/store/store";
 export type SetupPhase =
   | "creating-sandbox"
   | "resuming-sandbox"
+  | "downloading-bundle"
   | "installing-openclaw"
   | "installing-bun"
   | "cleaning-cache"
@@ -47,6 +48,7 @@ const ANSI_PATTERN = /\u001B\[[0-9;?]*[ -/]*[@-~]/g;
 const PHASE_LABELS: Record<SetupPhase, string> = {
   "creating-sandbox": "Creating sandbox",
   "resuming-sandbox": "Resuming sandbox",
+  "downloading-bundle": "Downloading bundle",
   "installing-openclaw": "Installing OpenClaw",
   "installing-bun": "Installing Bun",
   "cleaning-cache": "Cleaning cache",

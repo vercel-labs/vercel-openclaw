@@ -109,6 +109,8 @@ Step-by-step sequence of sandbox interactions during a proxied gateway request.
 
 Browser-injected JavaScript and the admin UI poll the status API to keep the sandbox alive.
 
+The admin UI fast-polls transitional lifecycle states, including `snapshotting`, so a Stop action keeps reading `/api/status` until the SDK-confirmed state changes. The UI only shows the snapshotting wedge warning after the server's 5-minute stale guardrail has had time to run.
+
 #### POST /api/status
 
 Called by the injected browser JavaScript every `heartbeatIntervalMs` (~4 min). Calls `touchRunningSandbox()` which extends the sandbox timeout and runs gateway liveness checks.
@@ -116,6 +118,12 @@ Called by the injected browser JavaScript every `heartbeatIntervalMs` (~4 min). 
 #### GET /api/status
 
 Returns sandbox state. When metadata says "running" but estimated timeout elapsed, calls `reconcileStaleRunningStatus()`. When status is "snapshotting", calls `reconcileSnapshottingStatus()`.
+
+During a non-blocking stop, repeated GET polls may legitimately keep returning `snapshotting` while the SDK still reports that state. The host transitions to `stopped` only after the SDK reports `stopped`, the sandbox disappears, or the stale guardrail forces recovery.
+
+The stop path must park metadata in `snapshotting` before calling `sandbox.stop({ blocking: false })`, so concurrent heartbeats stop treating the sandbox as `running`. Snapshotting reconciliation must call the SDK with `resume: false`. `Sandbox.get()` resumes by default, so polling snapshot status through the default get path can restart the sandbox and leave the UI waiting until the stale guardrail fires.
+
+Unit tests use the fake sandbox controller, so they validate this polling contract but cannot measure real Vercel snapshot duration. Deployed-app timing runs use `scripts/bench-stop-cycle.mjs` with `--sdk-poll`; linked-project SDK timing runs use `scripts/bench-sdk-snapshot.mjs`, including its bundle workload for the same artifact path as `vclaw create`.
 
 ### Watchdog (Cron)
 
@@ -140,7 +148,7 @@ Incoming webhook messages reconcile stale state and can trigger full sandbox wak
 
 Each channel webhook route (`src/app/api/channels/{slack,telegram,whatsapp,discord}/webhook/route.ts`) uses a two-phase approach:
 
-**Phase 1 — Fast path (webhook route itself):** If sandbox appears running and the channel's native handler is verified ready (e.g., `telegramListenerReady` in restore metrics), the route forwards directly to the sandbox's native handler port. On network failure, it calls `reconcileStaleRunningStatus()` to update metadata.
+**Phase 1 — Fast path (webhook route itself):** If sandbox appears running and the channel's native handler is verified ready (e.g., `telegramListenerReady` in restore metrics), the route forwards directly to the sandbox's native handler port. Slack, Telegram, and WhatsApp first call `refreshChannelFastPathGatewayToken()` so the firewall's AI Gateway Authorization transform is fresh before OpenClaw handles the message. On network failure OR gateway-error HTTP status (502/503/504 — indicating the sandbox process is unreachable, e.g. platform auto-sleep), it calls `reconcileStaleRunningStatus()` to update metadata and falls through to the workflow wake path. Non-gateway HTTP errors (4xx, 500) are treated as "handler received the payload" to avoid duplicate delivery.
 
 **Phase 2 — Workflow wake path:** If the sandbox isn't running or the fast path fails, the route starts a Vercel Workflow (`drainChannelWorkflow`) that calls `ensureSandboxReady()` (blocking until sandbox is running). Telegram sends a "Waking up..." boot message to the user before starting the workflow for immediate feedback. If the workflow start fails, the boot message is best-effort deleted to avoid orphaned "Waking up..." messages in the chat.
 
@@ -214,6 +222,16 @@ The heavy lifting. Acquires lifecycle + start locks.
 6. **Resumed path**: fast-restore script (update tokens/config, restart gateway), firewall policy, record metrics
 7. **Fresh path**: full `setupOpenClaw()` bootstrap, firewall policy
 8. Transition to `running`
+
+### Bundle bootstrap artifacts
+
+When `OPENCLAW_BUNDLE_URL` is set, [[src/server/openclaw/bootstrap.ts]] takes the bundle path and downloads three sibling artifacts (each resolved as `new URL("…", bundleUrl)`):
+
+- `openclaw.bundle.mjs` — the single-file ESM gateway bundle.
+- `channels.tar.gz` — extracted into [[src/server/openclaw/config.ts#OPENCLAW_BUNDLED_PLUGINS_DIR_PATH]] so the gateway's plugin discovery finds each channel extension on disk.
+- `bundle-deps.tar.gz` — extracted into `/home/vercel-sandbox/` so `node_modules/jiti/` sits next to the bundle. `jiti` is left external by the bundler because `node_modules/jiti/lib/jiti.cjs` lazily does `require("../dist/babel.cjs")`; if jiti were inlined, that require would resolve relative to the bundle file and miss. Slack's `loadBundledEntryExportSync` is the path that exercises this at runtime.
+
+The deps download is best-effort: if the artifact is missing (older bundles) the bootstrap logs a warning and continues so the failure surfaces as a plugin load error in the gateway log rather than blocking boot.
 
 ### reconcileSandboxHealth
 

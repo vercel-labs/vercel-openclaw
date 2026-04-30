@@ -8,7 +8,12 @@ import {
   BUN_DOWNLOAD_SHA256,
   BUN_DOWNLOAD_URL,
   BUN_INSTALL_DIR,
+  getOpenclawBundleUiUrl,
+  getOpenclawBundleUrl,
+  getOpenclawGatewayCmd,
   OPENCLAW_BIN,
+  OPENCLAW_BUNDLE_PATH,
+  OPENCLAW_BUNDLED_PLUGINS_DIR_PATH,
   OPENCLAW_FORCE_PAIR_SCRIPT_PATH,
   OPENCLAW_INSTALL_PATCH_SCRIPT_PATH,
   OPENCLAW_LOG_FILE,
@@ -104,124 +109,344 @@ export async function setupOpenClaw(
     });
   }
 
-  logInfo("openclaw.setup.start", { sandboxId: sandbox.sandboxId, packageSpec, onVercel });
+  const bundleUrl = getOpenclawBundleUrl();
 
-  progress?.setPhase("installing-openclaw", `Installing ${packageSpec}`);
-  const installResult = await sandbox.runCommand({
-    cmd: "npm",
-    args: [
-      "install",
-      "-g",
-      packageSpec,
-      "--ignore-scripts",
-      "--loglevel",
-      "info",
-    ],
-    env: {
-      NPM_CONFIG_CACHE: "/tmp/openclaw-npm-cache",
-      NPM_CONFIG_PROGRESS: "false",
-    },
-    stdout: progress?.makeWritable("stdout"),
-    stderr: progress?.makeWritable("stderr"),
-  });
-  await assertCommandSuccess("npm install", installResult);
+  logInfo("openclaw.setup.start", { sandboxId: sandbox.sandboxId, packageSpec, onVercel, bundleUrl: bundleUrl ?? null });
 
-  // Install missing plugin peer dependencies into the openclaw package directory.
-  // OpenClaw 2026.3.31+ bundles plugins (slack, telegram, discord, bedrock) but
-  // their peer deps aren't installed with --ignore-scripts.  Without these, the
-  // gateway returns 500 on all routes during plugin init.
-  progress?.setPhase("installing-peer-deps", "Installing missing peer dependencies");
-  const peerDepResult = await sandbox.runCommand({
-    cmd: "bash",
-    args: [
-      "-lc",
-      [
-        "set -e",
-        "OC_PKG=/home/vercel-sandbox/.global/npm/lib/node_modules/openclaw",
-        "mkdir -p /tmp/openclaw-peer-deps && cd /tmp/openclaw-peer-deps",
-        "npm init -y > /dev/null 2>&1",
-        "npm install @buape/carbon @slack/web-api grammy --no-save --ignore-scripts --loglevel warn 2>&1",
-        "mkdir -p $OC_PKG/node_modules",
-        "cp -r node_modules/@buape node_modules/@slack node_modules/grammy $OC_PKG/node_modules/ 2>/dev/null || true",
-        // Copy scoped package internals that @slack/web-api needs
-        "for dep in @slack/types @slack/logger @slack/oauth @slack/socket-mode; do [ -d node_modules/${dep%%/*} ] && cp -r node_modules/${dep%%/*} $OC_PKG/node_modules/ 2>/dev/null; done || true",
-        "rm -rf /tmp/openclaw-peer-deps",
-      ].join(" && "),
-    ],
-    stdout: progress?.makeWritable("stdout"),
-    stderr: progress?.makeWritable("stderr"),
-  });
-  if (peerDepResult.exitCode !== 0) {
-    const stderr = (await peerDepResult.output("stderr")).trim();
-    logWarn("openclaw.setup.peer_deps_install_failed", {
-      sandboxId: sandbox.sandboxId,
-      exitCode: peerDepResult.exitCode,
-      stderr: stderr.slice(-500),
+  if (bundleUrl) {
+    // ---------- Bundle path: download pre-built bundle from blob storage ----------
+    progress?.setPhase("downloading-bundle", `Downloading bundle`);
+    const downloadResult = await sandbox.runCommand({
+      cmd: "bash",
+      args: [
+        "-c",
+        [
+          "set -e",
+          `curl -fsSL --max-time 120 --connect-timeout 10 -o ${JSON.stringify(OPENCLAW_BUNDLE_PATH)} ${JSON.stringify(bundleUrl)}`,
+          // package.json must use name "openclaw" so the package-root resolver
+          // recognizes this directory, enabling channel-catalog.json discovery.
+          `echo '{"name":"openclaw","private":true}' > /home/vercel-sandbox/package.json`,
+          // Channel catalog — lets the config validator recognize channel IDs
+          // (slack, telegram, discord, etc.) without needing installed extensions.
+          `mkdir -p /home/vercel-sandbox/dist`,
+          `curl -fsSL --max-time 10 --connect-timeout 5 -o /home/vercel-sandbox/dist/channel-catalog.json ${JSON.stringify(new URL("channel-catalog.json", bundleUrl).href)}`,
+          // Workspace templates — agent runtime reads these at chat time
+          // (AGENTS.md, IDENTITY.md, BOOT.md, etc.). Without them, every
+          // chat request fails with "Missing workspace template".
+          `mkdir -p /home/vercel-sandbox/docs/reference`,
+          `curl -fsSL --max-time 15 --connect-timeout 5 ${JSON.stringify(new URL("workspace-templates.tar.gz", bundleUrl).href)} | tar xz -C /home/vercel-sandbox/docs/reference`,
+          // auth-profiles.json — pre-seed the vercel-ai-gateway provider so
+          // chat doesn't fail with "No API key found for provider". The
+          // bundle doesn't include the vercel-ai-gateway extension at runtime,
+          // so the env-var-to-auth-profile bootstrap doesn't run. The key is a
+          // placeholder; the real OIDC token is injected by the firewall's
+          // network policy header transform on the way to ai-gateway.vercel.sh.
+          `mkdir -p /home/vercel-sandbox/.openclaw/agents/main/agent`,
+          `printf '%s' '{"version":1,"profiles":{"vercel-ai-gateway:default":{"type":"api_key","provider":"vercel-ai-gateway","key":"sk-placeholder-injected-via-network-policy"}}}' > /home/vercel-sandbox/.openclaw/agents/main/agent/auth-profiles.json`,
+        ].join(" && "),
+      ],
+      stdout: progress?.makeWritable("stdout"),
+      stderr: progress?.makeWritable("stderr"),
     });
-  } else {
-    logInfo("openclaw.bootstrap.peer_deps_ready", { sandboxId: sandbox.sandboxId, package: "@buape/carbon" });
-  }
+    await assertCommandSuccess("bundle download", downloadResult);
+    logInfo("openclaw.setup.bundle_downloaded", { sandboxId: sandbox.sandboxId, bundleUrl });
 
-  // Install Bun for faster gateway startup on snapshot restore.
-  // Bun's JSC engine loads the 577MB/10K-file openclaw package ~33% faster
-  // than Node.js v22 on 1 vCPU.  Best-effort — restore falls back to Node
-  // if Bun is missing.
-  //
-  // Downloads the pinned release binary directly from GitHub, verifies its
-  // SHA-256, and extracts to BUN_INSTALL_DIR.  No remote installer script
-  // is executed.
-  progress?.setPhase("installing-bun", "Installing Bun runtime");
-  const bunInstall = await sandbox.runCommand({
-    cmd: "sh",
-    args: [
-      "-c",
-      [
-        "set -e",
-        `curl -fsSL --max-time 60 --connect-timeout 10 -o /tmp/bun.zip ${JSON.stringify(BUN_DOWNLOAD_URL)}`,
-        `printf '%s  /tmp/bun.zip\\n' ${JSON.stringify(BUN_DOWNLOAD_SHA256)} | sha256sum -c`,
-        `mkdir -p ${JSON.stringify(BUN_INSTALL_DIR + "/bin")}`,
-        `unzip -o -j /tmp/bun.zip -d ${JSON.stringify(BUN_INSTALL_DIR + "/bin")}`,
-        `chmod +x ${JSON.stringify(BUN_BIN)}`,
-        `rm -f /tmp/bun.zip`,
-        `${JSON.stringify(BUN_BIN)} --version`,
-      ].join(" && "),
-    ],
-    stdout: progress?.makeWritable("stdout"),
-    stderr: progress?.makeWritable("stderr"),
-  });
-  if (bunInstall.exitCode === 0) {
-    const bunVersion = (await bunInstall.output("stdout")).trim();
-    progress?.setPreview(`Installed Bun ${bunVersion}`);
-    logInfo("openclaw.setup.bun_installed", { sandboxId: sandbox.sandboxId, bunVersion });
-  } else {
-    const stderr = (await bunInstall.output("stderr")).trim();
-    logWarn("openclaw.setup.bun_install_failed", {
-      sandboxId: sandbox.sandboxId,
-      exitCode: bunInstall.exitCode,
-      stderr: stderr.slice(-500),
+    // Channel-plugins archive: the single-file ESM bundle ships the gateway
+    // core but no extensions tree, so channel handlers (slack/telegram/…)
+    // never register and webhooks 404 inside the sandbox. Download the
+    // sibling channels.tar.gz and extract it; the gateway env shell points
+    // OPENCLAW_BUNDLED_PLUGINS_DIR at this directory so the bundle's plugin
+    // discovery code finds each plugin on disk.
+    const channelsUrl = new URL("channels.tar.gz", bundleUrl).href;
+    progress?.setPhase("downloading-bundle", "Downloading channel plugins");
+    const channelsResult = await sandbox.runCommand({
+      cmd: "bash",
+      args: [
+        "-c",
+        [
+          "set -e",
+          `mkdir -p ${JSON.stringify(OPENCLAW_BUNDLED_PLUGINS_DIR_PATH)}`,
+          `curl -fsSL --max-time 60 --connect-timeout 10 ${JSON.stringify(channelsUrl)} | tar xz -C ${JSON.stringify(OPENCLAW_BUNDLED_PLUGINS_DIR_PATH)}`,
+        ].join(" && "),
+      ],
+      stdout: progress?.makeWritable("stdout"),
+      stderr: progress?.makeWritable("stderr"),
     });
-  }
+    if (channelsResult.exitCode === 0) {
+      logInfo("openclaw.setup.channels_downloaded", {
+        sandboxId: sandbox.sandboxId,
+        channelsUrl,
+        extractedTo: OPENCLAW_BUNDLED_PLUGINS_DIR_PATH,
+      });
+    } else {
+      const stderr = (await channelsResult.output("stderr")).trim();
+      logWarn("openclaw.setup.channels_download_failed", {
+        sandboxId: sandbox.sandboxId,
+        channelsUrl,
+        exitCode: channelsResult.exitCode,
+        stderr: stderr.slice(-500),
+      });
+      // Don't fail bootstrap — gateway can still serve non-channel routes
+      // and the failure is loud (channel webhooks will 404). This makes
+      // the failure mode the same as missing channels.tar.gz at the URL,
+      // which we want to surface in launch-verify rather than block boot.
+    }
 
-  progress?.setPhase("cleaning-cache", "Cleaning npm cache");
-  const npmCacheCleanup = await sandbox.runCommand({
-    cmd: "bash",
-    args: [
-      "-lc",
-      [
-        "rm -rf /home/vercel-sandbox/.npm || true",
-        "rm -rf /root/.npm || true",
-        "rm -rf /tmp/openclaw-npm-cache || true",
-      ].join("\n"),
-    ],
-    stdout: progress?.makeWritable("stdout"),
-    stderr: progress?.makeWritable("stderr"),
-  });
-  await assertCommandSuccess("npm cache cleanup", npmCacheCleanup);
-  logInfo("openclaw.setup.npm_cache_cleared", { sandboxId: sandbox.sandboxId });
+    // Bundle runtime deps: a few packages are kept external to the ESM
+    // bundle (currently `jiti`) because they self-reference internal files
+    // via relative requires (`require("../dist/babel.cjs")`), which break
+    // when bundled because the bundle file's directory is the resolution
+    // root. Extract `bundle-deps.tar.gz` next to openclaw.bundle.mjs so
+    // its createRequire(import.meta.url) finds them in node_modules/.
+    const depsUrl = new URL("bundle-deps.tar.gz", bundleUrl).href;
+    progress?.setPhase("downloading-bundle", "Downloading runtime deps");
+    const depsResult = await sandbox.runCommand({
+      cmd: "bash",
+      args: [
+        "-c",
+        [
+          "set -e",
+          `curl -fsSL --max-time 30 --connect-timeout 10 ${JSON.stringify(depsUrl)} | tar xz -C /home/vercel-sandbox`,
+        ].join(" && "),
+      ],
+      stdout: progress?.makeWritable("stdout"),
+      stderr: progress?.makeWritable("stderr"),
+    });
+    if (depsResult.exitCode === 0) {
+      logInfo("openclaw.setup.bundle_deps_downloaded", {
+        sandboxId: sandbox.sandboxId,
+        depsUrl,
+      });
+    } else {
+      const stderr = (await depsResult.output("stderr")).trim();
+      logWarn("openclaw.setup.bundle_deps_download_failed", {
+        sandboxId: sandbox.sandboxId,
+        depsUrl,
+        exitCode: depsResult.exitCode,
+        stderr: stderr.slice(-500),
+      });
+      // Don't hard-fail: older bundles (pre bundle-deps.tar.gz) won't
+      // publish this artifact. The failure mode is loud (Slack plugin
+      // load fails with `Cannot find module '../dist/babel.cjs'`), which
+      // is what the operator will see in /tmp/openclaw.log.
+    }
+
+    // Synthetic openclaw npm package: ships node_modules/openclaw/ with
+    // package.json + plugin-sdk/<subpath>.cjs shims. The shims redirect
+    // bare-specifier imports like `openclaw/plugin-sdk/channel-entry-contract`
+    // to a globalThis.__OPENCLAW_BUNDLE_PLUGIN_SDK_REGISTRY__ map populated
+    // by the bundle at startup. Without this, channel extensions fail to
+    // load with `Cannot find module 'openclaw/plugin-sdk/...'`.
+    const openclawPkgUrl = new URL("bundle-openclaw-pkg.tar.gz", bundleUrl).href;
+    progress?.setPhase("downloading-bundle", "Downloading openclaw shim package");
+    const openclawPkgResult = await sandbox.runCommand({
+      cmd: "bash",
+      args: [
+        "-c",
+        [
+          "set -e",
+          `curl -fsSL --max-time 30 --connect-timeout 10 ${JSON.stringify(openclawPkgUrl)} | tar xz -C /home/vercel-sandbox`,
+        ].join(" && "),
+      ],
+      stdout: progress?.makeWritable("stdout"),
+      stderr: progress?.makeWritable("stderr"),
+    });
+    if (openclawPkgResult.exitCode === 0) {
+      logInfo("openclaw.setup.bundle_openclaw_pkg_downloaded", {
+        sandboxId: sandbox.sandboxId,
+        openclawPkgUrl,
+      });
+    } else {
+      const stderr = (await openclawPkgResult.output("stderr")).trim();
+      logWarn("openclaw.setup.bundle_openclaw_pkg_download_failed", {
+        sandboxId: sandbox.sandboxId,
+        openclawPkgUrl,
+        exitCode: openclawPkgResult.exitCode,
+        stderr: stderr.slice(-500),
+      });
+      // Don't hard-fail: older bundles won't publish this artifact.
+    }
+
+    // Shared dist chunks: channel extensions and bundle SDK shims may
+    // reference dist/<chunk>.js files that live alongside the bundle.
+    // Extract at sandbox root so they sit next to openclaw.bundle.mjs.
+    const sharedChunksUrl = new URL("channel-shared-chunks.tar.gz", bundleUrl).href;
+    progress?.setPhase("downloading-bundle", "Downloading shared chunks");
+    const sharedChunksResult = await sandbox.runCommand({
+      cmd: "bash",
+      args: [
+        "-c",
+        [
+          "set -e",
+          `curl -fsSL --max-time 60 --connect-timeout 10 ${JSON.stringify(sharedChunksUrl)} | tar xz -C /home/vercel-sandbox`,
+        ].join(" && "),
+      ],
+      stdout: progress?.makeWritable("stdout"),
+      stderr: progress?.makeWritable("stderr"),
+    });
+    if (sharedChunksResult.exitCode === 0) {
+      logInfo("openclaw.setup.bundle_shared_chunks_downloaded", {
+        sandboxId: sandbox.sandboxId,
+        sharedChunksUrl,
+      });
+    } else {
+      const stderr = (await sharedChunksResult.output("stderr")).trim();
+      logWarn("openclaw.setup.bundle_shared_chunks_download_failed", {
+        sandboxId: sandbox.sandboxId,
+        sharedChunksUrl,
+        exitCode: sharedChunksResult.exitCode,
+        stderr: stderr.slice(-500),
+      });
+    }
+
+    // Download and extract Control UI assets (required for the gateway readiness probe)
+    const bundleUiUrl = getOpenclawBundleUiUrl();
+    if (bundleUiUrl) {
+      progress?.setPhase("downloading-bundle", "Downloading Control UI assets");
+      const uiDir = "/home/vercel-sandbox/dist/control-ui";
+      const uiResult = await sandbox.runCommand({
+        cmd: "bash",
+        args: [
+          "-c",
+          [
+            "set -e",
+            `mkdir -p /home/vercel-sandbox/dist`,
+            `curl -fsSL --max-time 30 --connect-timeout 10 ${JSON.stringify(bundleUiUrl)} | tar xz -C /home/vercel-sandbox/dist`,
+          ].join(" && "),
+        ],
+        stdout: progress?.makeWritable("stdout"),
+        stderr: progress?.makeWritable("stderr"),
+      });
+      if (uiResult.exitCode === 0) {
+        logInfo("openclaw.setup.bundle_ui_downloaded", { sandboxId: sandbox.sandboxId, bundleUiUrl });
+      } else {
+        logWarn("openclaw.setup.bundle_ui_download_failed", {
+          sandboxId: sandbox.sandboxId,
+          bundleUiUrl,
+          exitCode: uiResult.exitCode,
+        });
+      }
+    }
+  } else {
+    // ---------- npm install path (existing) ----------
+    progress?.setPhase("installing-openclaw", `Installing ${packageSpec}`);
+    const installResult = await sandbox.runCommand({
+      cmd: "npm",
+      args: [
+        "install",
+        "-g",
+        packageSpec,
+        "--ignore-scripts",
+        "--loglevel",
+        "info",
+      ],
+      env: {
+        NPM_CONFIG_CACHE: "/tmp/openclaw-npm-cache",
+        NPM_CONFIG_PROGRESS: "false",
+      },
+      stdout: progress?.makeWritable("stdout"),
+      stderr: progress?.makeWritable("stderr"),
+    });
+    await assertCommandSuccess("npm install", installResult);
+
+    // Install missing plugin peer dependencies into the openclaw package directory.
+    // OpenClaw 2026.3.31+ bundles plugins (slack, telegram, discord, bedrock) but
+    // their peer deps aren't installed with --ignore-scripts.  Without these, the
+    // gateway returns 500 on all routes during plugin init.
+    progress?.setPhase("installing-peer-deps", "Installing missing peer dependencies");
+    const peerDepResult = await sandbox.runCommand({
+      cmd: "bash",
+      args: [
+        "-lc",
+        [
+          "set -e",
+          "OC_PKG=/home/vercel-sandbox/.global/npm/lib/node_modules/openclaw",
+          "mkdir -p /tmp/openclaw-peer-deps && cd /tmp/openclaw-peer-deps",
+          "npm init -y > /dev/null 2>&1",
+          "npm install @buape/carbon @slack/web-api grammy --no-save --ignore-scripts --loglevel warn 2>&1",
+          "mkdir -p $OC_PKG/node_modules",
+          "cp -r node_modules/@buape node_modules/@slack node_modules/grammy $OC_PKG/node_modules/ 2>/dev/null || true",
+          // Copy scoped package internals that @slack/web-api needs
+          "for dep in @slack/types @slack/logger @slack/oauth @slack/socket-mode; do [ -d node_modules/${dep%%/*} ] && cp -r node_modules/${dep%%/*} $OC_PKG/node_modules/ 2>/dev/null; done || true",
+          "rm -rf /tmp/openclaw-peer-deps",
+        ].join(" && "),
+      ],
+      stdout: progress?.makeWritable("stdout"),
+      stderr: progress?.makeWritable("stderr"),
+    });
+    if (peerDepResult.exitCode !== 0) {
+      const stderr = (await peerDepResult.output("stderr")).trim();
+      logWarn("openclaw.setup.peer_deps_install_failed", {
+        sandboxId: sandbox.sandboxId,
+        exitCode: peerDepResult.exitCode,
+        stderr: stderr.slice(-500),
+      });
+    } else {
+      logInfo("openclaw.bootstrap.peer_deps_ready", { sandboxId: sandbox.sandboxId, package: "@buape/carbon" });
+    }
+
+    // Install Bun for faster gateway startup on snapshot restore.
+    // Bun's JSC engine loads the 577MB/10K-file openclaw package ~33% faster
+    // than Node.js v22 on 1 vCPU.  Best-effort — restore falls back to Node
+    // if Bun is missing.
+    //
+    // Downloads the pinned release binary directly from GitHub, verifies its
+    // SHA-256, and extracts to BUN_INSTALL_DIR.  No remote installer script
+    // is executed.
+    progress?.setPhase("installing-bun", "Installing Bun runtime");
+    const bunInstall = await sandbox.runCommand({
+      cmd: "sh",
+      args: [
+        "-c",
+        [
+          "set -e",
+          `curl -fsSL --max-time 60 --connect-timeout 10 -o /tmp/bun.zip ${JSON.stringify(BUN_DOWNLOAD_URL)}`,
+          `printf '%s  /tmp/bun.zip\\n' ${JSON.stringify(BUN_DOWNLOAD_SHA256)} | sha256sum -c`,
+          `mkdir -p ${JSON.stringify(BUN_INSTALL_DIR + "/bin")}`,
+          `unzip -o -j /tmp/bun.zip -d ${JSON.stringify(BUN_INSTALL_DIR + "/bin")}`,
+          `chmod +x ${JSON.stringify(BUN_BIN)}`,
+          `rm -f /tmp/bun.zip`,
+          `${JSON.stringify(BUN_BIN)} --version`,
+        ].join(" && "),
+      ],
+      stdout: progress?.makeWritable("stdout"),
+      stderr: progress?.makeWritable("stderr"),
+    });
+    if (bunInstall.exitCode === 0) {
+      const bunVersion = (await bunInstall.output("stdout")).trim();
+      progress?.setPreview(`Installed Bun ${bunVersion}`);
+      logInfo("openclaw.setup.bun_installed", { sandboxId: sandbox.sandboxId, bunVersion });
+    } else {
+      const stderr = (await bunInstall.output("stderr")).trim();
+      logWarn("openclaw.setup.bun_install_failed", {
+        sandboxId: sandbox.sandboxId,
+        exitCode: bunInstall.exitCode,
+        stderr: stderr.slice(-500),
+      });
+    }
+
+    progress?.setPhase("cleaning-cache", "Cleaning npm cache");
+    const npmCacheCleanup = await sandbox.runCommand({
+      cmd: "bash",
+      args: [
+        "-lc",
+        [
+          "rm -rf /home/vercel-sandbox/.npm || true",
+          "rm -rf /root/.npm || true",
+          "rm -rf /tmp/openclaw-npm-cache || true",
+        ].join("\n"),
+      ],
+      stdout: progress?.makeWritable("stdout"),
+      stderr: progress?.makeWritable("stderr"),
+    });
+    await assertCommandSuccess("npm cache cleanup", npmCacheCleanup);
+    logInfo("openclaw.setup.npm_cache_cleared", { sandboxId: sandbox.sandboxId });
+  }
 
   // Install WhatsApp plugin when enabled.  Idempotent — `openclaw plugins
   // install` is a no-op when the plugin is already present.
-  if (options.whatsappConfig?.enabled) {
+  // Skipped in bundle mode — the bundle includes all bundled plugins.
+  if (options.whatsappConfig?.enabled && !bundleUrl) {
     const pluginSpec = options.whatsappConfig.pluginSpec?.trim() || "@openclaw/whatsapp";
     progress?.setPhase("installing-plugin", `Installing ${pluginSpec}`);
     logInfo("openclaw.setup.whatsapp_plugin_install", {
@@ -281,37 +506,40 @@ export async function setupOpenClaw(
 
   await sandbox.writeFiles(bootstrapFiles);
 
-  progress?.setPhase("patching-openclaw", "Applying OpenClaw install patches");
-  const installPatchResult = await sandbox.runCommand({
-    cmd: "node",
-    args: [OPENCLAW_INSTALL_PATCH_SCRIPT_PATH],
-    stdout: progress?.makeWritable("stdout"),
-    stderr: progress?.makeWritable("stderr"),
-  });
-  await assertCommandSuccess("openclaw install patch", installPatchResult);
-  const installPatchOutput = (await installPatchResult.output("stdout")).trim();
-  const installPatchOutcome = parseOpenClawInstallPatchOutcome(installPatchOutput);
-  if (!installPatchOutcome) {
-    logWarn("openclaw.setup.install_patch_output_unparsed", {
-      sandboxId: sandbox.sandboxId,
-      output: installPatchOutput.slice(0, 500),
+  // Install patches only apply to the npm-installed package tree.
+  if (!bundleUrl) {
+    progress?.setPhase("patching-openclaw", "Applying OpenClaw install patches");
+    const installPatchResult = await sandbox.runCommand({
+      cmd: "node",
+      args: [OPENCLAW_INSTALL_PATCH_SCRIPT_PATH],
+      stdout: progress?.makeWritable("stdout"),
+      stderr: progress?.makeWritable("stderr"),
     });
-  } else if (installPatchOutcome.status === "skipped") {
-    logWarn("openclaw.setup.install_patch_skipped", {
-      sandboxId: sandbox.sandboxId,
-      ...installPatchOutcome,
-    });
-  } else {
-    logInfo("openclaw.setup.install_patch_applied", {
-      sandboxId: sandbox.sandboxId,
-      ...installPatchOutcome,
-    });
+    await assertCommandSuccess("openclaw install patch", installPatchResult);
+    const installPatchOutput = (await installPatchResult.output("stdout")).trim();
+    const installPatchOutcome = parseOpenClawInstallPatchOutcome(installPatchOutput);
+    if (!installPatchOutcome) {
+      logWarn("openclaw.setup.install_patch_output_unparsed", {
+        sandboxId: sandbox.sandboxId,
+        output: installPatchOutput.slice(0, 500),
+      });
+    } else if (installPatchOutcome.status === "skipped") {
+      logWarn("openclaw.setup.install_patch_skipped", {
+        sandboxId: sandbox.sandboxId,
+        ...installPatchOutcome,
+      });
+    } else {
+      logInfo("openclaw.setup.install_patch_applied", {
+        sandboxId: sandbox.sandboxId,
+        ...installPatchOutcome,
+      });
+    }
   }
 
   progress?.setPhase("checking-version", "Checking installed version");
   const versionResult = await sandbox.runCommand({
-    cmd: OPENCLAW_BIN,
-    args: ["--version"],
+    cmd: bundleUrl ? "node" : OPENCLAW_BIN,
+    args: bundleUrl ? [OPENCLAW_BUNDLE_PATH, "--version"] : ["--version"],
     stdout: progress?.makeWritable("stdout"),
     stderr: progress?.makeWritable("stderr"),
   });

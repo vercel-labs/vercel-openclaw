@@ -27,6 +27,7 @@ import {
   computeGatewayConfigHash,
   GATEWAY_CONFIG_HASH_VERSION,
   OPENCLAW_BIN,
+  OPENCLAW_BUNDLE_PATH,
   OPENCLAW_CONFIG_PATH,
   OPENCLAW_FAST_RESTORE_SCRIPT_PATH,
   OPENCLAW_GATEWAY_RESTART_SCRIPT_PATH,
@@ -779,14 +780,13 @@ export async function stopSandbox(): Promise<SingleMeta> {
           logInfo("sandbox.cron_jobs_cleared", { reason: "no-jobs-on-stop" });
         }
 
-        // v2 persistent sandboxes auto-snapshot on stop — no manual snapshot() needed.
-        // blocking:false lets the stop request return as soon as the SDK has
-        // accepted it; the auto-snapshot continues in the background and we
-        // reconcile the status via reconcileSnapshottingStatus().
-        await sandbox.stop({ blocking: false });
-
-        const stoppedMeta = await mutateMeta((next) => {
-          // Keep sandboxId — persistent sandbox persists across stop/resume
+        const statusBeforeStop = meta.status;
+        const portUrlsBeforeStop = meta.portUrls;
+        const snapshottingMeta = await mutateMeta((next) => {
+          // Keep sandboxId — persistent sandbox persists across stop/resume.
+          // Park before calling stop() so concurrent heartbeats/status polls do
+          // not observe "running" and accidentally resume the sandbox while the
+          // platform is accepting the stop request.
           next.portUrls = null;
           next.status = "snapshotting";
           next.lastAccessedAt = Date.now();
@@ -801,6 +801,30 @@ export async function stopSandbox(): Promise<SingleMeta> {
             };
           }
         });
+
+        // v2 persistent sandboxes auto-snapshot on stop — no manual snapshot() needed.
+        // blocking:false lets the stop request return as soon as the SDK has
+        // accepted it; the auto-snapshot continues in the background and we
+        // reconcile the status via reconcileSnapshottingStatus().
+        try {
+          await sandbox.stop({ blocking: false });
+        } catch (stopErr) {
+          const message = stopErr instanceof Error ? stopErr.message : String(stopErr);
+          const isGone = message.includes("404") || message.includes("410");
+          if (!isGone) {
+            await mutateMeta((next) => {
+              if (next.sandboxId !== meta.sandboxId || next.status !== "snapshotting") {
+                return;
+              }
+              next.status = statusBeforeStop;
+              next.portUrls = portUrlsBeforeStop;
+              next.lastError = message;
+            });
+          }
+          throw stopErr;
+        }
+
+        const stoppedMeta = snapshottingMeta;
 
         // Hot-spare: best-effort pre-create a candidate sandbox after stop.
         // Gated — no-op when OPENCLAW_HOT_SPARE_ENABLED is not "true".
@@ -1681,9 +1705,9 @@ export async function touchRunningSandbox(): Promise<SingleMeta> {
   if (process.env.NODE_ENV !== "test") {
     try {
       const liveness = await sandbox.runCommand("sh", [
-        "-c",
+      "-c",
         "curl -sf -o /dev/null -w '%{http_code}' --max-time 3 http://localhost:3000/",
-      ]);
+    ]);
       const stdout = await liveness.output("stdout");
       const httpCode = parseInt(stdout.trim(), 10);
       if (liveness.exitCode !== 0 || !httpCode || httpCode === 0) {
@@ -1890,7 +1914,10 @@ export async function reconcileSnapshottingStatus(): Promise<SingleMeta> {
   }
 
   try {
-    const sandbox = await getSandboxController().get({ sandboxId: meta.sandboxId });
+    const sandbox = await getSandboxController().get({
+      sandboxId: meta.sandboxId,
+      resume: false,
+    });
     const sdkStatus = sandbox.status;
     if (sdkStatus === "stopped") {
       logInfo("sandbox.snapshotting_reconciled", {
@@ -2868,12 +2895,18 @@ async function createAndBootstrapSandboxWithinLifecycleLock(
       meta.lastAccessedAt = Date.now();
     });
 
-    // Detect resumed persistent sandbox by checking if the openclaw binary
-    // exists on disk (sub-ms stat) instead of running it (loads 577MB package).
+    // Detect resumed persistent sandbox by checking for either runtime marker
+    // on disk instead of running OpenClaw. Bundle deployments do not install
+    // the legacy global binary, so checking only OPENCLAW_BIN misclassifies a
+    // stopped persistent bundle sandbox as fresh and reruns full bootstrap.
     // NOTE: For stopped persistent sandboxes, this runCommand is also the
     // implicit resume trigger — the platform auto-starts on first command.
     const whichCheck = await sandbox.runCommand("bash", [
-      "-c", `test -x "$(command -v ${OPENCLAW_BIN} 2>/dev/null)" && echo yes || echo no`,
+      "-c",
+      [
+        `test -x "$(command -v ${OPENCLAW_BIN} 2>/dev/null)"`,
+        `test -f ${JSON.stringify(OPENCLAW_BUNDLE_PATH)}`,
+      ].join(" || ") + " && echo yes || echo no",
     ]);
     const isResumed = (await whichCheck.output("stdout")).trim() === "yes";
     progress.appendLine("system", isResumed ? "Persistent sandbox resumed" : "Fresh sandbox");
