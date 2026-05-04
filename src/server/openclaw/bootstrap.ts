@@ -192,12 +192,11 @@ export async function setupOpenClaw(
       // which we want to surface in launch-verify rather than block boot.
     }
 
-    // Bundle runtime deps: a few packages are kept external to the ESM
-    // bundle (currently `jiti`) because they self-reference internal files
-    // via relative requires (`require("../dist/babel.cjs")`), which break
-    // when bundled because the bundle file's directory is the resolution
-    // root. Extract `bundle-deps.tar.gz` next to openclaw.bundle.mjs so
-    // its createRequire(import.meta.url) finds them in node_modules/.
+    // Bundle runtime deps: runtime packages kept external to the ESM bundle
+    // and packages imported by shared channel chunks are shipped as a sidecar.
+    // Extract `bundle-deps.tar.gz` next to openclaw.bundle.mjs so
+    // createRequire(import.meta.url) and root-level shared chunks find them in
+    // node_modules/.
     const depsUrl = new URL("bundle-deps.tar.gz", bundleUrl).href;
     progress?.setPhase("downloading-bundle", "Downloading runtime deps");
     const depsResult = await sandbox.runCommand({
@@ -206,7 +205,7 @@ export async function setupOpenClaw(
         "-c",
         [
           "set -e",
-          `curl -fsSL --max-time 30 --connect-timeout 10 ${JSON.stringify(depsUrl)} | tar xz -C /home/vercel-sandbox`,
+          `curl -fsSL --max-time 120 --connect-timeout 10 ${JSON.stringify(depsUrl)} | tar xz -C /home/vercel-sandbox`,
         ].join(" && "),
       ],
       stdout: progress?.makeWritable("stdout"),

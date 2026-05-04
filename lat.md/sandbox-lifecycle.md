@@ -225,13 +225,20 @@ The heavy lifting. Acquires lifecycle + start locks.
 
 ### Bundle bootstrap artifacts
 
-When `OPENCLAW_BUNDLE_URL` is set, [[src/server/openclaw/bootstrap.ts]] takes the bundle path and downloads three sibling artifacts (each resolved as `new URL("…", bundleUrl)`):
+When `OPENCLAW_BUNDLE_URL` is set, [[src/server/openclaw/bootstrap.ts]] downloads the bundle and sibling release assets needed by the fast bootstrap path.
+
+The bundle path downloads these release assets relative to the `openclaw.bundle.mjs` URL:
 
 - `openclaw.bundle.mjs` — the single-file ESM gateway bundle.
+- `channel-catalog.json` — copied to `/home/vercel-sandbox/dist/channel-catalog.json` so config validation recognizes bundled channel IDs.
+- `workspace-templates.tar.gz` — extracted under `/home/vercel-sandbox/docs/reference` so chat-time workspace template reads succeed.
 - `channels.tar.gz` — extracted into [[src/server/openclaw/config.ts#OPENCLAW_BUNDLED_PLUGINS_DIR_PATH]] so the gateway's plugin discovery finds each channel extension on disk.
-- `bundle-deps.tar.gz` — extracted into `/home/vercel-sandbox/` so `node_modules/jiti/` sits next to the bundle. `jiti` is left external by the bundler because `node_modules/jiti/lib/jiti.cjs` lazily does `require("../dist/babel.cjs")`; if jiti were inlined, that require would resolve relative to the bundle file and miss. Slack's `loadBundledEntryExportSync` is the path that exercises this at runtime.
+- `bundle-deps.tar.gz` — extracted into `/home/vercel-sandbox/` so runtime externals and shared channel chunks can resolve root-level `node_modules/` packages next to the bundle.
+- `bundle-openclaw-pkg.tar.gz` — extracted into `/home/vercel-sandbox/` to provide `node_modules/openclaw/plugin-sdk/*` shims for bundled plugin imports.
+- `channel-shared-chunks.tar.gz` — extracted into `/home/vercel-sandbox/` so channel extension files can import their shared root `dist/*.js` chunks.
+- `control-ui.tar.gz` — extracted into `/home/vercel-sandbox/dist` for gateway Control UI assets.
 
-The deps download is best-effort: if the artifact is missing (older bundles) the bootstrap logs a warning and continues so the failure surfaces as a plugin load error in the gateway log rather than blocking boot.
+The deps, channel, shim, shared-chunk, and UI downloads are best-effort: if an older bundle lacks a sidecar, bootstrap logs a warning and continues so launch verification and gateway logs expose the missing runtime surface.
 
 ### reconcileSandboxHealth
 

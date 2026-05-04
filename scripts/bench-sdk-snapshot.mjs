@@ -248,7 +248,7 @@ async function prepareBundleWorkload(sandbox) {
     commands.push(await runCommandChecked(sandbox, label, [
       "set -eu",
       `mkdir -p ${JSON.stringify(target)}`,
-      `curl -fsSL --max-time 60 --connect-timeout 10 ${artifact(filename)} | tar xz -C ${JSON.stringify(target)}`,
+      `curl -fsSL --max-time ${filename === "bundle-deps.tar.gz" ? 120 : 60} --connect-timeout 10 ${artifact(filename)} | tar xz -C ${JSON.stringify(target)}`,
     ].join(" && ")));
   }
 
