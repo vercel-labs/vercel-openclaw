@@ -120,6 +120,28 @@ test("buildGatewayConfig disables update checks on startup", () => {
   assert.equal(config.update?.checkOnStart, false);
 });
 
+test("buildGatewayConfig forces compat-mode bundled plugin discovery so bundled channels activate from config", () => {
+  // Upstream openclaw flipped `plugins.bundledDiscovery` default from "compat"
+  // to "allowlist" (commit b2096d19ec). Bundled channels with
+  // `activation.onStartup = false` (Slack) no longer auto-activate from
+  // per-channel config alone — the activation gate requires either compat
+  // mode or an explicit allow entry. We pin compat mode AND list the channel
+  // plugin ids so /slack/events mounts on startup and the readiness probe
+  // succeeds.
+  const config = JSON.parse(buildGatewayConfig()) as {
+    plugins?: {
+      bundledDiscovery?: string;
+      allow?: string[];
+    };
+  };
+
+  assert.equal(config.plugins?.bundledDiscovery, "compat");
+  assert.ok(
+    Array.isArray(config.plugins?.allow) && config.plugins.allow.includes("slack"),
+    "plugins.allow must include 'slack'",
+  );
+});
+
 test("buildGatewayConfig throws for invalid boolean env values", () => {
   withEnv(
     {
