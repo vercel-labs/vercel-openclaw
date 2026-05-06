@@ -1271,8 +1271,12 @@ test("buildFastRestoreScript polls for process death instead of fixed sleep", ()
 
   // The script should contain the conditional pkill + poll pattern.
   assert.ok(
-    script.includes("if pkill -f 'openclaw.gateway'"),
+    script.includes("if pkill -f \"$_gateway_process_pattern\""),
     "expected conditional pkill check",
+  );
+  assert.ok(
+    script.includes("openclaw.bundle.mjs gateway"),
+    "bundle gateway process should be included in the kill pattern",
   );
   assert.ok(
     script.includes("_killed_existing_gateway=1"),
@@ -1281,7 +1285,7 @@ test("buildFastRestoreScript polls for process death instead of fixed sleep", ()
 
   // Should poll with pgrep instead of fixed sleep 1
   assert.ok(
-    script.includes("pgrep -f 'openclaw.gateway'"),
+    script.includes("pgrep -f \"$_gateway_process_pattern\""),
     "expected pgrep poll loop for process death",
   );
   assert.ok(
@@ -1292,10 +1296,10 @@ test("buildFastRestoreScript polls for process death instead of fixed sleep", ()
   // Verify pgrep poll is inside the if-block
   const lines = script.split("\n");
   const pkillLine = lines.findIndex((l) =>
-    l.includes("if pkill -f 'openclaw.gateway'"),
+    l.includes("if pkill -f \"$_gateway_process_pattern\""),
   );
   const pgrepLine = lines.findIndex(
-    (l, i) => i > pkillLine && l.includes("pgrep -f 'openclaw.gateway'"),
+    (l, i) => i > pkillLine && l.includes("pgrep -f \"$_gateway_process_pattern\""),
   );
   const fiLine = lines.findIndex(
     (l, i) => i > pkillLine && l.trim() === "fi",
@@ -1426,12 +1430,24 @@ test("buildFastRestoreScript recreates bundle compatibility shims before gateway
     "expected model-catalog compatibility shim",
   );
   assert.ok(
+    script.includes("$ROOT/dist/agents/model-catalog.runtime.js"),
+    "expected dist model-catalog compatibility shim",
+  );
+  assert.ok(
     script.includes("export * from '../run-model-catalog.runtime.js';"),
     "expected model-catalog shim export",
   );
   assert.ok(
     script.includes("config/config.js"),
     "expected config compatibility shim",
+  );
+  assert.ok(
+    script.includes("$ROOT/dist/config/config.js"),
+    "expected dist config compatibility shim",
+  );
+  assert.ok(
+    script.includes("find \"$ROOT\" -maxdepth 1 -type f \\( -name '*.js' -o -name '*.cjs' \\) -exec cp -f {} \"$ROOT/dist/\" \\;"),
+    "expected root shared chunks copied into dist for bundled channel imports",
   );
   assert.ok(
     script.includes("agents/auth-profiles.runtime.js"),
@@ -1442,12 +1458,48 @@ test("buildFastRestoreScript recreates bundle compatibility shims before gateway
     "expected auth-profiles chunk detection",
   );
   assert.ok(
+    script.includes("agents/pi-model-discovery-runtime.js"),
+    "expected pi model discovery compatibility shim",
+  );
+  assert.ok(
+    script.includes("discoverModels as i"),
+    "expected pi model discovery chunk detection",
+  );
+  assert.ok(
+    script.includes("i as discoverModels") && script.includes("n as ModelRegistry") && script.includes("t as AuthStorage"),
+    "expected pi model discovery shim to expose non-minified export name",
+  );
+  assert.ok(
+    script.includes("agents/models-config.runtime.js"),
+    "expected models config runtime compatibility shim",
+  );
+  assert.ok(
+    script.includes("n as ensureOpenClawModelsJson"),
+    "expected models config shim to expose non-minified ensure export name",
+  );
+  assert.ok(
+    script.includes("agents/pi-bundle-mcp-runtime.js"),
+    "expected pi bundle MCP runtime compatibility shim",
+  );
+  assert.ok(
+    script.includes("r as createSessionMcpRuntime"),
+    "expected pi bundle MCP shim to expose non-minified runtime factory export name",
+  );
+  assert.ok(
     script.includes("plugins/provider-discovery.runtime.js"),
     "expected provider-discovery compatibility shim",
   );
   assert.ok(
+    script.includes("$ROOT/dist/plugins/provider-discovery.runtime.js"),
+    "expected dist provider-discovery compatibility shim",
+  );
+  assert.ok(
     script.includes("export * from '../provider-discovery.runtime.js';"),
     "expected provider-discovery shim export",
+  );
+  assert.ok(
+    script.includes("export { t as resolvePluginDiscoveryProvidersRuntime } from '../provider-discovery.runtime.js';"),
+    "expected provider-discovery shim to expose the non-minified runtime export name",
   );
   assert.ok(
     script.includes("getRuntimeConfig as i"),

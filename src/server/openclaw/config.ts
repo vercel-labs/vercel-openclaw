@@ -10,10 +10,11 @@ export const OPENCLAW_BUNDLE_CMD = `node ${OPENCLAW_BUNDLE_PATH}`;
 export const OPENCLAW_RUNTIME_WORKDIR = "/vercel/sandbox";
 export const OPENCLAW_WORKSPACE_TEMPLATES_DIR = `${OPENCLAW_RUNTIME_WORKDIR}/docs/reference`;
 // In bundle mode the gateway has no extensions/ tree to discover, so channel
-// plugins (slack/telegram/discord/whatsapp/...) ship as a sibling tarball
-// extracted here. The bundle's plugin discovery code reads
-// OPENCLAW_BUNDLED_PLUGINS_DIR and finds each plugin's package.json on disk.
-export const OPENCLAW_BUNDLED_PLUGINS_DIR_PATH = "/home/vercel-sandbox/extensions";
+// plugins (slack/telegram/discord/whatsapp/...) ship as a sibling tarball.
+// OpenClaw only trusts bundled plugin overrides under the package root's
+// dist/extensions or dist-runtime/extensions tree; keep this path aligned with
+// that trust boundary so OPENCLAW_BUNDLED_PLUGINS_DIR is honored at startup.
+export const OPENCLAW_BUNDLED_PLUGINS_DIR_PATH = "/home/vercel-sandbox/dist/extensions";
 
 export function getOpenclawBundleUrl(): string | undefined {
   return process.env.OPENCLAW_BUNDLE_URL?.trim() || undefined;
@@ -124,13 +125,17 @@ function buildBundleCompatibilityShimShell(): string {
     '# bundle assets but without wrapper files normally created by bootstrap.',
     `if [ -f "${OPENCLAW_BUNDLE_PATH}" ]; then`,
     '  ROOT=/home/vercel-sandbox',
-    '  mkdir -p "$ROOT/agents" "$ROOT/config" "$ROOT/plugins"',
+    '  mkdir -p "$ROOT/agents" "$ROOT/config" "$ROOT/plugins" "$ROOT/dist" "$ROOT/dist/agents" "$ROOT/dist/config" "$ROOT/dist/plugins"',
+    '  find "$ROOT" -maxdepth 1 -type f \\( -name \'*.js\' -o -name \'*.cjs\' \\) -exec cp -f {} "$ROOT/dist/" \\;',
     '  if grep -Rqs \'./agents/model-catalog.runtime.js\' "$ROOT"/*.js "$ROOT"/*/*.js 2>/dev/null; then',
     '    if [ ! -f "$ROOT/run-model-catalog.runtime.js" ]; then',
     '      echo \'{"event":"fast_restore.missing_compatibility_source","shim":"agents/model-catalog.runtime.js","source":"run-model-catalog.runtime.js"}\' >&2',
     '      exit 1',
     '    fi',
     '    cat > "$ROOT/agents/model-catalog.runtime.js" <<\'EOF\'',
+    "export * from '../run-model-catalog.runtime.js';",
+    'EOF',
+    '    cat > "$ROOT/dist/agents/model-catalog.runtime.js" <<\'EOF\'',
     "export * from '../run-model-catalog.runtime.js';",
     'EOF',
     '  fi',
@@ -144,6 +149,57 @@ function buildBundleCompatibilityShimShell(): string {
     '    cat > "$ROOT/agents/auth-profiles.runtime.js" <<EOF',
     "export * from '../$auth_base';",
     'EOF',
+    '    cat > "$ROOT/dist/agents/auth-profiles.runtime.js" <<EOF',
+    "export * from '../$auth_base';",
+    'EOF',
+    '  fi',
+    '  if grep -Rqs \'./agents/pi-model-discovery-runtime.js\' "$ROOT"/*.js "$ROOT"/*/*.js 2>/dev/null; then',
+    '    pi_discovery_module=$(grep -l \'discoverModels as i\' "$ROOT"/pi-model-discovery-*.js 2>/dev/null | head -n 1 || true)',
+    '    if [ -z "$pi_discovery_module" ]; then',
+    '      echo \'{"event":"fast_restore.missing_compatibility_source","shim":"agents/pi-model-discovery-runtime.js","source":"pi-model-discovery"}\' >&2',
+    '      exit 1',
+    '    fi',
+    '    pi_discovery_base=$(basename "$pi_discovery_module")',
+    '    cat > "$ROOT/agents/pi-model-discovery-runtime.js" <<EOF',
+    "export * from '../$pi_discovery_base';",
+    "export { i as discoverModels, r as discoverAuthStorage, a as normalizeDiscoveredPiModel, c as scrubLegacyStaticAuthJsonEntriesForDiscovery, n as ModelRegistry, n as PiModelRegistryClass, o as resolvePiCredentialsForDiscovery, s as addEnvBackedPiCredentials, t as AuthStorage, t as PiAuthStorageClass } from '../$pi_discovery_base';",
+    'EOF',
+    '    cat > "$ROOT/dist/agents/pi-model-discovery-runtime.js" <<EOF',
+    "export * from '../$pi_discovery_base';",
+    "export { i as discoverModels, r as discoverAuthStorage, a as normalizeDiscoveredPiModel, c as scrubLegacyStaticAuthJsonEntriesForDiscovery, n as ModelRegistry, n as PiModelRegistryClass, o as resolvePiCredentialsForDiscovery, s as addEnvBackedPiCredentials, t as AuthStorage, t as PiAuthStorageClass } from '../$pi_discovery_base';",
+    'EOF',
+    '  fi',
+    '  if grep -Rqs \'./agents/models-config.runtime.js\' "$ROOT"/*.js "$ROOT"/*/*.js 2>/dev/null; then',
+    '    models_config_module=$(grep -l \'ensureOpenClawModelsJson\' "$ROOT"/models-config-*.js 2>/dev/null | head -n 1 || true)',
+    '    if [ -z "$models_config_module" ]; then',
+    '      echo \'{"event":"fast_restore.missing_compatibility_source","shim":"agents/models-config.runtime.js","source":"models-config"}\' >&2',
+    '      exit 1',
+    '    fi',
+    '    models_config_base=$(basename "$models_config_module")',
+    '    cat > "$ROOT/agents/models-config.runtime.js" <<EOF',
+    "export * from '../$models_config_base';",
+    "export { n as ensureOpenClawModelsJson, r as writeModelsFileAtomicForModelsJson, t as ensureModelsFileModeForModelsJson } from '../$models_config_base';",
+    'EOF',
+    '    cat > "$ROOT/dist/agents/models-config.runtime.js" <<EOF',
+    "export * from '../$models_config_base';",
+    "export { n as ensureOpenClawModelsJson, r as writeModelsFileAtomicForModelsJson, t as ensureModelsFileModeForModelsJson } from '../$models_config_base';",
+    'EOF',
+    '  fi',
+    '  if grep -Rqs \'./agents/pi-bundle-mcp-runtime.js\' "$ROOT"/*.js "$ROOT"/*/*.js 2>/dev/null; then',
+    '    pi_mcp_module=$(grep -l \'createSessionMcpRuntime\' "$ROOT"/pi-bundle-mcp-runtime-*.js 2>/dev/null | head -n 1 || true)',
+    '    if [ -z "$pi_mcp_module" ]; then',
+    '      echo \'{"event":"fast_restore.missing_compatibility_source","shim":"agents/pi-bundle-mcp-runtime.js","source":"pi-bundle-mcp-runtime"}\' >&2',
+    '      exit 1',
+    '    fi',
+    '    pi_mcp_base=$(basename "$pi_mcp_module")',
+    '    cat > "$ROOT/agents/pi-bundle-mcp-runtime.js" <<EOF',
+    "export * from '../$pi_mcp_base';",
+    "export { r as createSessionMcpRuntime, o as getOrCreateSessionMcpRuntime, s as getSessionMcpRuntimeManager, a as disposeSessionMcpRuntime, c as retireSessionMcpRuntime, i as disposeAllSessionMcpRuntimes, l as retireSessionMcpRuntimeForSessionKey, n as createBundleMcpJsonSchemaValidator, t as __testing } from '../$pi_mcp_base';",
+    'EOF',
+    '    cat > "$ROOT/dist/agents/pi-bundle-mcp-runtime.js" <<EOF',
+    "export * from '../$pi_mcp_base';",
+    "export { r as createSessionMcpRuntime, o as getOrCreateSessionMcpRuntime, s as getSessionMcpRuntimeManager, a as disposeSessionMcpRuntime, c as retireSessionMcpRuntime, i as disposeAllSessionMcpRuntimes, l as retireSessionMcpRuntimeForSessionKey, n as createBundleMcpJsonSchemaValidator, t as __testing } from '../$pi_mcp_base';",
+    'EOF',
     '  fi',
     '  if grep -Rqs \'./plugins/provider-discovery.runtime.js\' "$ROOT"/*.js "$ROOT"/*/*.js 2>/dev/null; then',
     '    if [ ! -f "$ROOT/provider-discovery.runtime.js" ]; then',
@@ -152,6 +208,11 @@ function buildBundleCompatibilityShimShell(): string {
     '    fi',
     '    cat > "$ROOT/plugins/provider-discovery.runtime.js" <<\'EOF\'',
     "export * from '../provider-discovery.runtime.js';",
+    "export { t as resolvePluginDiscoveryProvidersRuntime } from '../provider-discovery.runtime.js';",
+    'EOF',
+    '    cat > "$ROOT/dist/plugins/provider-discovery.runtime.js" <<\'EOF\'',
+    "export * from '../provider-discovery.runtime.js';",
+    "export { t as resolvePluginDiscoveryProvidersRuntime } from '../provider-discovery.runtime.js';",
     'EOF',
     '  fi',
     '  if grep -Rqs \'./config/config.js\' "$ROOT"/*.js "$ROOT"/*/*.js 2>/dev/null; then',
@@ -166,6 +227,11 @@ function buildBundleCompatibilityShimShell(): string {
     '    mutate_base=$(basename "$mutate_module")',
     '    paths_base=$(basename "$paths_module")',
     '    cat > "$ROOT/config/config.js" <<EOF',
+    "export { A as applyConfigOverrides, C as validateConfigObjectRaw, S as validateConfigObject, T as validateConfigObjectWithPlugins, U as formatInvalidConfigDetails, a as loadConfig, b as writeConfigFile, d as readConfigFileSnapshotForWrite, f as readConfigFileSnapshotWithPluginMetadata, i as getRuntimeConfig, l as readBestEffortConfig, n as clearConfigCache, r as createConfigIO, u as readConfigFileSnapshot, v as registerConfigWriteListener, x as collectUnsupportedSecretRefPolicyIssues, y as resolveConfigSnapshotHash } from '../$io_base';",
+    "export { n as mutateConfigFile, r as replaceConfigFile, t as ConfigMutationConflictError } from '../$mutate_base';",
+    "export { _ as resolveOAuthPath, a as resolveCanonicalConfigPath, c as resolveDefaultConfigCandidates, d as resolveIncludeRoots, f as resolveIsNixMode, g as resolveOAuthDir, h as resolveNewStateDir, i as isNixMode, l as resolveGatewayLockDir, m as resolveLegacyStateDirs, n as DEFAULT_GATEWAY_PORT, o as resolveConfigPath, p as resolveLegacyStateDir, r as STATE_DIR, s as resolveConfigPathCandidate, t as CONFIG_PATH, u as resolveGatewayPort, v as resolveStateDir } from '../$paths_base';",
+    'EOF',
+    '    cat > "$ROOT/dist/config/config.js" <<EOF',
     "export { A as applyConfigOverrides, C as validateConfigObjectRaw, S as validateConfigObject, T as validateConfigObjectWithPlugins, U as formatInvalidConfigDetails, a as loadConfig, b as writeConfigFile, d as readConfigFileSnapshotForWrite, f as readConfigFileSnapshotWithPluginMetadata, i as getRuntimeConfig, l as readBestEffortConfig, n as clearConfigCache, r as createConfigIO, u as readConfigFileSnapshot, v as registerConfigWriteListener, x as collectUnsupportedSecretRefPolicyIssues, y as resolveConfigSnapshotHash } from '../$io_base';",
     "export { n as mutateConfigFile, r as replaceConfigFile, t as ConfigMutationConflictError } from '../$mutate_base';",
     "export { _ as resolveOAuthPath, a as resolveCanonicalConfigPath, c as resolveDefaultConfigCandidates, d as resolveIncludeRoots, f as resolveIsNixMode, g as resolveOAuthDir, h as resolveNewStateDir, i as isNixMode, l as resolveGatewayLockDir, m as resolveLegacyStateDirs, n as DEFAULT_GATEWAY_PORT, o as resolveConfigPath, p as resolveLegacyStateDir, r as STATE_DIR, s as resolveConfigPathCandidate, t as CONFIG_PATH, u as resolveGatewayPort, v as resolveStateDir } from '../$paths_base';",
@@ -336,7 +402,7 @@ export function buildClearStaleGatewayLockShell(): string {
  *  even with `|| true`. */
 function buildGatewayKillShell(): string {
   return [
-    '_gw_pids="$(ps aux | grep \'[o]penclaw.gateway\' | awk \'{print $2}\' || true)"',
+    '_gw_pids="$(ps aux | grep -E \'[o]penclaw\.gateway|[o]penclaw\.bundle\.mjs gateway\' | awk \'{print $2}\' || true)"',
     'if [ -n "$_gw_pids" ]; then kill $_gw_pids 2>/dev/null; sleep 1; fi',
     'true',
   ].join("\n");
@@ -1005,12 +1071,13 @@ fi
 _kill_started=\$(date +%s%N 2>/dev/null || echo 0)
 _killed_existing_gateway=0
 _sleep_ms=0
-if pkill -f 'openclaw.gateway' 2>/dev/null; then
+_gateway_process_pattern='openclaw.gateway|openclaw.bundle.mjs gateway'
+if pkill -f "$_gateway_process_pattern" 2>/dev/null; then
   _killed_existing_gateway=1
   # Poll for process death instead of fixed 1-second sleep.
   # pgrep exits non-zero when no matching process exists.
   _wait_deadline=\$(( \$(date +%s) + 3 ))
-  while pgrep -f 'openclaw.gateway' > /dev/null 2>&1; do
+  while pgrep -f "$_gateway_process_pattern" > /dev/null 2>&1; do
     if [ "\$(date +%s)" -ge "\$_wait_deadline" ]; then
       _sleep_ms=3000
       break

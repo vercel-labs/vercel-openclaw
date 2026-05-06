@@ -11,6 +11,7 @@ import {
   OPENCLAW_INSTALL_PATCH_SCRIPT_PATH,
   OPENCLAW_GATEWAY_RESTART_SCRIPT_PATH,
   OPENCLAW_GATEWAY_TOKEN_PATH,
+  OPENCLAW_BUNDLED_PLUGINS_DIR_PATH,
   OPENCLAW_IMAGE_GEN_SCRIPT_PATH,
   OPENCLAW_IMAGE_GEN_SKILL_PATH,
   OPENCLAW_WEB_SEARCH_SKILL_PATH,
@@ -219,6 +220,71 @@ test("setupOpenClaw extracts bundle workspace templates into runtime working tre
   });
 });
 
+test("setupOpenClaw extracts bundled channel plugins into OpenClaw trusted dist extensions", async () => {
+  await withEnv({ OPENCLAW_BUNDLE_URL: "https://example.test/openclaw.bundle.mjs" }, async () => {
+    const h = createScenarioHarness();
+    try {
+      const handle = await createHandle(h);
+
+      await setupOpenClaw(handle, {
+        gatewayToken: "tok-bundle-channels",
+        proxyOrigin: "https://example.com",
+      });
+
+      const channelsDownload = handle.commands.find(
+        (c) => c.cmd === "bash" && c.args?.[1]?.includes("channels.tar.gz"),
+      );
+      assert.ok(channelsDownload, "bundle command should fetch channel plugins");
+      const script = channelsDownload.args?.[1] ?? "";
+      assert.ok(
+        script.includes(`mkdir -p ${JSON.stringify(OPENCLAW_BUNDLED_PLUGINS_DIR_PATH)}`),
+        "channel plugin directory should use the trusted bundled plugin path",
+      );
+      assert.ok(
+        script.includes(`tar xz -C ${JSON.stringify(OPENCLAW_BUNDLED_PLUGINS_DIR_PATH)}`),
+        "channel plugins should extract into the trusted bundled plugin path",
+      );
+      assert.equal(
+        OPENCLAW_BUNDLED_PLUGINS_DIR_PATH,
+        "/home/vercel-sandbox/dist/extensions",
+        "OpenClaw bundle discovery only trusts dist/extensions under the bundle package root",
+      );
+    } finally {
+      h.teardown();
+    }
+  });
+});
+
+test("setupOpenClaw preserves bundle package root identity after shim package extraction", async () => {
+  await withEnv({ OPENCLAW_BUNDLE_URL: "https://example.test/openclaw.bundle.mjs" }, async () => {
+    const h = createScenarioHarness();
+    try {
+      const handle = await createHandle(h);
+
+      await setupOpenClaw(handle, {
+        gatewayToken: "tok-bundle-package-root",
+        proxyOrigin: "https://example.com",
+      });
+
+      const openclawPkg = handle.commands.find(
+        (c) => c.cmd === "bash" && c.args?.[1]?.includes("bundle-openclaw-pkg.tar.gz"),
+      );
+      assert.ok(openclawPkg, "bundle command should fetch the openclaw shim package");
+      const script = openclawPkg.args?.[1] ?? "";
+      assert.ok(
+        script.includes(`tar xz -C /home/vercel-sandbox`),
+        "shim package should extract at the bundle package root",
+      );
+      assert.ok(
+        script.includes(`echo '{"name":"openclaw","private":true,"version":"0.0.0","type":"module"}' > /home/vercel-sandbox/package.json`),
+        "shim package extraction must not leave the package root named as the sandbox runtime helper",
+      );
+    } finally {
+      h.teardown();
+    }
+  });
+});
+
 test("setupOpenClaw creates bundle compatibility shims after shared chunks extraction", async () => {
   await withEnv({ OPENCLAW_BUNDLE_URL: "https://example.test/openclaw.bundle.mjs" }, async () => {
     const h = createScenarioHarness();
@@ -240,8 +306,20 @@ test("setupOpenClaw creates bundle compatibility shims after shared chunks extra
         "shared chunks setup should create model-catalog compatibility shim",
       );
       assert.ok(
+        script.includes("$ROOT/dist/agents/model-catalog.runtime.js"),
+        "shared chunks setup should create dist model-catalog shim for dist/* imports",
+      );
+      assert.ok(
         script.includes("config/config.js"),
         "shared chunks setup should create config compatibility shim",
+      );
+      assert.ok(
+        script.includes("$ROOT/dist/config/config.js"),
+        "shared chunks setup should create dist config shim for dist/* imports",
+      );
+      assert.ok(
+        script.includes("find \"$ROOT\" -maxdepth 1 -type f \\( -name '*.js' -o -name '*.cjs' \\) -exec cp -f {} \"$ROOT/dist/\" \\;"),
+        "shared chunks setup should mirror root chunks into dist for channel relative imports",
       );
       assert.ok(
         script.includes("run-model-catalog.runtime.js"),
@@ -256,12 +334,48 @@ test("setupOpenClaw creates bundle compatibility shims after shared chunks extra
         "auth-profiles shim should select the auth chunk by export signature",
       );
       assert.ok(
+        script.includes("agents/pi-model-discovery-runtime.js"),
+        "shared chunks setup should create pi model discovery compatibility shim",
+      );
+      assert.ok(
+        script.includes("discoverModels as i"),
+        "pi model discovery shim should select the chunk by export signature",
+      );
+      assert.ok(
+        script.includes("i as discoverModels") && script.includes("n as ModelRegistry") && script.includes("t as AuthStorage"),
+        "pi model discovery shim should expose the non-minified discovery export name",
+      );
+      assert.ok(
+        script.includes("agents/models-config.runtime.js"),
+        "shared chunks setup should create models config runtime compatibility shim",
+      );
+      assert.ok(
+        script.includes("n as ensureOpenClawModelsJson"),
+        "models config shim should expose the non-minified ensure export name",
+      );
+      assert.ok(
+        script.includes("agents/pi-bundle-mcp-runtime.js"),
+        "shared chunks setup should create pi bundle MCP runtime compatibility shim",
+      );
+      assert.ok(
+        script.includes("r as createSessionMcpRuntime"),
+        "pi bundle MCP shim should expose the non-minified runtime factory export name",
+      );
+      assert.ok(
         script.includes("plugins/provider-discovery.runtime.js"),
         "shared chunks setup should create provider-discovery compatibility shim",
       );
       assert.ok(
+        script.includes("$ROOT/dist/plugins/provider-discovery.runtime.js"),
+        "shared chunks setup should create dist provider-discovery shim for dist/* imports",
+      );
+      assert.ok(
         script.includes("export * from '../provider-discovery.runtime.js';"),
         "provider-discovery shim should point to extracted root runtime",
+      );
+      assert.ok(
+        script.includes("export { t as resolvePluginDiscoveryProvidersRuntime } from '../provider-discovery.runtime.js';"),
+        "provider-discovery shim should expose the non-minified runtime export name",
       );
       assert.ok(
         script.includes("getRuntimeConfig as i"),

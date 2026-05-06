@@ -17,7 +17,11 @@ import {
   channelUserMessageDedupKey,
 } from "@/server/channels/keys";
 import { getStore } from "@/server/store/store";
-import { withHarness, type ScenarioHarness } from "@/test-utils/harness";
+import {
+  withHarness,
+  type FakeSandboxHandle,
+  type ScenarioHarness,
+} from "@/test-utils/harness";
 import {
   buildSlackWebhook,
   buildSlackUrlVerification,
@@ -389,7 +393,7 @@ test("Slack webhook: fast path 404 repairs config sync and retries native handle
         "3000": "https://sbx-slack-route-repair-3000.fake.vercel.run",
       };
     });
-    const handle = await h.controller.get({ sandboxId: "sbx-slack-route-repair" });
+    const handle = await h.controller.get({ sandboxId: "sbx-slack-route-repair" }) as FakeSandboxHandle;
     let slackRouteProbeCount = 0;
     handle.responders.push((cmd, args) => {
       if (cmd !== "bash" || args?.[0] !== "-c") {

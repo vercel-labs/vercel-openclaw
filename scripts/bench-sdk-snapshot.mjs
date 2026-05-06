@@ -232,7 +232,7 @@ async function prepareBundleWorkload(sandbox) {
   commands.push(await runCommandChecked(sandbox, "bundle-download-core", [
     "set -eu",
     `curl -fsSL --max-time 120 --connect-timeout 10 -o /home/vercel-sandbox/openclaw.bundle.mjs ${base}`,
-    `echo '{"name":"openclaw","private":true}' > /home/vercel-sandbox/package.json`,
+    `echo '{"name":"openclaw","private":true,"version":"0.0.0","type":"module"}' > /home/vercel-sandbox/package.json`,
     "mkdir -p /home/vercel-sandbox/dist /home/vercel-sandbox/docs/reference /home/vercel-sandbox/.openclaw/agents/main/agent",
     `curl -fsSL --max-time 10 --connect-timeout 5 -o /home/vercel-sandbox/dist/channel-catalog.json ${artifact("channel-catalog.json")}`,
     `curl -fsSL --max-time 15 --connect-timeout 5 ${artifact("workspace-templates.tar.gz")} | tar xz -C /home/vercel-sandbox/docs/reference`,
@@ -240,15 +240,21 @@ async function prepareBundleWorkload(sandbox) {
   ].join(" && ")));
 
   for (const [label, filename, target] of [
-    ["bundle-download-channels", "channels.tar.gz", "/home/vercel-sandbox/extensions"],
+    ["bundle-download-channels", "channels.tar.gz", "/home/vercel-sandbox/dist/extensions"],
     ["bundle-download-deps", "bundle-deps.tar.gz", "/home/vercel-sandbox"],
     ["bundle-download-openclaw-pkg", "bundle-openclaw-pkg.tar.gz", "/home/vercel-sandbox"],
     ["bundle-download-shared-chunks", "channel-shared-chunks.tar.gz", "/home/vercel-sandbox"],
   ]) {
+    const postExtract = filename === "bundle-openclaw-pkg.tar.gz"
+      ? [`echo '{"name":"openclaw","private":true,"version":"0.0.0","type":"module"}' > /home/vercel-sandbox/package.json`]
+      : filename === "channel-shared-chunks.tar.gz"
+        ? ["mkdir -p /home/vercel-sandbox/dist", "find /home/vercel-sandbox -maxdepth 1 -type f \\( -name '*.js' -o -name '*.cjs' \\) -exec cp -f {} /home/vercel-sandbox/dist/ \\;"]
+        : [];
     commands.push(await runCommandChecked(sandbox, label, [
       "set -eu",
       `mkdir -p ${JSON.stringify(target)}`,
       `curl -fsSL --max-time ${filename === "bundle-deps.tar.gz" ? 120 : 60} --connect-timeout 10 ${artifact(filename)} | tar xz -C ${JSON.stringify(target)}`,
+      ...postExtract,
     ].join(" && ")));
   }
 
