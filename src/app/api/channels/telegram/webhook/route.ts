@@ -364,11 +364,20 @@ export async function POST(request: Request): Promise<Response> {
         if (isSandboxNotListening && !portUrlStaleMarked) {
           portUrlStaleMarked = true;
           try {
-            await markSandboxPortUrlStale(
+            const staleResult = await markSandboxPortUrlStale(
               effectiveMeta.sandboxId ?? null,
               OPENCLAW_TELEGRAM_WEBHOOK_PORT,
               "fast-path-not-listening",
             );
+            logWarn("channels.telegram_fast_path_dead_port_recorded", withOperationContext(op, {
+              sandboxId: effectiveMeta.sandboxId,
+              previousSandboxId: meta.sandboxId,
+              staleOldUrl: staleResult.oldUrl,
+              staleNewUrl: staleResult.newUrl,
+              staleRefreshed: staleResult.refreshed,
+              metaStatus: effectiveMeta.status,
+              action: "start_drain_channel_workflow",
+            }));
           } catch (err) {
             logWarn("channels.telegram_fast_path_port_url_refresh_failed", withOperationContext(op, {
               error: err instanceof Error ? err.message : String(err),

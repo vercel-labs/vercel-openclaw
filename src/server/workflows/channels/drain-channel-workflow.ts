@@ -418,6 +418,31 @@ function assessTelegramRestoreContract(
   };
 }
 
+function telegramPublicProbeSawSandboxNotListening(
+  probe: TelegramProbeResult | null,
+): boolean {
+  if (!probe) return false;
+  return (probe.timeline ?? []).some((attempt) => {
+    if (attempt.status === 502) return true;
+    if (typeof attempt.bodyHead === "string" && /sandbox is not listening/i.test(attempt.bodyHead)) {
+      return true;
+    }
+    if (typeof attempt.error === "string" && /sandbox is not listening/i.test(attempt.error)) {
+      return true;
+    }
+    return false;
+  });
+}
+
+function telegramLocalProbeSawConnectionRefused(
+  probe: TelegramLocalProbeResult | null,
+): boolean {
+  if (!probe) return false;
+  return [probe.error, probe.detail, probe.bodyHead].some(
+    (value) => typeof value === "string" && /ECONNREFUSED|connection refused/i.test(value),
+  );
+}
+
 export async function drainChannelWorkflow(
   channelOrEnvelope: string | DrainChannelWorkflowEnvelopeV1,
   payload?: unknown,
@@ -640,11 +665,11 @@ export async function processChannelStep(
           timeoutMs: WORKFLOW_SANDBOX_READY_TIMEOUT_MS,
         });
     const currentMeta = await getInitializedMeta();
-    const effectiveReadyMeta = {
+    let effectiveReadyMeta = {
       ...readyMeta,
       channels: readyMeta.channels ?? currentMeta.channels,
     };
-    const telegramRestoreContract =
+    let telegramRestoreContract =
       channel === "telegram"
         ? assessTelegramRestoreContract(effectiveReadyMeta)
         : null;
@@ -858,6 +883,61 @@ export async function processChannelStep(
           localReady: localProbeResult?.ready ?? null,
           localError: localProbeResult?.error ?? null,
           localDetail: localProbeResult?.detail ?? null,
+        });
+      }
+
+      const publicProbeSawDeadSandbox = telegramPublicProbeSawSandboxNotListening(probeResult);
+      const localProbeSawDeadSandbox = telegramLocalProbeSawConnectionRefused(localProbeResult);
+      if (
+        localProbeResult?.ready !== true
+        && probeResult?.ready !== true
+        && (publicProbeSawDeadSandbox || localProbeSawDeadSandbox)
+      ) {
+        logWarn("channels.telegram_probe_dead_sandbox_reconcile", {
+          channel,
+          requestId,
+          deliveryId,
+          sandboxId: effectiveReadyMeta.sandboxId,
+          publicProbeSawDeadSandbox,
+          localProbeSawDeadSandbox,
+          publicLastStatus: probeResult?.lastStatus ?? null,
+          publicAttempts: probeResult?.attempts ?? null,
+          publicWaitMs: probeResult?.waitMs ?? null,
+          publicUrl: probeResult?.publicUrl ?? null,
+          localStatus: localProbeResult?.status ?? null,
+          localError: localProbeResult?.error ?? null,
+          localDetail: localProbeResult?.detail ?? null,
+          action: "ensure_sandbox_ready_before_forward",
+        });
+        const repairedMeta = await ensureSandboxReady({
+          origin,
+          reason: "channel:telegram-dead-handler-port",
+          timeoutMs: WORKFLOW_SANDBOX_READY_TIMEOUT_MS,
+        });
+        const repairedCurrentMeta = await getInitializedMeta();
+        effectiveReadyMeta = {
+          ...repairedMeta,
+          channels: repairedMeta.channels ?? repairedCurrentMeta.channels,
+        };
+        telegramRestoreContract = assessTelegramRestoreContract(effectiveReadyMeta);
+        diag.readyMetaStatus = effectiveReadyMeta.status;
+        diag.readyMetaSandboxId = effectiveReadyMeta.sandboxId;
+        diag.readyMetaPortUrlKeys = effectiveReadyMeta.portUrls ? Object.keys(effectiveReadyMeta.portUrls) : null;
+        diag.readyMetaPortUrls = effectiveReadyMeta.portUrls;
+        diag.readyMetaHasWebhookSecret = Boolean(effectiveReadyMeta.channels?.telegram?.webhookSecret);
+        diag.telegramRestoreContractStatus = telegramRestoreContract.status;
+        diag.telegramRestoreContractRecordedAt = telegramRestoreContract.restoreMetricsRecordedAt;
+        diag.telegramRestoreExpected = telegramRestoreContract.telegramExpected;
+        diag.telegramRestoreListenerReady = telegramRestoreContract.telegramListenerReady;
+        diag.telegramRestoreListenerWaitMs = telegramRestoreContract.telegramListenerWaitMs;
+        logInfo("channels.telegram_probe_dead_sandbox_recovered", {
+          channel,
+          requestId,
+          deliveryId,
+          sandboxId: effectiveReadyMeta.sandboxId,
+          status: effectiveReadyMeta.status,
+          portUrlKeys: effectiveReadyMeta.portUrls ? Object.keys(effectiveReadyMeta.portUrls) : null,
+          telegramRestoreContractStatus: telegramRestoreContract.status,
         });
       }
 

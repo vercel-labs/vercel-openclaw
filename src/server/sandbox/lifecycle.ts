@@ -1147,10 +1147,24 @@ export async function markSandboxPortUrlStale(
   }
 
   // Refresh the URL via SDK so the caller can immediately retry with a
-  // fresh value. May be the same URL — that's fine; we've still cleared
-  // the stale cache and reconciled status.
+  // fresh value. If Vercel returns the same URL after a not-listening
+  // response, the sandbox is still not usable; mark it unavailable so the
+  // caller's normal ensure/reconcile path restores it with the right origin.
   try {
     const newUrl = await getSandboxDomain(port);
+    if (oldUrl && newUrl === oldUrl) {
+      logWarn("sandbox.port_url_dead.same_url_after_refresh", {
+        sandboxId: currentSandboxId,
+        port,
+        url: newUrl,
+        reason,
+        action: "mark_unavailable",
+      });
+      await markSandboxUnavailable(
+        `Port ${port} still returned the same dead sandbox URL after refresh (${reason})`,
+        currentSandboxId ?? undefined,
+      );
+    }
     return { refreshed: true, oldUrl, newUrl };
   } catch (err) {
     logWarn("sandbox.port_url_dead.refresh_failed", {

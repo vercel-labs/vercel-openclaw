@@ -531,11 +531,17 @@ test("Telegram webhook: fast path non-ok response falls through to workflow wake
       const refreshLog = logs.find((entry) => entry.message === "sandbox.port_urls.refreshed");
       assert.ok(refreshLog, "Telegram port URL should be refreshed after stale invalidation");
       assert.equal(refreshLog.data?.port, 8787);
+      const deadPortLog = logs.find(
+        (entry) => entry.message === "channels.telegram_fast_path_dead_port_recorded",
+      );
+      assert.ok(deadPortLog, "dead Telegram port should be recorded before workflow handoff");
+      assert.equal(deadPortLog.data?.action, "start_drain_channel_workflow");
+      assert.equal(deadPortLog.data?.staleRefreshed, true);
       const meta = await h.getMeta();
       assert.equal(
         meta.portUrls?.["8787"],
         "https://sbx-telegram-non-ok-8787.fake.vercel.run",
-        "stale Telegram port URL should be replaced before workflow retry",
+        "dead Telegram port URL should be refreshed before workflow retry",
       );
       resetAfterCallbacks();
     } finally {
