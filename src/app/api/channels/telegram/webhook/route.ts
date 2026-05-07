@@ -9,6 +9,17 @@ import {
 import { recordChannelDlqFailure } from "@/server/channels/dlq";
 import { refreshChannelFastPathGatewayToken } from "@/server/channels/fast-path-token";
 import { recordChannelLastForward } from "@/server/channels/last-forward";
+import {
+  classifyFastPathException,
+  classifyFastPathHttpResult,
+  type FastPathClassifierPolicy,
+} from "@/server/channels/core/fast-path-classifier";
+import {
+  FastPathOutcomeKind,
+  FastPathSkipReason,
+  type FastPathOutcome,
+} from "@/server/channels/core/outcomes";
+import { planWebhookAfterFastPath } from "@/server/channels/core/webhook-planner";
 import { getPublicOrigin } from "@/server/public-url";
 import { channelDedupKey } from "@/server/channels/keys";
 import { drainChannelWorkflow } from "@/server/workflows/channels/drain-channel-workflow";
@@ -29,6 +40,13 @@ import { getSandboxDomain, markSandboxPortUrlStale, reconcileStaleRunningStatus 
 const TELEGRAM_FAST_PATH_FORWARD_TIMEOUT_MS = 10 * 60 * 1000;
 import { channelForwardDiagnosticKey } from "@/server/store/keyspace";
 import { getInitializedMeta, getStore } from "@/server/store/store";
+
+const TELEGRAM_FAST_PATH_POLICY: FastPathClassifierPolicy = {
+  channel: "telegram",
+  nativeResponsePolicy: "non-ok-starts-workflow",
+  classifySuspiciousEmpty200: true,
+  stalePortOnSandboxNotListening: OPENCLAW_TELEGRAM_WEBHOOK_PORT,
+};
 
 type TelegramWebhookDedupLock = ChannelDedupLock;
 
@@ -218,7 +236,7 @@ export async function POST(request: Request): Promise<Response> {
     // silent drop is worse than the (low) risk of duplicate delivery through
     // the workflow path.
     let effectiveMeta = meta;
-    let fastPathFellBackToWorkflow = false;
+    let fastPathOutcome: FastPathOutcome | null = null;
     // The fast path should use the live 8787 surface whenever the wrapper
     // believes the sandbox is running. Restore metrics can be absent on fresh
     // creates or stale after recovery, so they are logged as evidence but do
@@ -264,6 +282,7 @@ export async function POST(request: Request): Promise<Response> {
         if (fastPathUpdateId) {
           fastPathHeaders["x-openclaw-delivery-id"] = `telegram:${fastPathUpdateId}`;
         }
+        const forwardStartedAt = Date.now();
         const forwardResponse = await fetch(forwardUrl, {
           method: "POST",
           headers: fastPathHeaders,
@@ -272,22 +291,56 @@ export async function POST(request: Request): Promise<Response> {
         });
         const forwardBody = await forwardResponse.text().catch(() => "");
         const forwardHeaders = pickDiagnosticHeaders(forwardResponse.headers);
+        const forwardDurationMs = Date.now() - forwardStartedAt;
         const fastPathDurationMs = Date.now() - fastPathStartedAt;
-        const suspiciousEmpty200 =
-          forwardResponse.status === 200 &&
-          fastPathDurationMs < 150 &&
-          forwardBody.length === 0;
-        if (forwardResponse.ok && !suspiciousEmpty200) {
+        fastPathOutcome = classifyFastPathHttpResult({
+          policy: TELEGRAM_FAST_PATH_POLICY,
+          status: forwardResponse.status,
+          ok: forwardResponse.ok,
+          bodyHead: forwardBody.slice(0, 200),
+          bodyLength: forwardBody.length,
+          durationMs: forwardDurationMs,
+          transport: "public",
+          sandboxUrl: sandboxWebhookUrl,
+          sandboxId: effectiveMeta.sandboxId ?? null,
+        });
+        if (fastPathOutcome.kind === FastPathOutcomeKind.Accepted) {
+          const acceptedRoutePlan = planWebhookAfterFastPath({
+            channel: "telegram",
+            fastPath: fastPathOutcome,
+            effectiveStatus: effectiveMeta.status,
+            canSendUserNotice: Boolean(chatId),
+            policy: { noticeOnWorkflowStart: true },
+          });
+          logInfo("channels.telegram_webhook_plan", withOperationContext(op, {
+            routeOutcome: acceptedRoutePlan.routeOutcome,
+            workflowKind: acceptedRoutePlan.workflow.kind,
+            workflowReason: acceptedRoutePlan.workflow.kind === "start"
+              ? acceptedRoutePlan.workflow.reason
+              : null,
+            userNoticeKind: acceptedRoutePlan.userNotice.kind,
+            userNoticeReason: acceptedRoutePlan.userNotice.reason,
+            fastPathKind: acceptedRoutePlan.fastPath?.kind ?? null,
+            fastPathReason: acceptedRoutePlan.fastPath && "reason" in acceptedRoutePlan.fastPath
+              ? acceptedRoutePlan.fastPath.reason
+              : null,
+            fastPathClassification: acceptedRoutePlan.fastPath && "classification" in acceptedRoutePlan.fastPath
+              ? acceptedRoutePlan.fastPath.classification
+              : null,
+            effectiveStatus: effectiveMeta.status,
+            effectiveSandboxId: effectiveMeta.sandboxId ?? null,
+            fastPathFellBackToWorkflow: false,
+          }));
           await recordChannelLastForward("telegram", {
             ok: true,
-            status: forwardResponse.status,
-            classification: "accepted",
+            status: fastPathOutcome.status,
+            classification: fastPathOutcome.classification,
             attempts: 1,
             totalMs: fastPathDurationMs,
-            transport: "public",
-            sandboxUrl: sandboxWebhookUrl,
-            sandboxId: effectiveMeta.sandboxId ?? null,
-            finalReasonHead: forwardBody.slice(0, 200),
+            transport: fastPathOutcome.transport,
+            sandboxUrl: fastPathOutcome.sandboxUrl,
+            sandboxId: fastPathOutcome.sandboxId,
+            finalReasonHead: fastPathOutcome.bodyHead,
             startedAt: fastPathStartedAt,
             completedAt: Date.now(),
             deliveryId: `telegram:${fastPathUpdateId ?? "?"}`,
@@ -297,12 +350,35 @@ export async function POST(request: Request): Promise<Response> {
             forwardUrl,
             status: forwardResponse.status,
             durationMs: fastPathDurationMs,
+            forwardDurationMs,
             bodyLength: forwardBody.length,
             bodyHead: forwardBody.slice(0, 200),
             responseHeaders: forwardHeaders,
-            suspiciousEmpty200,
+            suspiciousEmpty200: false,
           }));
           return Response.json({ ok: true });
+        }
+        if (fastPathOutcome.kind !== FastPathOutcomeKind.FallbackToWorkflow) {
+          logWarn("channels.telegram_fast_path_unexpected_outcome", withOperationContext(op, {
+            fastPathKind: fastPathOutcome.kind,
+            fastPathReason: "reason" in fastPathOutcome ? fastPathOutcome.reason : null,
+            status: forwardResponse.status,
+            sandboxId: effectiveMeta.sandboxId,
+            forwardUrl,
+            action: "start_drain_channel_workflow",
+          }));
+          fastPathOutcome = {
+            kind: FastPathOutcomeKind.FallbackToWorkflow,
+            reason: "handler-error-policy-start-workflow",
+            classification: "handler-error",
+            status: forwardResponse.status,
+            transport: "public",
+            sandboxUrl: sandboxWebhookUrl,
+            sandboxId: effectiveMeta.sandboxId ?? null,
+            bodyHead: forwardBody.slice(0, 200),
+            durationMs: forwardDurationMs,
+            shouldReconcile: false,
+          };
         }
 
         // Fast path did not genuinely deliver. Fall through to the workflow
@@ -310,38 +386,28 @@ export async function POST(request: Request): Promise<Response> {
         // errors (502/503/504, sandbox unreachable) from suspicious-empty-200
         // and other non-OK results for log triage.
         const telegramFallbackReason =
-          suspiciousEmpty200
+          fastPathOutcome.reason === "suspicious-empty-200"
             ? "suspicious_empty_200"
-            : forwardResponse.status === 502 ||
-                forwardResponse.status === 503 ||
-                forwardResponse.status === 504
+            : fastPathOutcome.reason === "sandbox-not-listening" ||
+                fastPathOutcome.reason === "proxy-error"
               ? "gateway_error"
               : "non_ok";
-        fastPathFellBackToWorkflow = true;
-        // Classify the failure using the same rules as Slack so the
-        // forward outcome record is consistent across channels.
-        const isSandboxNotListening =
-          /sandbox is not listening/i.test(forwardBody);
-        const fallbackClassification: string = isSandboxNotListening
-          ? "sandbox-not-listening"
-          : forwardResponse.status >= 502
-            ? "proxy-error"
-            : forwardResponse.status === 404
-              ? "handler-not-ready"
-              : "handler-error";
         logWarn(
           telegramFallbackReason === "gateway_error"
             ? "channels.telegram_fast_path_gateway_error"
             : "channels.telegram_fast_path_fallback_to_workflow",
           withOperationContext(op, {
             reason: telegramFallbackReason,
-            classification: fallbackClassification,
-            status: forwardResponse.status,
+            fastPathKind: fastPathOutcome.kind,
+            fastPathReason: fastPathOutcome.reason,
+            classification: fastPathOutcome.classification,
+            status: fastPathOutcome.status,
             sandboxId: effectiveMeta.sandboxId,
             forwardUrl,
             durationMs: fastPathDurationMs,
+            forwardDurationMs: fastPathOutcome.durationMs,
             bodyLength: forwardBody.length,
-            bodyHead: forwardBody.slice(0, 200),
+            bodyHead: fastPathOutcome.bodyHead,
             responseHeaders: forwardHeaders,
             action:
               telegramFallbackReason === "gateway_error"
@@ -351,25 +417,25 @@ export async function POST(request: Request): Promise<Response> {
         );
         await recordChannelLastForward("telegram", {
           ok: false,
-          status: forwardResponse.status,
-          classification: fallbackClassification,
+          status: fastPathOutcome.status,
+          classification: fastPathOutcome.classification,
           attempts: 1,
           totalMs: fastPathDurationMs,
-          transport: "public",
-          sandboxUrl: sandboxWebhookUrl,
-          sandboxId: effectiveMeta.sandboxId ?? null,
-          finalReasonHead: forwardBody.slice(0, 200),
+          transport: fastPathOutcome.transport,
+          sandboxUrl: fastPathOutcome.sandboxUrl,
+          sandboxId: fastPathOutcome.sandboxId,
+          finalReasonHead: fastPathOutcome.bodyHead,
           startedAt: fastPathStartedAt,
           completedAt: Date.now(),
           deliveryId: fastPathDeliveryIdForRecord,
         });
-        if (isSandboxNotListening && !portUrlStaleMarked) {
+        if (fastPathOutcome.stalePort && !portUrlStaleMarked) {
           portUrlStaleMarked = true;
           try {
             const staleResult = await markSandboxPortUrlStale(
               effectiveMeta.sandboxId ?? null,
-              OPENCLAW_TELEGRAM_WEBHOOK_PORT,
-              "fast-path-not-listening",
+              fastPathOutcome.stalePort,
+              fastPathOutcome.stalePortReason ?? "fast-path-not-listening",
             );
             logWarn("channels.telegram_fast_path_dead_port_recorded", withOperationContext(op, {
               sandboxId: effectiveMeta.sandboxId,
@@ -387,14 +453,16 @@ export async function POST(request: Request): Promise<Response> {
             }));
           }
         }
-        const staleMeta = effectiveMeta;
-        effectiveMeta = await reconcileStaleRunningStatus();
-        logInfo("channels.telegram_fast_path_reconciled", withOperationContext(op, {
-          previousStatus: staleMeta.status,
-          previousSandboxId: staleMeta.sandboxId,
-          reconciledStatus: effectiveMeta.status,
-          reconciledSandboxId: effectiveMeta.sandboxId,
-        }));
+        if (fastPathOutcome.shouldReconcile) {
+          const staleMeta = effectiveMeta;
+          effectiveMeta = await reconcileStaleRunningStatus();
+          logInfo("channels.telegram_fast_path_reconciled", withOperationContext(op, {
+            previousStatus: staleMeta.status,
+            previousSandboxId: staleMeta.sandboxId,
+            reconciledStatus: effectiveMeta.status,
+            reconciledSandboxId: effectiveMeta.sandboxId,
+          }));
+        }
       } catch (error) {
         // Network-level failure or AbortSignal timeout — sandbox may or
         // may not have received the payload. Reconcile stale status and
@@ -405,28 +473,37 @@ export async function POST(request: Request): Promise<Response> {
           error instanceof Error && error.name === "TimeoutError";
         const errorMessage =
           error instanceof Error ? error.message : String(error);
-        fastPathFellBackToWorkflow = true;
+        fastPathOutcome = classifyFastPathException({
+          policy: TELEGRAM_FAST_PATH_POLICY,
+          error,
+          durationMs: Date.now() - fastPathStartedAt,
+          transport: "public",
+          sandboxUrl: fastPathSandboxWebhookUrl,
+          sandboxId: effectiveMeta.sandboxId ?? null,
+        });
         logWarn("channels.telegram_fast_path_failed", withOperationContext(op, {
           error: errorMessage,
           errorName: error instanceof Error ? error.name : undefined,
           sandboxId: effectiveMeta.sandboxId,
           action: "reconcile_and_wake",
-          reason: isAbort ? "fast_path_forward_timeout" : "network_error",
-          indeterminateDelivery: isAbort,
+          reason: fastPathOutcome.reason,
+          fastPathKind: fastPathOutcome.kind,
+          classification: fastPathOutcome.classification,
+          indeterminateDelivery: fastPathOutcome.indeterminateDelivery === true,
           fastPathTimeoutMs: isAbort
             ? TELEGRAM_FAST_PATH_FORWARD_TIMEOUT_MS
             : null,
         }));
         await recordChannelLastForward("telegram", {
           ok: false,
-          status: null,
-          classification: "fetch-exception",
+          status: fastPathOutcome.status,
+          classification: fastPathOutcome.classification,
           attempts: 1,
-          totalMs: Date.now() - fastPathStartedAt,
-          transport: "public",
-          sandboxUrl: null,
-          sandboxId: effectiveMeta.sandboxId ?? null,
-          finalReasonHead: errorMessage,
+          totalMs: fastPathOutcome.durationMs,
+          transport: fastPathOutcome.transport,
+          sandboxUrl: fastPathOutcome.sandboxUrl,
+          sandboxId: fastPathOutcome.sandboxId,
+          finalReasonHead: fastPathOutcome.bodyHead,
           startedAt: fastPathStartedAt,
           completedAt: Date.now(),
           deliveryId: fastPathDeliveryIdForRecord,
@@ -443,6 +520,15 @@ export async function POST(request: Request): Promise<Response> {
         void fastPathSandboxWebhookUrl;
       }
     } else {
+      fastPathOutcome = {
+        kind: FastPathOutcomeKind.NotAttempted,
+        reason:
+          effectiveMeta.status !== "running"
+            ? FastPathSkipReason.SandboxStatusNotRunning
+            : FastPathSkipReason.MissingSandboxId,
+        initialStatus: effectiveMeta.status,
+        sandboxId: effectiveMeta.sandboxId ?? null,
+      };
       logInfo("channels.telegram_fast_path_skipped", withOperationContext(op, {
         reason:
           effectiveMeta.status !== "running"
@@ -454,13 +540,47 @@ export async function POST(request: Request): Promise<Response> {
       }));
     }
 
+    const routePlan = planWebhookAfterFastPath({
+      channel: "telegram",
+      fastPath: fastPathOutcome ?? {
+        kind: FastPathOutcomeKind.NotAttempted,
+        reason: FastPathSkipReason.UnsupportedPayload,
+        initialStatus: effectiveMeta.status,
+        sandboxId: effectiveMeta.sandboxId ?? null,
+      },
+      effectiveStatus: effectiveMeta.status,
+      canSendUserNotice: Boolean(chatId),
+      policy: { noticeOnWorkflowStart: true },
+    });
+    const fastPathFellBackToWorkflow =
+      routePlan.fastPath?.kind === FastPathOutcomeKind.FallbackToWorkflow;
+    logInfo("channels.telegram_webhook_plan", withOperationContext(op, {
+      routeOutcome: routePlan.routeOutcome,
+      workflowKind: routePlan.workflow.kind,
+      workflowReason: routePlan.workflow.kind === "start" ? routePlan.workflow.reason : null,
+      userNoticeKind: routePlan.userNotice.kind,
+      userNoticeReason: routePlan.userNotice.reason,
+      fastPathKind: routePlan.fastPath?.kind ?? null,
+      fastPathReason: routePlan.fastPath && "reason" in routePlan.fastPath
+        ? routePlan.fastPath.reason
+        : null,
+      fastPathClassification: routePlan.fastPath && "classification" in routePlan.fastPath
+        ? routePlan.fastPath.classification
+        : null,
+      effectiveStatus: effectiveMeta.status,
+      effectiveSandboxId: effectiveMeta.sandboxId ?? null,
+      fastPathFellBackToWorkflow,
+    }));
+
+    if (routePlan.workflow.kind !== "start") {
+      return Response.json({ ok: true });
+    }
+
     // Send "Waking up" boot message from the webhook route (before workflow)
     // so the user gets immediate feedback. The message ID is passed to the
     // workflow so the step can edit/delete it during processing.
     let bootMessageId: number | null = null;
-    const shouldSendBootMessage =
-      effectiveMeta.status !== "running" || fastPathFellBackToWorkflow;
-    if (shouldSendBootMessage && chatId) {
+    if (routePlan.userNotice.kind === "send-before-workflow" && chatId) {
       try {
         const result = await sendMessage(
           config.botToken,
@@ -473,6 +593,8 @@ export async function POST(request: Request): Promise<Response> {
           chatId,
           bootMessageId,
           effectiveStatus: effectiveMeta.status,
+          userNoticeReason: routePlan.userNotice.reason,
+          workflowReason: routePlan.workflow.reason,
           fastPathFellBackToWorkflow,
           receivedToBootMessageMs: Date.now() - receivedAtMs,
         }));
@@ -486,6 +608,8 @@ export async function POST(request: Request): Promise<Response> {
           receivedAtMs,
           bootMessageId,
           effectiveStatus: effectiveMeta.status,
+          userNoticeReason: routePlan.userNotice.reason,
+          workflowReason: routePlan.workflow.reason,
           fastPathFellBackToWorkflow,
           sandboxId: effectiveMeta.sandboxId ?? null,
           outcome: "accepted",
@@ -494,6 +618,8 @@ export async function POST(request: Request): Promise<Response> {
         logWarn("channels.telegram_boot_message_failed", withOperationContext(op, {
           chatId,
           effectiveStatus: effectiveMeta.status,
+          userNoticeReason: routePlan.userNotice.reason,
+          workflowReason: routePlan.workflow.reason,
           fastPathFellBackToWorkflow,
           error: err instanceof Error ? err.message : String(err),
           receivedToBootMessageAttemptMs: Date.now() - receivedAtMs,
@@ -507,6 +633,8 @@ export async function POST(request: Request): Promise<Response> {
           chatId,
           receivedAtMs,
           effectiveStatus: effectiveMeta.status,
+          userNoticeReason: routePlan.userNotice.reason,
+          workflowReason: routePlan.workflow.reason,
           fastPathFellBackToWorkflow,
           sandboxId: effectiveMeta.sandboxId ?? null,
           error: err instanceof Error ? err.message : String(err),
@@ -521,6 +649,9 @@ export async function POST(request: Request): Promise<Response> {
         effectiveStatus: effectiveMeta.status,
         effectiveSandboxId: effectiveMeta.sandboxId,
         bootMessageId,
+        workflowReason: routePlan.workflow.reason,
+        userNoticeKind: routePlan.userNotice.kind,
+        userNoticeReason: routePlan.userNotice.reason,
         handoffDelayMs: Date.now() - receivedAtMs,
       }));
       await telegramWebhookWorkflowRuntime.start(drainChannelWorkflow, [
@@ -539,6 +670,9 @@ export async function POST(request: Request): Promise<Response> {
         effectiveStatus: effectiveMeta.status,
         effectiveSandboxId: effectiveMeta.sandboxId,
         bootMessageId,
+        workflowReason: routePlan.workflow.reason,
+        userNoticeKind: routePlan.userNotice.kind,
+        userNoticeReason: routePlan.userNotice.reason,
         handoffDelayMs: Date.now() - receivedAtMs,
       }));
       await persistWebhookDiagnostic({
@@ -551,6 +685,9 @@ export async function POST(request: Request): Promise<Response> {
         receivedAtMs,
         bootMessageId,
         effectiveStatus: effectiveMeta.status,
+        workflowReason: routePlan.workflow.reason,
+        userNoticeKind: routePlan.userNotice.kind,
+        userNoticeReason: routePlan.userNotice.reason,
         sandboxId: effectiveMeta.sandboxId ?? null,
         handoffDelayMs: Date.now() - receivedAtMs,
         outcome: "workflow-started",

@@ -236,6 +236,7 @@ test("Telegram webhook: fast path fires when telegramListenerReady is missing", 
     const route = getTelegramWebhookRoute();
     const startMock = mock.method(telegramWebhookWorkflowRuntime, "start", async () => {});
     try {
+      _resetLogBuffer();
       const req = buildTelegramWebhook({ webhookSecret: TELEGRAM_WEBHOOK_SECRET });
       const result = await callRoute(route.POST, req);
       assert.equal(result.status, 200);
@@ -379,6 +380,16 @@ test("Telegram webhook: fast path fires when status=running AND telegramListener
         0,
         "workflow must NOT start when fast-path succeeds",
       );
+      const planLog = getServerLogs().find(
+        (entry) =>
+          entry.message === "channels.telegram_webhook_plan" &&
+          entry.data?.sandboxId === "sbx-telegram-gate-ready",
+      );
+      assert.ok(planLog, "accepted fast-path should log the planner decision");
+      assert.equal(planLog.data?.routeOutcome, "fast-path-accepted");
+      assert.equal(planLog.data?.workflowKind, "do-not-start");
+      assert.equal(planLog.data?.userNoticeKind, "do-not-send");
+      assert.equal(planLog.data?.fastPathKind, "accepted");
       resetAfterCallbacks();
     } finally {
       startMock.mock.restore();
@@ -432,6 +443,7 @@ test("Telegram webhook: fast path refreshes AI Gateway token before native forwa
     const startMock = mock.method(telegramWebhookWorkflowRuntime, "start", async () => {});
 
     try {
+      _resetLogBuffer();
       const result = await callRoute(
         route.POST,
         buildTelegramWebhook({ webhookSecret: TELEGRAM_WEBHOOK_SECRET }),
@@ -451,6 +463,148 @@ test("Telegram webhook: fast path refreshes AI Gateway token before native forwa
     } finally {
       startMock.mock.restore();
       _setAiGatewayTokenOverrideForTesting(null);
+    }
+  });
+});
+
+test("Telegram webhook: suspicious empty 200 starts workflow and sends waiting message", async () => {
+  await withHarness(async (h) => {
+    await configureTelegram(h);
+    await h.mutateMeta((meta) => {
+      meta.status = "running";
+      meta.sandboxId = "sbx-telegram-empty-200";
+      meta.snapshotId = "snap-telegram-empty-200";
+      meta.portUrls = {
+        "3000": "https://sbx-telegram-empty-200-3000.fake.vercel.run",
+        "8787": "https://sbx-telegram-empty-200-8787.fake.vercel.run",
+      };
+      meta.lastRestoreMetrics = {
+        sandboxCreateMs: 0,
+        tokenWriteMs: 0,
+        assetSyncMs: 0,
+        startupScriptMs: 0,
+        forcePairMs: 0,
+        firewallSyncMs: 0,
+        localReadyMs: 0,
+        publicReadyMs: 0,
+        totalMs: 0,
+        skippedStaticAssetSync: false,
+        assetSha256: null,
+        vcpus: 1,
+        recordedAt: Date.now(),
+        telegramListenerReady: true,
+      };
+    });
+
+    h.fakeFetch.onPost(/telegram-webhook$/, () => new Response("", { status: 200 }));
+    const sendMessageCalls: string[] = [];
+    h.fakeFetch.onPost(/api\.telegram\.org.*\/sendMessage$/, (url) => {
+      sendMessageCalls.push(url);
+      return Response.json({ ok: true, result: { message_id: 91 } });
+    });
+
+    const route = getTelegramWebhookRoute();
+    const startMock = mock.method(telegramWebhookWorkflowRuntime, "start", async () => {});
+
+    try {
+      _resetLogBuffer();
+      const result = await callRoute(
+        route.POST,
+        buildTelegramWebhook({ webhookSecret: TELEGRAM_WEBHOOK_SECRET }),
+      );
+
+      assert.equal(result.status, 200);
+      assert.equal(startMock.mock.callCount(), 1);
+      assert.equal(sendMessageCalls.length, 1, "suspicious empty 200 should send a waiting message");
+      const logs = getServerLogs();
+      const planLog = logs.find(
+        (entry) =>
+          entry.message === "channels.telegram_webhook_plan" &&
+          entry.data?.sandboxId === "sbx-telegram-empty-200",
+      );
+      assert.ok(planLog, "suspicious empty 200 should log the planner decision");
+      assert.equal(planLog.data?.fastPathKind, "fallback-to-workflow");
+      assert.equal(planLog.data?.fastPathReason, "suspicious-empty-200");
+      assert.equal(planLog.data?.workflowReason, "fast-path-fallback");
+      assert.equal(planLog.data?.userNoticeKind, "send-before-workflow");
+      assert.equal(planLog.data?.userNoticeReason, "fast-path-fallback");
+      const fallbackLog = logs.find(
+        (entry) => entry.message === "channels.telegram_fast_path_fallback_to_workflow",
+      );
+      assert.ok(fallbackLog, "suspicious empty 200 should log fast-path fallback");
+      assert.equal(fallbackLog.data?.reason, "suspicious_empty_200");
+      resetAfterCallbacks();
+    } finally {
+      startMock.mock.restore();
+    }
+  });
+});
+
+test("Telegram webhook: generic native 500 starts workflow and sends waiting message", async () => {
+  await withHarness(async (h) => {
+    await configureTelegram(h);
+    await h.mutateMeta((meta) => {
+      meta.status = "running";
+      meta.sandboxId = "sbx-telegram-handler-500";
+      meta.snapshotId = "snap-telegram-handler-500";
+      meta.portUrls = {
+        "3000": "https://sbx-telegram-handler-500-3000.fake.vercel.run",
+        "8787": "https://sbx-telegram-handler-500-8787.fake.vercel.run",
+      };
+      meta.lastRestoreMetrics = {
+        sandboxCreateMs: 0,
+        tokenWriteMs: 0,
+        assetSyncMs: 0,
+        startupScriptMs: 0,
+        forcePairMs: 0,
+        firewallSyncMs: 0,
+        localReadyMs: 0,
+        publicReadyMs: 0,
+        totalMs: 0,
+        skippedStaticAssetSync: false,
+        assetSha256: null,
+        vcpus: 1,
+        recordedAt: Date.now(),
+        telegramListenerReady: true,
+      };
+    });
+
+    h.fakeFetch.onPost(/telegram-webhook$/, () =>
+      new Response("native handler failed", { status: 500 }),
+    );
+    const sendMessageCalls: string[] = [];
+    h.fakeFetch.onPost(/api\.telegram\.org.*\/sendMessage$/, (url) => {
+      sendMessageCalls.push(url);
+      return Response.json({ ok: true, result: { message_id: 92 } });
+    });
+
+    const route = getTelegramWebhookRoute();
+    const startMock = mock.method(telegramWebhookWorkflowRuntime, "start", async () => {});
+
+    try {
+      const result = await callRoute(
+        route.POST,
+        buildTelegramWebhook({ webhookSecret: TELEGRAM_WEBHOOK_SECRET }),
+      );
+
+      assert.equal(result.status, 200);
+      assert.equal(startMock.mock.callCount(), 1);
+      assert.equal(sendMessageCalls.length, 1, "generic native 500 should send a waiting message");
+      const planLog = getServerLogs().find(
+        (entry) =>
+          entry.message === "channels.telegram_webhook_plan" &&
+          entry.data?.sandboxId === "sbx-telegram-handler-500",
+      );
+      assert.ok(planLog, "generic native 500 should log the planner decision");
+      assert.equal(planLog.data?.fastPathKind, "fallback-to-workflow");
+      assert.equal(planLog.data?.fastPathReason, "handler-error-policy-start-workflow");
+      assert.equal(planLog.data?.fastPathClassification, "handler-error");
+      assert.equal(planLog.data?.effectiveStatus, "running");
+      assert.equal(planLog.data?.workflowReason, "fast-path-fallback");
+      assert.equal(planLog.data?.userNoticeKind, "send-before-workflow");
+      resetAfterCallbacks();
+    } finally {
+      startMock.mock.restore();
     }
   });
 });
@@ -511,6 +665,7 @@ test("Telegram webhook: fast path non-ok response falls through to workflow wake
     });
 
     try {
+      _resetLogBuffer();
       const req = buildTelegramWebhook({ webhookSecret: TELEGRAM_WEBHOOK_SECRET });
       const result = await callRoute(route.POST, req);
       assert.equal(result.status, 200);
@@ -529,6 +684,16 @@ test("Telegram webhook: fast path non-ok response falls through to workflow wake
       assert.ok(bootMessageLog, "boot message send should be logged on fast-path fallback");
       assert.equal(bootMessageLog.data?.effectiveStatus, "running");
       assert.equal(bootMessageLog.data?.fastPathFellBackToWorkflow, true);
+      const planLog = logs.find(
+        (entry) =>
+          entry.message === "channels.telegram_webhook_plan" &&
+          entry.data?.sandboxId === "sbx-telegram-non-ok",
+      );
+      assert.ok(planLog, "non-ok fast path should log the planner decision");
+      assert.equal(planLog.data?.fastPathKind, "fallback-to-workflow");
+      assert.equal(planLog.data?.fastPathReason, "sandbox-not-listening");
+      assert.equal(planLog.data?.workflowReason, "fast-path-fallback");
+      assert.equal(planLog.data?.userNoticeKind, "send-before-workflow");
       const gatewayErrorLog = logs.find(
         (entry) => entry.message === "channels.telegram_fast_path_gateway_error",
       );
