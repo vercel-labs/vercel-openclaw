@@ -1,0 +1,11 @@
+# AGENTS.md is intentionally dense; keep enough room for project policy while
+# channel procedures live in progressively loaded skills.
+project_doc_max_bytes = 65536
+
+[agents]
+max_threads = 6
+max_depth = 1
+
+[mcp_servers.lat]
+command = "lat"
+args = ["mcp"]
