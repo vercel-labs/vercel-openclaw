@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { afterEach, mock } from "node:test";
 
 import {
   OPENCLAW_BIN,
@@ -44,10 +44,15 @@ import {
   createScenarioHarness,
   type CommandResponder,
 } from "@/test-utils/harness";
+import { OPENCLAW_BUNDLE_COMPATIBILITY_ERROR_CODE } from "@/server/openclaw/bundle-compatibility";
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+afterEach(() => {
+  mock.restoreAll();
+});
 
 /** Create a sandbox handle seeded in the fake controller. */
 async function createHandle(h: ReturnType<typeof createScenarioHarness>) {
@@ -195,6 +200,7 @@ test("setupOpenClaw extracts bundle workspace templates into runtime working tre
   await withEnv({ OPENCLAW_BUNDLE_URL: "https://example.test/openclaw.bundle.mjs" }, async () => {
     const h = createScenarioHarness();
     try {
+      h.fakeFetch.onGet("asset-manifest.json", () => new Response("not found", { status: 404 }));
       const handle = await createHandle(h);
 
       await setupOpenClaw(handle, {
@@ -220,10 +226,87 @@ test("setupOpenClaw extracts bundle workspace templates into runtime working tre
   });
 });
 
+test("setupOpenClaw warns and continues when bundle asset manifest is absent", async () => {
+  await withEnv({ OPENCLAW_BUNDLE_URL: "https://example.test/openclaw.bundle.mjs" }, async () => {
+    const { _resetLogBuffer, getServerLogs } = await import("@/server/log");
+    const h = createScenarioHarness();
+    try {
+      h.fakeFetch.onGet("asset-manifest.json", () => new Response("not found", { status: 404 }));
+      _resetLogBuffer();
+      const handle = await createHandle(h);
+
+      await setupOpenClaw(handle, {
+        gatewayToken: "tok-bundle-manifest-missing",
+        proxyOrigin: "https://example.com",
+      });
+
+      assert.ok(
+        getServerLogs().some((entry) => entry.message === "openclaw.setup.bundle_manifest_missing"),
+        "missing asset-manifest.json should be warning-only for legacy bundles",
+      );
+      assert.ok(
+        handle.commands.some((c) => c.cmd === "bash" && c.args?.[1]?.includes("openclaw.bundle.mjs")),
+        "legacy bundle bootstrap should continue after manifest warning",
+      );
+    } finally {
+      h.teardown();
+    }
+  });
+});
+
+test("setupOpenClaw fails before downloads when present bundle manifest is incompatible", async () => {
+  await withEnv({ OPENCLAW_BUNDLE_URL: "https://example.test/openclaw.bundle.mjs" }, async () => {
+    const h = createScenarioHarness();
+    try {
+      h.fakeFetch.onGet("asset-manifest.json", () =>
+        Response.json({ schemaVersion: 2, name: "openclaw-sandbox-bundle", profile: "sandbox" }),
+      );
+      const handle = await createHandle(h);
+
+      await assert.rejects(
+        setupOpenClaw(handle, {
+          gatewayToken: "tok-bundle-manifest-bad",
+          proxyOrigin: "https://example.com",
+        }),
+        new RegExp(OPENCLAW_BUNDLE_COMPATIBILITY_ERROR_CODE),
+      );
+
+      assert.equal(handle.commands.length, 0, "bootstrap should fail before sandbox downloads");
+    } finally {
+      h.teardown();
+    }
+  });
+});
+
+test("setupOpenClaw fails before downloads when present bundle manifest is malformed JSON", async () => {
+  await withEnv({ OPENCLAW_BUNDLE_URL: "https://example.test/openclaw.bundle.mjs" }, async () => {
+    const h = createScenarioHarness();
+    try {
+      h.fakeFetch.onGet("asset-manifest.json", () =>
+        new Response("not json", { status: 200, headers: { "content-type": "application/json" } }),
+      );
+      const handle = await createHandle(h);
+
+      await assert.rejects(
+        setupOpenClaw(handle, {
+          gatewayToken: "tok-bundle-manifest-malformed",
+          proxyOrigin: "https://example.com",
+        }),
+        new RegExp(OPENCLAW_BUNDLE_COMPATIBILITY_ERROR_CODE),
+      );
+
+      assert.equal(handle.commands.length, 0, "bootstrap should fail before sandbox downloads");
+    } finally {
+      h.teardown();
+    }
+  });
+});
+
 test("setupOpenClaw extracts bundled channel plugins into OpenClaw trusted dist extensions", async () => {
   await withEnv({ OPENCLAW_BUNDLE_URL: "https://example.test/openclaw.bundle.mjs" }, async () => {
     const h = createScenarioHarness();
     try {
+      h.fakeFetch.onGet("asset-manifest.json", () => new Response("not found", { status: 404 }));
       const handle = await createHandle(h);
 
       await setupOpenClaw(handle, {
@@ -259,6 +342,7 @@ test("setupOpenClaw preserves bundle package root identity after shim package ex
   await withEnv({ OPENCLAW_BUNDLE_URL: "https://example.test/openclaw.bundle.mjs" }, async () => {
     const h = createScenarioHarness();
     try {
+      h.fakeFetch.onGet("asset-manifest.json", () => new Response("not found", { status: 404 }));
       const handle = await createHandle(h);
 
       await setupOpenClaw(handle, {
@@ -295,6 +379,7 @@ test("setupOpenClaw creates bundle compatibility shims after shared chunks extra
   await withEnv({ OPENCLAW_BUNDLE_URL: "https://example.test/openclaw.bundle.mjs" }, async () => {
     const h = createScenarioHarness();
     try {
+      h.fakeFetch.onGet("asset-manifest.json", () => new Response("not found", { status: 404 }));
       const handle = await createHandle(h);
 
       await setupOpenClaw(handle, {

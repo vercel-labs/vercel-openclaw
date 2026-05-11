@@ -1,4 +1,15 @@
-import type { ChannelLastForward, WhatsAppLinkState } from "@/shared/channels";
+import {
+  normalizeChannelLastForward,
+  type ChannelLastForward,
+  type ChannelName,
+  type ChannelUserVisibleReply,
+  type WhatsAppLinkState,
+} from "@/shared/channels";
+import {
+  channelDeliveryFromLastForward,
+  normalizeChannelDeliverySnapshot,
+  type ChannelDeliverySnapshot,
+} from "@/shared/channel-delivery";
 
 export const WHATSAPP_SUMMARY_DETAIL_ROUTE = "/api/channels/whatsapp" as const;
 export const WHATSAPP_CONNECTION_SEMANTICS = "delivery-enabled" as const;
@@ -19,6 +30,15 @@ export type ChannelLastForwardSummary = {
   finalReasonHead: string | null;
   completedAt: number;
   ageMs: number;
+  userVisibleReply: ChannelUserVisibleReplySummary;
+};
+
+export type ChannelDeliveryStateSummary = ChannelDeliverySnapshot & {
+  ageMs: number;
+};
+
+export type ChannelUserVisibleReplySummary = ChannelUserVisibleReply & {
+  ageMs: number;
 };
 
 export type ChannelSummaryEntry = {
@@ -31,6 +51,10 @@ export type ChannelSummaryEntry = {
   lastError: string | null;
   /** Most-recent forward attempt result (null if no forward has been recorded). */
   lastForward?: ChannelLastForwardSummary | null;
+  /** Canonical per-delivery state projection for the latest known channel event. */
+  lastDeliveryState?: ChannelDeliveryStateSummary | null;
+  /** Independent platform-visible reply observation for the latest delivery. */
+  userVisibleReply?: ChannelUserVisibleReplySummary | null;
 };
 
 export type SlackSummaryEntry = ChannelSummaryEntry & {
@@ -55,6 +79,9 @@ export type SlackSummaryEntry = ChannelSummaryEntry & {
      * gone stale since the config was applied.
      */
     lastForward: ChannelLastForwardSummary | null;
+    lastDeliveryState: ChannelDeliveryStateSummary | null;
+    userVisibleReply: ChannelUserVisibleReplySummary | null;
+    userVisibleReplyVerified: boolean;
   };
 };
 
@@ -62,18 +89,52 @@ export function projectChannelLastForward(
   raw: ChannelLastForward | null | undefined,
   now: number = Date.now(),
 ): ChannelLastForwardSummary | null {
-  if (!raw) return null;
+  const normalized = normalizeChannelLastForward(raw, now);
+  if (!normalized) return null;
+  const userVisibleReply = normalized.userVisibleReply;
   return {
-    ok: raw.ok,
-    classification: raw.classification,
-    status: raw.status,
-    attempts: raw.attempts,
-    totalMs: raw.totalMs,
-    sandboxUrl: raw.sandboxUrl,
-    sandboxId: raw.sandboxId,
-    finalReasonHead: raw.finalReasonHead,
-    completedAt: raw.completedAt,
-    ageMs: Math.max(0, now - raw.completedAt),
+    ok: normalized.ok,
+    classification: normalized.classification,
+    status: normalized.status,
+    attempts: normalized.attempts,
+    totalMs: normalized.totalMs,
+    sandboxUrl: normalized.sandboxUrl,
+    sandboxId: normalized.sandboxId,
+    finalReasonHead: normalized.finalReasonHead,
+    completedAt: normalized.completedAt,
+    ageMs: Math.max(0, now - normalized.completedAt),
+    userVisibleReply: {
+      ...userVisibleReply,
+      ageMs: Math.max(0, now - userVisibleReply.checkedAt),
+    },
+  };
+}
+
+export function projectChannelDeliveryState(
+  raw: ChannelDeliverySnapshot | null | undefined,
+  fallbackLastForward: ChannelLastForward | null | undefined,
+  channel: ChannelName,
+  now: number = Date.now(),
+): ChannelDeliveryStateSummary | null {
+  const normalized = normalizeChannelDeliverySnapshot(raw);
+  if (normalized) {
+    return {
+      ...normalized,
+      ageMs: Math.max(0, now - normalized.updatedAt),
+    };
+  }
+
+  const fallback = normalizeChannelLastForward(fallbackLastForward, now);
+  if (!fallback) return null;
+  const projected = channelDeliveryFromLastForward({
+    channel,
+    lastForward: fallback,
+    now,
+    source: "legacy-projection",
+  });
+  return {
+    ...projected,
+    ageMs: Math.max(0, now - (projected.completedAt ?? projected.receivedAt ?? projected.updatedAt)),
   };
 }
 

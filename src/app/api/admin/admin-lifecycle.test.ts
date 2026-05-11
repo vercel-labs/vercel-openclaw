@@ -730,7 +730,7 @@ test("GET /api/admin/prepare-restore: returns ok=true when restore target is reu
   });
 });
 
-test("GET /api/admin/prepare-restore: missing snapshotId cannot report reusable even when snapshot hashes match", async () => {
+test("GET /api/admin/prepare-restore: v2 persisted state can be reusable without manual snapshotId", async () => {
   await withTestEnv(async () => {
     installFakeController();
 
@@ -764,6 +764,7 @@ test("GET /api/admin/prepare-restore: missing snapshotId cannot report reusable 
         reusable: boolean;
         needsPrepare: boolean;
         reasons: string[];
+        persistedStateSource: "persistent-auto-save" | "manual-snapshot" | null;
       };
       plan: {
         status: string;
@@ -783,26 +784,21 @@ test("GET /api/admin/prepare-restore: missing snapshotId cannot report reusable 
       };
     };
 
-    assert.equal(body.ok, false);
-    assert.equal(body.attestation.reusable, false);
-    assert.equal(body.attestation.needsPrepare, true);
-    assert.ok(body.attestation.reasons.includes("snapshot-missing"));
-    assert.equal(body.plan.status, "needs-prepare");
-    assert.equal(body.plan.blocking, true);
-    assert.ok(
-      body.plan.actions.some((action) => action.id === "prepare-destructive"),
-      "Plan should require prepare-destructive when snapshotId is missing",
-    );
+    assert.equal(body.ok, true);
+    assert.equal(body.attestation.reusable, true);
+    assert.equal(body.attestation.needsPrepare, false);
+    assert.equal(body.attestation.persistedStateSource, "persistent-auto-save");
+    assert.ok(!body.attestation.reasons.includes("snapshot-missing"));
+    assert.equal(body.plan.status, "ready");
+    assert.equal(body.plan.blocking, false);
+    assert.deepEqual(body.plan.actions, []);
 
     // Decision kernel invariants
     assert.equal(body.ok, body.attestation.reusable);
     assert.equal(body.decision.reusable, body.attestation.reusable);
-    assert.ok(body.decision.reasons.includes("snapshot-missing"));
-    assert.deepEqual(body.decision.requiredActions, [
-      "ensure-running",
-      "prepare-destructive",
-    ]);
-    assert.equal(body.decision.nextAction, "ensure-running");
+    assert.ok(!body.decision.reasons.includes("snapshot-missing"));
+    assert.deepEqual(body.decision.requiredActions, []);
+    assert.equal(body.decision.nextAction, null);
   });
 });
 

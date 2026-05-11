@@ -23,12 +23,22 @@ export type Blocker = {
   suggestedAction: string | null;
 };
 
+export type ObservabilityGap = {
+  kind: "user_visible_reply_unknown" | "user_visible_reply_timed_out";
+  detail: string;
+  evidence: Record<string, unknown>;
+  firstObservedAt: number;
+  suggestedAction: string | null;
+};
+
 export type ChannelReport = {
   ready: boolean;
   blockers: Blocker[];
+  observabilityGaps: ObservabilityGap[];
   readinessSnapshot: {
     liveConfigSync: unknown;
     lastForward: unknown;
+    userVisibleReply: unknown;
     sandboxId: string | null;
     portUrls: Record<string, string> | null;
   };
@@ -72,6 +82,7 @@ function buildChannelReport(
   const liveConfigSync = slackConfig?.liveConfigSync ?? null;
 
   const blockers: Blocker[] = [];
+  const observabilityGaps: ObservabilityGap[] = [];
 
   if (config === null || config === undefined) {
     blockers.push({
@@ -148,6 +159,38 @@ function buildChannelReport(
     }
 
     const recentlyAccepted = isRecentForwardOk(lastForward, now);
+    const userVisibleReply = lastForward?.userVisibleReply ?? null;
+    if (
+      lastForward?.ok === true &&
+      lastForward.classification === "accepted" &&
+      userVisibleReply?.status === "unknown"
+    ) {
+      observabilityGaps.push({
+        kind: "user_visible_reply_unknown",
+        detail: `${channel} native handler accepted the delivery, but no platform-visible OpenClaw reply was observed.`,
+        evidence: {
+          deliveryId: lastForward.deliveryId,
+          nativeAcceptedAt: lastForward.completedAt,
+          userVisibleReply,
+        },
+        firstObservedAt: userVisibleReply.checkedAt,
+        suggestedAction:
+          "Run a channel canary once platform credentials and observer support are configured.",
+      });
+    }
+    if (userVisibleReply?.status === "timed-out") {
+      observabilityGaps.push({
+        kind: "user_visible_reply_timed_out",
+        detail: `${channel} reply observation timed out after native acceptance.`,
+        evidence: {
+          deliveryId: lastForward?.deliveryId ?? null,
+          userVisibleReply,
+        },
+        firstObservedAt: userVisibleReply.checkedAt,
+        suggestedAction: "Inspect channel/platform logs and native OpenClaw reply path.",
+      });
+    }
+
     if (
       liveConfigSync?.outcome === "failed" &&
       !recentlyAccepted
@@ -197,9 +240,11 @@ function buildChannelReport(
   return {
     ready,
     blockers,
+    observabilityGaps,
     readinessSnapshot: {
       liveConfigSync,
       lastForward,
+      userVisibleReply: lastForward?.userVisibleReply ?? null,
       sandboxId: meta.sandboxId,
       portUrls: meta.portUrls,
     },

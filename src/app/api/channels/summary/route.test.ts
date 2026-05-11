@@ -97,6 +97,10 @@ test("GET /api/channels/summary: returns summary for all channels including what
     assert.equal(body.whatsapp.requiresRunningSandbox, false);
     assert.equal(body.whatsapp.connectionSemantics, "delivery-enabled");
     assert.equal(body.whatsapp.detailRoute, "/api/channels/whatsapp");
+    assert.equal(body.slack.lastDeliveryState, null);
+    assert.equal(body.telegram.lastDeliveryState, null);
+    assert.equal(body.discord.lastDeliveryState, null);
+    assert.equal(body.whatsapp.lastDeliveryState, null);
   });
 });
 
@@ -324,6 +328,201 @@ test("GET /api/channels/summary: whatsapp error exposes linkState and lastError"
     assert.equal(body.whatsapp.linkState, "error");
     assert.equal(body.whatsapp.lastError, "connection timeout");
     assert.equal(body.whatsapp.detailRoute, "/api/channels/whatsapp");
+  });
+});
+
+test("GET /api/channels/summary: native accepted Slack forward keeps user-visible reply unknown", async () => {
+  await withTestEnv(async () => {
+    const completedAt = Date.now() - 1_000;
+    await mutateMeta((meta) => {
+      meta.channels.slack = {
+        signingSecret: "test-signing-secret",
+        botToken: "xoxb-test",
+        configuredAt: Date.now(),
+        liveConfigSync: {
+          outcome: "failed",
+          reason: "stale-config-sync",
+          liveConfigFresh: false,
+          checkedAt: completedAt - 1_000,
+        },
+      };
+      meta.channelDiagnostics = {
+        slack: {
+          lastForward: {
+            ok: true,
+            status: 200,
+            classification: "accepted",
+            attempts: 1,
+            totalMs: 42,
+            transport: "public",
+            sandboxUrl: "https://sandbox.example.com",
+            sandboxId: "sbx-test",
+            finalReasonHead: null,
+            startedAt: completedAt - 100,
+            completedAt,
+            deliveryId: "delivery-1",
+          } as any,
+        },
+      };
+    });
+
+    const route = getChannelsSummaryRoute();
+    const request = buildAuthGetRequest("/api/channels/summary");
+    const result = await callRoute(route.GET!, request);
+
+    assert.equal(result.status, 200);
+    const body = result.json as ChannelSummaryResponse;
+
+    assert.equal(body.slack.deliveryReady, true, "existing native readiness behavior remains unchanged");
+    assert.equal(body.slack.lastForward?.classification, "accepted");
+    assert.equal(body.slack.lastDeliveryState?.state, "visibility-unknown");
+    assert.equal(body.slack.lastDeliveryState?.source, "legacy-projection");
+    assert.equal(body.slack.lastForward?.userVisibleReply.status, "unknown");
+    assert.equal(body.slack.userVisibleReply?.status, "unknown");
+    assert.equal(body.slack.readiness.userVisibleReply?.status, "unknown");
+    assert.equal(body.slack.readiness.lastDeliveryState?.state, "visibility-unknown");
+    assert.equal(body.slack.readiness.userVisibleReplyVerified, false);
+  });
+});
+
+test("GET /api/channels/summary: stale broken Slack forward does not override fresh config sync", async () => {
+  await withTestEnv(async () => {
+    const now = Date.now();
+    await mutateMeta((meta) => {
+      meta.channels.slack = {
+        signingSecret: "test-signing-secret",
+        botToken: "xoxb-test",
+        configuredAt: now,
+        liveConfigSync: {
+          outcome: "applied",
+          reason: "config-sync-ok",
+          liveConfigFresh: true,
+          checkedAt: now - 1_000,
+        },
+      };
+      meta.channelDiagnostics = {
+        slack: {
+          lastForward: {
+            ok: false,
+            status: 502,
+            classification: "sandbox-not-listening",
+            attempts: 1,
+            totalMs: 42,
+            transport: "public",
+            sandboxUrl: "https://sandbox.example.com",
+            sandboxId: "sbx-test",
+            finalReasonHead: "This sandbox is not listening",
+            startedAt: now - 10 * 60 * 1000 - 100,
+            completedAt: now - 10 * 60 * 1000,
+            deliveryId: "delivery-old",
+          } as any,
+        },
+      };
+    });
+
+    const route = getChannelsSummaryRoute();
+    const request = buildAuthGetRequest("/api/channels/summary");
+    const result = await callRoute(route.GET!, request);
+
+    assert.equal(result.status, 200);
+    const body = result.json as ChannelSummaryResponse;
+
+    assert.equal(body.slack.deliveryReady, true);
+    assert.equal(body.slack.readiness.reason, "config-sync-ok");
+  });
+});
+
+test("GET /api/channels/summary: legacy lastDeliveryState age follows lastForward age", async () => {
+  await withTestEnv(async () => {
+    const now = Date.now();
+    const completedAt = now - 20_000;
+    await mutateMeta((meta) => {
+      meta.channels.slack = {
+        signingSecret: "test-signing-secret",
+        botToken: "xoxb-test",
+        configuredAt: now,
+      };
+      meta.channelDiagnostics = {
+        slack: {
+          lastForward: {
+            ok: true,
+            status: 200,
+            classification: "accepted",
+            attempts: 1,
+            totalMs: 42,
+            transport: "public",
+            sandboxUrl: "https://sandbox.example.com",
+            sandboxId: "sbx-test",
+            finalReasonHead: null,
+            startedAt: completedAt - 100,
+            completedAt,
+            deliveryId: "delivery-legacy",
+          } as any,
+        },
+      };
+    });
+
+    const route = getChannelsSummaryRoute();
+    const request = buildAuthGetRequest("/api/channels/summary");
+    const result = await callRoute(route.GET!, request);
+
+    assert.equal(result.status, 200);
+    const body = result.json as ChannelSummaryResponse;
+
+    assert.ok(body.slack.lastDeliveryState);
+    assert.ok(body.slack.lastDeliveryState.ageMs >= 19_000);
+  });
+});
+
+test("GET /api/channels/summary: observed user-visible reply projects as verified", async () => {
+  await withTestEnv(async () => {
+    const checkedAt = Date.now() - 500;
+    await mutateMeta((meta) => {
+      meta.channels.slack = {
+        signingSecret: "test-signing-secret",
+        botToken: "xoxb-test",
+        configuredAt: Date.now(),
+      };
+      meta.channelDiagnostics = {
+        slack: {
+          lastForward: {
+            ok: true,
+            status: 200,
+            classification: "accepted",
+            attempts: 1,
+            totalMs: 42,
+            transport: "public",
+            sandboxUrl: "https://sandbox.example.com",
+            sandboxId: "sbx-test",
+            finalReasonHead: null,
+            startedAt: checkedAt - 100,
+            completedAt: checkedAt,
+            deliveryId: "delivery-1",
+            userVisibleReply: {
+              status: "observed",
+              checkedAt,
+              observedAt: checkedAt,
+              timeoutMs: null,
+              source: "manual",
+              reason: "operator-confirmed",
+              evidence: null,
+            },
+          },
+        },
+      };
+    });
+
+    const route = getChannelsSummaryRoute();
+    const request = buildAuthGetRequest("/api/channels/summary");
+    const result = await callRoute(route.GET!, request);
+
+    assert.equal(result.status, 200);
+    const body = result.json as ChannelSummaryResponse;
+
+    assert.equal(body.slack.lastForward?.userVisibleReply.status, "observed");
+    assert.equal(body.slack.lastDeliveryState?.state, "reply-observed");
+    assert.equal(body.slack.userVisibleReply?.status, "observed");
+    assert.equal(body.slack.readiness.userVisibleReplyVerified, true);
   });
 });
 

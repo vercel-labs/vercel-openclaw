@@ -768,6 +768,7 @@ test("GET /api/status: restoreTarget.attestation for dirty restore target (runti
     assert.equal(att.reusable, false);
     assert.equal(att.needsPrepare, true);
     assert.deepEqual(att.reasons, [
+      "persisted-state-config-stale",
       "snapshot-config-stale",
       "restore-target-dirty",
     ]);

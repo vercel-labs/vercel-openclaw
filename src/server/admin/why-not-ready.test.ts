@@ -3,7 +3,10 @@ import { describe, test } from "node:test";
 
 import { buildWhyNotReady } from "@/server/admin/why-not-ready";
 import { createDefaultMeta, type SingleMeta } from "@/shared/types";
-import type { ChannelLastForward } from "@/shared/channels";
+import {
+  createUnknownUserVisibleReply,
+  type ChannelLastForward,
+} from "@/shared/channels";
 
 function metaFixture(): SingleMeta {
   return createDefaultMeta(1_000_000, "test-token", "test-instance");
@@ -25,6 +28,7 @@ function slackForward(
     startedAt: Date.now() - 1000,
     completedAt: Date.now() - 500,
     deliveryId: "delivery-1",
+    userVisibleReply: createUnknownUserVisibleReply(Date.now() - 500),
     ...overrides,
   };
 }
@@ -59,6 +63,75 @@ describe("buildWhyNotReady", () => {
 
     assert.equal(report.channels.slack.ready, true);
     assert.deepEqual(report.channels.slack.blockers, []);
+    assert.equal(
+      report.channels.slack.observabilityGaps[0]?.kind,
+      "user_visible_reply_unknown",
+    );
+    assert.equal(
+      report.channels.slack.readinessSnapshot.userVisibleReply,
+      report.channels.slack.observabilityGaps[0]?.evidence.userVisibleReply,
+    );
+  });
+
+  test("observed user-visible reply clears native-acceptance observability gap", async () => {
+    const meta = metaFixture();
+    meta.channels.slack = {
+      signingSecret: "secret",
+      botToken: "xoxb-test",
+      configuredAt: Date.now(),
+    };
+    meta.channelDiagnostics = {
+      slack: {
+        lastForward: slackForward({
+          userVisibleReply: {
+            status: "observed",
+            checkedAt: Date.now() - 400,
+            observedAt: Date.now() - 400,
+            timeoutMs: null,
+            source: "manual",
+            reason: "operator-confirmed",
+            evidence: null,
+          },
+        }),
+      },
+    };
+
+    const report = await buildWhyNotReady(meta);
+
+    assert.equal(report.channels.slack.ready, true);
+    assert.deepEqual(report.channels.slack.observabilityGaps, []);
+  });
+
+  test("timed-out user-visible reply adds observability gap without changing ready", async () => {
+    const meta = metaFixture();
+    meta.channels.slack = {
+      signingSecret: "secret",
+      botToken: "xoxb-test",
+      configuredAt: Date.now(),
+    };
+    meta.channelDiagnostics = {
+      slack: {
+        lastForward: slackForward({
+          userVisibleReply: {
+            status: "timed-out",
+            checkedAt: Date.now() - 400,
+            observedAt: null,
+            timeoutMs: 30_000,
+            source: "synthetic-canary",
+            reason: "deadline-expired",
+            evidence: null,
+          },
+        }),
+      },
+    };
+
+    const report = await buildWhyNotReady(meta);
+
+    assert.equal(report.channels.slack.ready, true);
+    assert.equal(
+      report.channels.slack.observabilityGaps[0]?.kind,
+      "user_visible_reply_timed_out",
+    );
   });
 
   test("slack lastForward sandbox-not-listening yields blocker with sandboxUrl", async () => {

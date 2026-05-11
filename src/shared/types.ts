@@ -3,12 +3,13 @@ import { createHash } from "node:crypto";
 import {
   createDefaultChannelConfigs,
   ensureChannelConfigs,
-  isChannelLastForward,
+  normalizeChannelLastForward,
   CHANNEL_NAMES,
   type ChannelConfigs,
   type ChannelDiagnostics,
   type ChannelName,
 } from "@/shared/channels";
+import { normalizeChannelDeliverySnapshot } from "@/shared/channel-delivery";
 
 export const DEFAULT_OPENCLAW_INSTANCE_ID = "openclaw-single";
 export const INSTANCE_ID_OVERRIDE_GLOBAL_KEY = "__openclawInstanceIdOverrideForTesting";
@@ -572,9 +573,14 @@ function ensureChannelDiagnostics(value: unknown): ChannelDiagnostics {
   for (const ch of CHANNEL_NAMES) {
     const entry = raw[ch];
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
-    const e = entry as { lastForward?: unknown };
-    if (e.lastForward && isChannelLastForward(e.lastForward)) {
-      out[ch] = { lastForward: e.lastForward };
+    const e = entry as { lastForward?: unknown; lastDeliveryState?: unknown };
+    const lastForward = normalizeChannelLastForward(e.lastForward);
+    const lastDeliveryState = normalizeChannelDeliverySnapshot(e.lastDeliveryState);
+    if (lastForward || lastDeliveryState) {
+      out[ch] = {
+        ...(lastForward ? { lastForward } : {}),
+        ...(lastDeliveryState ? { lastDeliveryState } : {}),
+      };
     }
   }
   return out;

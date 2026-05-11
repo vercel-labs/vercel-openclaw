@@ -196,6 +196,104 @@ describe("ensureMetaShape restoreOracle hydration", () => {
   });
 });
 
+describe("ensureMetaShape channel diagnostics hydration", () => {
+  test("hydrates legacy lastForward records with unknown user-visible reply", () => {
+    const result = ensureMetaShape({
+      id: "openclaw-single",
+      version: 1,
+      gatewayToken: "gw",
+      channelDiagnostics: {
+        slack: {
+          lastForward: {
+            ok: true,
+            status: 200,
+            classification: "accepted",
+            attempts: 1,
+            totalMs: 50,
+            transport: "public",
+            sandboxUrl: "https://sandbox.example.com",
+            sandboxId: "sbx-test",
+            finalReasonHead: null,
+            startedAt: 1000,
+            completedAt: 1200,
+            deliveryId: "delivery-1",
+          },
+        },
+      },
+    });
+
+    assert.ok(result);
+    assert.equal(
+      result.channelDiagnostics?.slack?.lastForward?.userVisibleReply.status,
+      "unknown",
+    );
+    assert.equal(
+      result.channelDiagnostics?.slack?.lastForward?.userVisibleReply.source,
+      "not-attempted",
+    );
+  });
+
+  test("preserves valid lastDeliveryState records", () => {
+    const result = ensureMetaShape({
+      id: "openclaw-single",
+      version: 1,
+      gatewayToken: "gw",
+      channelDiagnostics: {
+        slack: {
+          lastDeliveryState: {
+            version: 1,
+            channel: "slack",
+            deliveryId: "delivery-1",
+            state: "visibility-unknown",
+            finality: "terminal-revisable",
+            terminal: true,
+            receivedAt: 1000,
+            updatedAt: 1200,
+            completedAt: 1200,
+            source: "last-forward",
+            reason: "native-forward-only",
+            routeOutcome: null,
+            workflow: null,
+            fastPath: null,
+            native: {
+              ok: true,
+              status: 200,
+              classification: "accepted",
+              attempts: 1,
+              totalMs: 25,
+              transport: "public",
+              sandboxUrl: "https://sandbox.example.com",
+              sandboxId: "sbx-test",
+              completedAt: 1200,
+            },
+            reply: {
+              status: "unknown",
+              checkedAt: 1200,
+              observedAt: null,
+              timeoutMs: null,
+              source: "not-attempted",
+              reason: "native-forward-only",
+              evidence: null,
+            },
+            notice: {
+              state: "not-needed",
+              reason: "native-forward-only",
+              messageId: null,
+              updatedAt: null,
+              error: null,
+            },
+            transitions: [],
+          },
+        },
+      },
+    });
+
+    assert.ok(result);
+    assert.equal(result.channelDiagnostics?.slack?.lastDeliveryState?.state, "visibility-unknown");
+    assert.equal(result.channelDiagnostics?.slack?.lastDeliveryState?.native?.classification, "accepted");
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Q38: ensureMetaShape instance ID mismatch guard
 // ---------------------------------------------------------------------------

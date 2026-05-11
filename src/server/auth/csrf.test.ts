@@ -36,6 +36,38 @@ test("verifyCsrf: allows POST with matching Origin header", () => {
   assert.equal(verifyCsrf(req), null);
 });
 
+test("verifyCsrf: allows the actual request origin when public origin is a Vercel alias", () => {
+  const originalVercel = process.env.VERCEL;
+  const originalProductionUrl = process.env.VERCEL_PROJECT_PRODUCTION_URL;
+  try {
+    process.env.VERCEL = "1";
+    process.env.VERCEL_PROJECT_PRODUCTION_URL =
+      "vercel-openclaw-48.playground-vercel.tools";
+
+    const req = new Request(
+      "https://vercel-openclaw-48-iul55fxc6.playground-vercel.tools/api/channels/slack/app",
+      {
+        method: "POST",
+        headers: {
+          origin:
+            "https://vercel-openclaw-48-iul55fxc6.playground-vercel.tools",
+          "x-requested-with": "XMLHttpRequest",
+        },
+      },
+    );
+
+    assert.equal(verifyCsrf(req), null);
+  } finally {
+    if (originalVercel === undefined) delete process.env.VERCEL;
+    else process.env.VERCEL = originalVercel;
+    if (originalProductionUrl === undefined) {
+      delete process.env.VERCEL_PROJECT_PRODUCTION_URL;
+    } else {
+      process.env.VERCEL_PROJECT_PRODUCTION_URL = originalProductionUrl;
+    }
+  }
+});
+
 test("verifyCsrf: allows PUT with matching Origin header", () => {
   const req = new Request("http://localhost:3000/api/channels/slack", {
     method: "PUT",

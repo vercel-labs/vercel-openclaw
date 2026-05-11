@@ -3,6 +3,11 @@ import { getOpenclawPackageSpec, isVercelDeployment } from "@/server/env";
 import { isPinnedPackageSpec } from "@/server/deployment-contract";
 import type { WhatsAppGatewayConfig } from "@/server/openclaw/config";
 import {
+  formatBundleCompatibilityIssue,
+  INVALID_BUNDLE_ASSET_MANIFEST_JSON,
+  validateBundleAssetManifestForDashboard,
+} from "@/server/openclaw/bundle-compatibility";
+import {
   buildStartupScript,
   BUN_BIN,
   BUN_DOWNLOAD_SHA256,
@@ -75,6 +80,66 @@ async function assertCommandSuccess(
       output,
     });
   }
+}
+
+async function fetchBundleAssetManifest(bundleUrl: string): Promise<unknown | null> {
+  const manifestUrl = new URL("asset-manifest.json", bundleUrl).href;
+  const response = await fetch(manifestUrl, { signal: AbortSignal.timeout(5_000) });
+  if (response.status === 404) return null;
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status} fetching ${manifestUrl}`);
+  }
+  try {
+    return await response.json();
+  } catch {
+    return INVALID_BUNDLE_ASSET_MANIFEST_JSON;
+  }
+}
+
+async function validateBundleCompatibilityBeforeDownload(opts: {
+  sandboxId: string;
+  bundleUrl: string;
+}): Promise<void> {
+  let manifest: unknown | null;
+  try {
+    manifest = await fetchBundleAssetManifest(opts.bundleUrl);
+  } catch (err) {
+    logWarn("openclaw.setup.bundle_manifest_unavailable", {
+      sandboxId: opts.sandboxId,
+      bundleUrl: opts.bundleUrl,
+      reason: err instanceof Error ? err.message : String(err),
+    });
+    return;
+  }
+  if (!manifest) {
+    logWarn("openclaw.setup.bundle_manifest_missing", {
+      sandboxId: opts.sandboxId,
+      bundleUrl: opts.bundleUrl,
+      reason: "legacy-bundle-compatibility-boundary",
+    });
+    return;
+  }
+
+  const result = validateBundleAssetManifestForDashboard(manifest);
+  if (!result.ok) {
+    logError("openclaw.setup.bundle_compatibility_mismatch", {
+      sandboxId: opts.sandboxId,
+      bundleUrl: opts.bundleUrl,
+      ...result.issue,
+    });
+    throw new Error(formatBundleCompatibilityIssue(result.issue));
+  }
+  for (const warning of result.warnings) {
+    logWarn("openclaw.setup.bundle_compatibility_warning", {
+      sandboxId: opts.sandboxId,
+      bundleUrl: opts.bundleUrl,
+      ...warning,
+    });
+  }
+  logInfo("openclaw.setup.bundle_compatibility_ok", {
+    sandboxId: opts.sandboxId,
+    bundleUrl: opts.bundleUrl,
+  });
 }
 
 function buildBundleCompatibilityShimScript(): string {
@@ -246,6 +311,11 @@ export async function setupOpenClaw(
   logInfo("openclaw.setup.start", { sandboxId: sandbox.sandboxId, packageSpec, onVercel, bundleUrl: bundleUrl ?? null });
 
   if (bundleUrl) {
+    await validateBundleCompatibilityBeforeDownload({
+      sandboxId: sandbox.sandboxId,
+      bundleUrl,
+    });
+
     // ---------- Bundle path: download pre-built bundle from blob storage ----------
     progress?.setPhase("downloading-bundle", `Downloading bundle`);
     const downloadResult = await sandbox.runCommand({

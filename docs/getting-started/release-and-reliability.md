@@ -19,6 +19,8 @@ Required bundle assets currently include:
 
 The important compatibility risk is asset shape drift. A release with only `openclaw.bundle.mjs` is not enough, and a bundle can build successfully while still failing dashboard restore or channel route readiness.
 
+During migration, dashboard bootstrap treats a missing `asset-manifest.json` as a legacy-bundle warning, but a present malformed or incompatible manifest is fatal. That failure uses `OPENCLAW_BUNDLE_COMPATIBILITY_MISMATCH` and happens before sandbox downloads begin.
+
 ## Dashboard Release
 
 Dashboard changes land in this repository. The canonical CI entrypoint is:
@@ -30,7 +32,6 @@ node scripts/verify.mjs
 For docs or env-contract changes, also run:
 
 ```bash
-lat check
 pnpm check:verify-contract
 ```
 

@@ -6,6 +6,8 @@ This guide explains how to connect Slack, Telegram, WhatsApp (experimental), and
 
 Channels are a first-class part of the product. They depend on durable state (Redis), a working sandbox lifecycle, and a verified deployment. This guide walks through the full path from "deployment exists" to "channel is safely connected and working."
 
+The canonical state model for per-event channel handoff is documented in [Channel Delivery State Machine](channel-delivery-state-machine.md), implemented in `src/shared/channel-delivery.ts`, and governed by `docs/adr/0001-channel-delivery-state-machine-source.md`. This guide describes operator behavior; do not duplicate the transition table here.
+
 ## Before you connect a channel
 
 There are two different gates here:

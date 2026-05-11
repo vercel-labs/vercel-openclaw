@@ -39,4 +39,4 @@ flowchart LR
 
 This repository owns the control plane only. It does not publish the `vclaw` package and it does not build the OpenClaw runtime bundle, but changes here can still break both contracts.
 
-Use `node scripts/verify.mjs` for dashboard verification. When a change affects the guide, env names, or operator instructions, also run `lat check` and `pnpm check:verify-contract` when env contract text changed.
+Use `node scripts/verify.mjs` for dashboard verification. When a change affects the guide, env names, or operator instructions, also run `pnpm check:verify-contract` when env contract text changed.

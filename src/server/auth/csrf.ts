@@ -1,4 +1,5 @@
 import { getPublicOrigin } from "@/server/public-url";
+import { logWarn } from "@/server/log";
 
 /**
  * Verify that a state-changing request originated from this application.
@@ -21,12 +22,25 @@ export function verifyCsrf(request: Request): Response | null {
 
   const origin = request.headers.get("origin");
   if (origin) {
-    const expected = getPublicOrigin(request);
-    // Compare origins (scheme + host + port).  Both values are already
-    // normalised to full URLs, so a simple prefix check works.
-    if (normalizeOrigin(origin) === normalizeOrigin(expected)) {
+    const originNormalized = normalizeOrigin(origin);
+    const requestOrigin = new URL(request.url).origin;
+    const publicOrigin = getPublicOrigin(request);
+    const allowedOrigins = new Set([
+      normalizeOrigin(requestOrigin),
+      normalizeOrigin(publicOrigin),
+    ]);
+
+    if (allowedOrigins.has(originNormalized)) {
       return null;
     }
+
+    logWarn("auth.csrf_origin_mismatch", {
+      method: request.method,
+      url: request.url,
+      origin: originNormalized,
+      requestOrigin: normalizeOrigin(requestOrigin),
+      publicOrigin: normalizeOrigin(publicOrigin),
+    });
 
     return Response.json(
       { error: "CSRF_ORIGIN_MISMATCH", message: "Cross-origin request blocked." },
