@@ -14,6 +14,12 @@ const supportedSuffixes = [
   ".test.cts",
 ];
 
+// Optional file arguments — anything that isn't a flag is treated as an
+// explicit test file path. Lets focused scripts like `test:preflight` route
+// through this wrapper (and pick up NODE_ENV=test below) instead of bypassing
+// it with a raw `node --test`.
+const fileArgs = process.argv.slice(2).filter((arg) => !arg.startsWith("--"));
+
 function findTestFiles(dir) {
   const entries = readdirSync(dir, { withFileTypes: true });
   const files = [];
@@ -37,7 +43,10 @@ function findTestFiles(dir) {
   return files;
 }
 
-const testFiles = findTestFiles(srcDir).sort();
+const testFiles =
+  fileArgs.length > 0
+    ? fileArgs.map((f) => path.resolve(rootDir, f))
+    : findTestFiles(srcDir).sort();
 
 if (testFiles.length === 0) {
   console.error(`No test files found under ${srcDir}`);
