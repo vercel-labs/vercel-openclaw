@@ -88,23 +88,25 @@ export function useSandboxStatusPoll({
   status,
   enabled,
 }: UseSandboxStatusPollDeps): UseSandboxStatusPollResult {
+  // Keep refreshRef pointed at the latest refresh closure so the polling
+  // tick below always calls the freshest version even when the parent
+  // re-renders with a new callback identity. Writing the ref inside an
+  // effect (rather than during render) is the React 19 sanctioned pattern
+  // for this — `react-hooks/refs` flags the write-during-render variant.
   const refreshRef = useRef(refresh);
-  refreshRef.current = refresh;
-
-  // Sticky "we just kicked an action" flag — keeps us in fast-poll until the
-  // next status update either confirms the transitional state (then policy
-  // takes over) or shows the settled result.
-  const [forceFast, setForceFast] = useState(false);
-
-  const transitional = isTransitionalStatus(status);
-  // Once the status is settled and we are not forcing fast-poll, drop the flag.
   useEffect(() => {
-    if (!transitional && forceFast) {
-      // Wait for at least one settled status update before dropping fast-poll.
-      setForceFast(false);
-    }
-  }, [transitional, forceFast]);
+    refreshRef.current = refresh;
+  });
 
+  // Sticky "we just kicked an action" flag — holds fast-poll active during
+  // the window between the user click and the first status update that
+  // followed the action's refresh resolving. Once the refresh resolves we
+  // drop the flag and let the natural transitional/settled cadence take
+  // over: if the action moved the sandbox into a transitional state, the
+  // `transitional` term keeps `isFastPolling` true; if it didn't, polling
+  // returns to the 30s slow cadence.
+  const [forceFast, setForceFast] = useState(false);
+  const transitional = isTransitionalStatus(status);
   const isFastPolling = transitional || forceFast;
 
   useEffect(() => {
@@ -156,9 +158,20 @@ export function useSandboxStatusPoll({
 
   const triggerImmediateRefresh = useCallback(() => {
     setForceFast(true);
-    void Promise.resolve(refreshRef.current()).catch(() => {
-      /* ignore */
-    });
+    // Tie the sticky fast-poll window to the lifetime of THIS refresh, not
+    // to a subsequent effect that fires before the request completes. The
+    // previous implementation reset `forceFast` from a `useEffect` whose
+    // deps included `forceFast` itself, so React resolved the reset in the
+    // same render cycle as the click — the flag never actually kept polling
+    // fast through the in-flight request, and the lint rule
+    // `react-hooks/set-state-in-effect` flagged the cascading render.
+    Promise.resolve(refreshRef.current())
+      .catch(() => {
+        /* ignore — same as the existing refreshStatus pattern */
+      })
+      .finally(() => {
+        setForceFast(false);
+      });
   }, []);
 
   return { isFastPolling, triggerImmediateRefresh };
