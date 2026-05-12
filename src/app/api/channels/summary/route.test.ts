@@ -10,6 +10,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { ChannelSummaryResponse } from "@/shared/channel-summary";
+import { createUnknownUserVisibleReply } from "@/shared/channels";
 import {
   _resetStoreForTesting,
   mutateMeta,
@@ -361,7 +362,8 @@ test("GET /api/channels/summary: native accepted Slack forward keeps user-visibl
             startedAt: completedAt - 100,
             completedAt,
             deliveryId: "delivery-1",
-          } as any,
+            userVisibleReply: createUnknownUserVisibleReply(completedAt),
+          },
         },
       };
     });
@@ -415,7 +417,8 @@ test("GET /api/channels/summary: stale broken Slack forward does not override fr
             startedAt: now - 10 * 60 * 1000 - 100,
             completedAt: now - 10 * 60 * 1000,
             deliveryId: "delivery-old",
-          } as any,
+            userVisibleReply: createUnknownUserVisibleReply(now - 10 * 60 * 1000),
+          },
         },
       };
     });
@@ -457,7 +460,8 @@ test("GET /api/channels/summary: legacy lastDeliveryState age follows lastForwar
             startedAt: completedAt - 100,
             completedAt,
             deliveryId: "delivery-legacy",
-          } as any,
+            userVisibleReply: createUnknownUserVisibleReply(completedAt),
+          },
         },
       };
     });
