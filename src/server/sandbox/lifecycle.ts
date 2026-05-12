@@ -2455,7 +2455,7 @@ export async function ensureUsableAiGatewayCredential(
   }
 
   // Circuit breaker check.
-  const breakerResult = checkCircuitBreaker(meta);
+  const breakerResult = await checkCircuitBreaker(meta);
   if (breakerResult) {
     return breakerResult;
   }
@@ -2574,7 +2574,7 @@ export async function ensureFreshGatewayToken(options?: {
 // Circuit breaker
 // ---------------------------------------------------------------------------
 
-function checkCircuitBreaker(meta: SingleMeta): TokenRefreshResult | null {
+async function checkCircuitBreaker(meta: SingleMeta): Promise<TokenRefreshResult | null> {
   const breakerOpenUntil = meta.breakerOpenUntil ?? 0;
   if (breakerOpenUntil > 0 && Date.now() < breakerOpenUntil) {
     const retryAfterMs = breakerOpenUntil - Date.now();
@@ -2589,6 +2589,28 @@ function checkCircuitBreaker(meta: SingleMeta): TokenRefreshResult | null {
       retryAfterMs,
     };
   }
+
+  // Breaker is either closed (never opened) or has timed out. If it had timed
+  // out, reset the failure counter so a single post-timeout failure does not
+  // immediately re-open the breaker — without this, the counter is still at
+  // the threshold from the previous burst and `(failures + 1) >= threshold`
+  // re-opens on the very next failure, indefinitely. After the cool-down,
+  // the next failure should be #1 of a fresh window, not #N+1 of the old one.
+  // Leave `lastTokenRefreshError` alone so operators can still see what burnt
+  // the previous burst until a fresh success or failure replaces it.
+  if (breakerOpenUntil > 0) {
+    const previousFailures = meta.consecutiveTokenRefreshFailures ?? 0;
+    await mutateMeta((m) => {
+      m.consecutiveTokenRefreshFailures = 0;
+      m.breakerOpenUntil = null;
+    });
+    logInfo("sandbox.token_refresh.breaker_timed_out", {
+      sandboxId: meta.sandboxId,
+      previousFailures,
+      breakerOpenUntil,
+    });
+  }
+
   return null;
 }
 

@@ -2992,6 +2992,71 @@ test("[lifecycle] Q17: circuit breaker opens after 3 consecutive token refresh f
   });
 });
 
+test("[lifecycle] Q17 follow-up: breaker timeout expiry resets failure counter to 0 (fresh window after cool-down)", async () => {
+  const fake = new FakeSandboxController();
+  await withTestEnv(fake, async () => {
+    _setAiGatewayTokenOverrideForTesting(null);
+    delete process.env.AI_GATEWAY_API_KEY;
+
+    // Pre-load the breaker as if it had opened ~31s ago: 3 prior failures
+    // and a timestamp that's already in the past.
+    await mutateMeta((meta) => {
+      meta.status = "running";
+      meta.sandboxId = "sbx-breaker-timeout";
+      meta.lastTokenRefreshAt = Date.now() - 60 * 60 * 1000;
+      meta.lastTokenExpiresAt = Math.floor(Date.now() / 1000) - 300;
+      meta.lastTokenSource = "oidc";
+      meta.consecutiveTokenRefreshFailures = 3;
+      meta.breakerOpenUntil = Date.now() - 1_000;
+      meta.lastTokenRefreshError = "previous burst error";
+    });
+
+    // First post-timeout call: checkCircuitBreaker should detect the expiry,
+    // reset the counter to 0, then the refresh attempt fails and the counter
+    // bumps to 1 — NOT to 4, which would re-open the breaker immediately.
+    const after1 = await ensureUsableAiGatewayCredential({ force: true, reason: "q17-followup" });
+    assert.equal(after1.refreshed, false);
+    assert.ok(
+      typeof after1.reason === "string" && after1.reason.startsWith("refresh-failed"),
+      `first post-timeout call should attempt refresh, got "${after1.reason}"`,
+    );
+
+    const metaAfter1 = await getInitializedMeta();
+    assert.equal(
+      metaAfter1.consecutiveTokenRefreshFailures,
+      1,
+      "after timeout expiry, the first new failure should be #1 of a fresh window, not #4 of the old burst",
+    );
+    assert.equal(
+      metaAfter1.breakerOpenUntil,
+      null,
+      "breaker should remain closed after one new failure (threshold is 3)",
+    );
+    assert.equal(
+      metaAfter1.lastTokenRefreshError,
+      "No OIDC token available for refresh",
+      "lastTokenRefreshError is replaced by the new failure (not preserved indefinitely)",
+    );
+
+    // Second post-timeout failure — still under threshold, breaker stays closed.
+    const after2 = await ensureUsableAiGatewayCredential({ force: true, reason: "q17-followup" });
+    assert.ok(typeof after2.reason === "string" && after2.reason.startsWith("refresh-failed"));
+    const metaAfter2 = await getInitializedMeta();
+    assert.equal(metaAfter2.consecutiveTokenRefreshFailures, 2);
+    assert.equal(metaAfter2.breakerOpenUntil, null);
+
+    // Third post-timeout failure — now the breaker re-opens.
+    const after3 = await ensureUsableAiGatewayCredential({ force: true, reason: "q17-followup" });
+    assert.ok(typeof after3.reason === "string" && after3.reason.startsWith("refresh-failed"));
+    const metaAfter3 = await getInitializedMeta();
+    assert.equal(metaAfter3.consecutiveTokenRefreshFailures, 3);
+    assert.ok(
+      metaAfter3.breakerOpenUntil && metaAfter3.breakerOpenUntil > Date.now(),
+      "breaker should be re-open after 3 fresh failures",
+    );
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Q18: Token TTL / breaker fields persist across resetSandbox
 // ---------------------------------------------------------------------------
