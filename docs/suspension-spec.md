@@ -45,15 +45,21 @@ work.
    re-arm idle timer +15 min
 
 **Session ceiling:** on every forwarded message, `sandbox.extendTimeout()` back to 75 min.
-The ceiling only bites at the platform's hard maximum session length T_max (UNVERIFIED,
-pending eng confirmation; believed 24h). At `expiresAt - 5 min` when no further extension is
-possible:
+The ceiling only bites at the platform's hard maximum session length: 24 hours on Pro and
+Enterprise, 45 minutes on Hobby (vercel.com/docs/sandbox/pricing, retrieved 2026-08-10). At
+`expiresAt - 5 min` when no further extension is possible:
 
 1. `prepare` -> poll -> ready -> `stop()` immediately
 2. still not ready at T-60s -> `stop()` anyway (forced)
 3. if the agent was mid-work: resume right away into a fresh session restored from the
    snapshot; host restarts the gateway (`onResume`), which reads its checkpointed state from
    disk. Fresh session, fresh 24h meter, same disk.
+
+Design requirement: a mid-flight agent task MUST auto-continue after an immediate resume.
+Rationale: the idle path can never stop mid-flight work (prepare gates it), so the only
+mid-flight stop is the ceiling roll-over, where the gap between stop and resume is seconds.
+The gateway seeing a checkpoint written moments ago should pick the task back up without a
+nudge. Whether 2026.7.2 behaves this way is contract question 5.
 
 **Backstop:** if the host misses everything, the platform kills the session at `expiresAt`
 (75 min). Ungraceful but disk-safe: server-side timeout still snapshots (verified live
@@ -85,8 +91,13 @@ for it.
    (Sets the real drain budget; determines what a force-stop loses.)
 3. Admin RPC port and auth scheme (which port we expose; what secret the host holds).
 4. Next-cron-time query availability (v1 cron wake depends on it).
-5. Platform T_max confirmation (Vercel eng, not OpenClaw).
-6. Whether a checkpointed agent task auto-continues after resume or needs a nudge.
+5. Whether a checkpointed agent task auto-continues after an immediate resume (our design
+   requires it; see ceiling path).
+
+Questions 1-3 and 5 are empirically testable today against `2026.7.2-beta.7` (suspension
+shipped in beta.1): mirror the beta tag to VCR, boot it, probe the admin RPC, run a long
+task, prepare/stop/resume, observe. Beta findings answer "how does it behave now"; Patrick
+still confirms "is this the stable contract" before we build against it.
 
 ## Explicitly deferred (not v1)
 
