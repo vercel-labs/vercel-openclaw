@@ -1,0 +1,14 @@
+{
+  "name": "vercel-openclaw-examples",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "boot": "tsx boot.ts"
+  },
+  "dependencies": {
+    "@vercel/sandbox": "^2.0.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0"
+  }
+}

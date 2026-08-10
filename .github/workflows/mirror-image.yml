@@ -1,0 +1,72 @@
+name: Mirror OpenClaw image to VCR
+
+# Interim mechanism: copies OpenClaw's official image from ghcr.io into Vercel
+# Container Registry until OpenClaw's release CI pushes to VCR directly
+# (see docs/upstream-ci.md). Tracks the stable moving tags only; betas never
+# reach `latest`/`slim` upstream, so they never reach VCR either.
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Explicit upstream tag to mirror (e.g. 2026.7.1). Default: latest + slim."
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mirror-vcr
+  cancel-in-progress: false
+
+env:
+  SRC_IMAGE: ghcr.io/openclaw/openclaw
+  DST_IMAGE: vcr.vercel.com/vercel/openclaw/openclaw
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install skopeo
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq skopeo
+
+      - name: Log in to VCR
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}
+        run: |
+          printf '%s' "$VERCEL_TOKEN" | skopeo login vcr.vercel.com \
+            --username "$VERCEL_TEAM_ID" --password-stdin
+
+      - name: Mirror tags (amd64, digest-checked)
+        env:
+          EXPLICIT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          ARCH_FLAGS="--override-arch amd64 --override-os linux"
+
+          if [ -n "${EXPLICIT_TAG:-}" ]; then
+            tags="$EXPLICIT_TAG"
+          else
+            tags="latest slim"
+          fi
+
+          for tag in $tags; do
+            src="docker://$SRC_IMAGE:$tag"
+            dst="docker://$DST_IMAGE:$tag"
+
+            src_digest=$(skopeo inspect $ARCH_FLAGS --format '{{.Digest}}' "$src")
+            dst_digest=$(skopeo inspect $ARCH_FLAGS --format '{{.Digest}}' "$dst" 2>/dev/null || echo "absent")
+
+            if [ "$src_digest" = "$dst_digest" ]; then
+              echo "$tag: digest match ($src_digest), skipped"
+              continue
+            fi
+
+            echo "$tag: copying $src_digest (VCR had: $dst_digest)"
+            skopeo copy $ARCH_FLAGS --retry-times 3 "$src" "$dst"
+          done
