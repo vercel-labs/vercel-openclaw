@@ -38,19 +38,25 @@ work.
 
 **Idle (primary):** host cron evaluates every 5 min. When `now - lastActivityAt >= 60 min`:
 
-1. `gateway.suspend.prepare`
-2. poll `gateway.suspend.status` every 5s
-3. ready -> immediately `sandbox.stop()` (ready lease is ~2 min; never wait out a deadline)
-4. not ready after 120s (gateway busy, e.g. agent mid-task) -> `gateway.suspend.resume`,
-   re-arm idle timer +15 min
+1. `gateway.suspend.prepare` with a host-generated `requestId`
+2. `{status:"ready", suspensionId, expiresAtMs}` -> immediately `sandbox.stop()` (the lease
+   is exactly 2 min; never wait out a deadline). Re-calling prepare with the same
+   `requestId` renews the lease if the stop needs more runway.
+3. `{status:"busy", reason, retryAfterMs, blockers}` -> the gateway refused (it does NOT
+   drain; prepare is an idle-fence acquire, not a shutdown request). Nothing is held, no
+   resume needed: treat busy as activity, log `blockers`, re-arm idle timer +15 min.
+4. `gateway.suspend.resume(suspensionId)` is only for canceling a HELD lease (host changed
+   its mind after ready).
 
 **Session ceiling:** on every forwarded message, `sandbox.extendTimeout()` back to 75 min.
 The ceiling only bites at the platform's hard maximum session length: 24 hours on Pro and
 Enterprise, 45 minutes on Hobby (vercel.com/docs/sandbox/pricing, retrieved 2026-08-10). At
 `expiresAt - 5 min` when no further extension is possible:
 
-1. `prepare` -> poll -> ready -> `stop()` immediately
-2. still not ready at T-60s -> `stop()` anyway (forced)
+1. `prepare` -> ready -> `stop()` immediately
+2. busy -> retry prepare every 20s (`retryAfterMs`); still busy at T-60s -> `stop()` anyway
+   (forced). Note prepare never waits for a long task, so a busy agent at the ceiling always
+   ends in a forced stop; what an interrupted run does on restart is contract question 5.
 3. if the agent was mid-work: resume right away into a fresh session restored from the
    snapshot; host restarts the gateway (`onResume`), which reads its checkpointed state from
    disk. Fresh session, fresh 24h meter, same disk.
@@ -84,20 +90,44 @@ A forced or platform stop equals losing only unpersisted memory state; the snaps
 either way. Policy: maximize the chance of graceful, never risk the VM outliving its window
 for it.
 
+## Contract facts, VERIFIED 2026-08-10 from the shipped beta
+
+Source: read from `ghcr.io/openclaw/openclaw:2026.7.2-beta.7` ("OpenClaw 2026.7.2-beta.7
+(dabe191)"), files `/app/dist/suspend-*.js`, `/app/dist/gateway-suspend-coordinator-*.js`,
+`/app/docs/gateway/protocol.md` inside the image. Beta semantics; Patrick confirms stability.
+
+- Methods: `gateway.suspend.prepare` / `gateway.suspend.status` / `gateway.suspend.resume`,
+  served as gateway methods over the gateway WebSocket (default port 3000). Probe/CLI:
+  `openclaw gateway call <method> --url ws://... --token ...`. An `admin-http-rpc` extension
+  also ships (`/app/dist/extensions/admin-http-rpc/`), not yet probed.
+- Auth: gateway auth modes `none|token|password|trusted-proxy`; token defaults from
+  `OPENCLAW_GATEWAY_TOKEN` env. The host holds that token.
+- `prepare({requestId})` is an idle-fence acquire, NOT a drain request. Results:
+  `ready` (`suspensionId`, `expiresAtMs`, `activeCount`, `blockers`) only when tracked work
+  is idle; while held it pauses cron scheduling and fences new work admission. `busy`
+  (`reason: "active-work" | "gateway-draining"`, `retryAfterMs: 20000`, `blockers`) when
+  work is active; nothing is held. Error `UNAVAILABLE` conflict when a different
+  `requestId` holds the lease; `recovering` (`retryAfterMs: 1000`) during scheduler
+  recovery. Same-`requestId` re-prepare renews the lease.
+- Lease TTL: exactly 2 minutes (`GATEWAY_SUSPEND_TTL_MS = 2 * 60_000`); on expiry the
+  gateway auto-resumes scheduling and reopens admission.
+- Tracked work = active cron runs, active chat runs, queued turns, pending terminal
+  persistence, live terminal sessions.
+- Cron wake: `cron.list` / `cron.status` / `cron.get` exist as gateway methods; the host
+  computes `nextWakeAt` from job schedules. v1 dependency satisfied.
+
 ## Open contract questions (Patrick / 2026.7.2)
 
-1. `suspend.status` vocabulary while draining vs busy (our poll loop branches on it).
-2. `prepare` semantics with a long-running agent task: wait, checkpoint mid-task, or refuse?
-   (Sets the real drain budget; determines what a force-stop loses.)
-3. Admin RPC port and auth scheme (which port we expose; what secret the host holds).
-4. Next-cron-time query availability (v1 cron wake depends on it).
-5. Whether a checkpointed agent task auto-continues after an immediate resume (our design
-   requires it; see ceiling path).
-
-Questions 1-3 and 5 are empirically testable today against `2026.7.2-beta.7` (suspension
-shipped in beta.1): mirror the beta tag to VCR, boot it, probe the admin RPC, run a long
-task, prepare/stop/resume, observe. Beta findings answer "how does it behave now"; Patrick
-still confirms "is this the stable contract" before we build against it.
+1. Is the beta.7 contract above frozen for 2026.7.2 stable?
+2. What happens to an interrupted (force-stopped) chat run when the gateway restarts after
+   resume: retried, resumed, or dropped? (Our ceiling path depends on this; a busy agent at
+   the 24h ceiling always ends in a forced stop, since prepare never drains.)
+3. `admin-http-rpc` extension: intended for hosts like us, or is the gateway WebSocket the
+   recommended host integration path?
+4. Beta bug to report: `openclaw gateway run --dev --reset --allow-unconfigured` in a fresh
+   container/sandbox fails with "Config write would drop agent roster entries without an
+   explicit deletion: main" (observed in Vercel Sandbox and local docker, 2026-08-10). What
+   is the supported non-interactive bootstrap for a fresh gateway?
 
 ## Explicitly deferred (not v1)
 
