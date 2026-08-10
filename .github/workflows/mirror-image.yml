@@ -55,18 +55,22 @@ jobs:
             tags="latest slim"
           fi
 
+          # Idempotency compares LAYER digests, not manifest digests: VCR
+          # deterministically rewrites the manifest on push (verified
+          # 2026-08-10), so manifest digests never match across registries,
+          # while layer blobs are preserved bit-for-bit.
           for tag in $tags; do
             src="docker://$SRC_IMAGE:$tag"
             dst="docker://$DST_IMAGE:$tag"
 
-            src_digest=$(skopeo inspect $ARCH_FLAGS --format '{{.Digest}}' "$src")
-            dst_digest=$(skopeo inspect $ARCH_FLAGS --format '{{.Digest}}' "$dst" 2>/dev/null || echo "absent")
+            src_layers=$(skopeo inspect $ARCH_FLAGS --format '{{.Layers}}' "$src")
+            dst_layers=$(skopeo inspect $ARCH_FLAGS --format '{{.Layers}}' "$dst" 2>/dev/null || echo "absent")
 
-            if [ "$src_digest" = "$dst_digest" ]; then
-              echo "$tag: digest match ($src_digest), skipped"
+            if [ "$src_layers" = "$dst_layers" ]; then
+              echo "$tag: layers match, skipped"
               continue
             fi
 
-            echo "$tag: copying $src_digest (VCR had: $dst_digest)"
+            echo "$tag: copying (source manifest: $(skopeo inspect $ARCH_FLAGS --format '{{.Digest}}' "$src"))"
             skopeo copy $ARCH_FLAGS --retry-times 3 "$src" "$dst"
           done
