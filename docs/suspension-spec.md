@@ -128,8 +128,16 @@ Two full sleep/wake cycles through the production host code against
 `2026.7.2-beta.7` in a real sandbox:
 
 - create/resume -> gateway boot -> health -> `prepare` -> `ready` -> `stop()` -> snapshot,
-  twice. Wake-from-snapshot to healthy gateway: ~18s. Ready shape matched the code-derived
-  contract field for field.
+  twice. Wake-from-snapshot to healthy gateway: ~18-19s; first-ever cold create (image pull +
+  VM boot + gateway cold start): ~14s. Ready shape matched the code-derived contract field for
+  field. Independently reproduced same day by a second operator on a fresh sandbox name.
+- SDK semantics behavior-confirmed by probe (host/scripts/sdk-probe.ts): `extendTimeout(d)` is
+  ADDITIVE (deadline moved by exactly d per call, anchored at session start), so the
+  extend-by-shortfall pattern is required; and `onResume` fires DURING the first post-stop
+  command (after the SDK's 410-retry), so that command executes ~0.3s after a detached gateway
+  spawns and MUST be allowed to fail while the process binds (the health loop's 3-failure
+  threshold). Footgun: `sandbox.timeout` stays at the configured value while `expiresAt`
+  moves; only `expiresAt` reflects the live deadline.
 - The gateway boots non-interactively with plain `gateway run --allow-unconfigured` (no
   `--dev`): the bootstrap bug in question 4 is DEV-MODE ONLY.
 - Question 2 ANSWERED by observation: after an abrupt stop mid-work, the restarted gateway
