@@ -1,17 +1,31 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { Sandbox } from '@vercel/sandbox';
+import { APIError, Sandbox } from '@vercel/sandbox';
 import { defaultActivityStore } from '@/lib/activity-store';
 import { isIdle } from '@/lib/activity';
-import { attemptSuspend, createSandboxGatewayCaller } from '@/lib/suspend';
+import { attemptSuspend, createSandboxGatewayCaller, IDLE_REARM_MS } from '@/lib/suspend';
+import { startGateway } from '@/lib/wake';
 
 /**
- * The idle-path scheduler per docs/suspension-spec.md: runs every 5 minutes
- * (vercel.json crons), suspends the sandbox after 60 minutes without
- * host-visible activity. The timer only initiates; gateway.suspend.prepare
- * is the correctness gate that protects running work.
+ * The lifecycle scheduler per docs/suspension-spec.md: runs every 5 minutes
+ * (vercel.json crons). Two paths:
+ *
+ * - Idle: 60 minutes without host-visible activity -> suspend attempt. The
+ *   timer only initiates; gateway.suspend.prepare is the correctness gate.
+ * - Ceiling: the session deadline is near and can no longer be extended ->
+ *   suspend attempt with force-stop at T-60s. A forced stop equals what the
+ *   platform would do anyway; the disk snapshot is taken either way.
  */
 
+export const maxDuration = 120;
+
 const SANDBOX_NAME = process.env.OPENCLAW_SANDBOX_NAME ?? 'openclaw';
+const IDLE_THRESHOLD_MS = 60 * 60 * 1000;
+const CEILING_WINDOW_MS = 5 * 60 * 1000;
+const CEILING_FORCE_STOP_MARGIN_MS = 60 * 1000;
+
+// Stable across runs so a re-prepare RENEWS the lease instead of hitting the
+// conflict branch (same-requestId renewal, verified contract).
+const REQUEST_ID = `host-idle-${SANDBOX_NAME}`;
 
 export async function GET(req: NextRequest) {
   // Vercel cron requests carry the CRON_SECRET when one is configured.
@@ -24,28 +38,76 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'OPENCLAW_GATEWAY_TOKEN not set' }, { status: 500 });
   }
 
-  const lastActivityAt = await defaultActivityStore.latest();
-  const now = Date.now();
-  if (lastActivityAt === undefined || !isIdle({ lastActivityAt }, now)) {
-    return NextResponse.json({ action: 'none', reason: 'not idle', lastActivityAt });
+  try {
+    return NextResponse.json(await runCheck(token));
+  } catch (err) {
+    // A transient gateway shape or API blip must not read as a platform
+    // fault; log it and report, the next tick retries.
+    console.error('idle-check failed:', err);
+    return NextResponse.json({
+      action: 'error',
+      message: err instanceof Error ? err.message : String(err),
+    });
   }
+}
+
+async function runCheck(token: string) {
+  const now = Date.now();
 
   let sandbox: Sandbox;
   try {
-    sandbox = await Sandbox.get({ name: SANDBOX_NAME, resume: false });
-  } catch {
-    return NextResponse.json({ action: 'none', reason: 'no sandbox' });
+    sandbox = await Sandbox.get({
+      name: SANDBOX_NAME,
+      resume: false,
+      // The SDK auto-resumes a stopped sandbox on the first command; if that
+      // happens mid-check the gateway must come back too, or we'd leave a
+      // gatewayless VM running.
+      onResume: async (sbx) => startGateway(sbx, token),
+    });
+  } catch (err) {
+    // Only a genuine not-found is a quiet no-op; anything else (auth,
+    // network, 5xx) must surface, or a broken credential reads as healthy.
+    if (err instanceof APIError && err.response?.status === 404) {
+      return { action: 'none', reason: 'no sandbox' };
+    }
+    throw err;
   }
   if (sandbox.status !== 'running') {
-    return NextResponse.json({ action: 'none', reason: `sandbox ${sandbox.status}` });
+    return { action: 'none', reason: `sandbox ${sandbox.status}` };
   }
 
-  const decision = await attemptSuspend({
-    call: createSandboxGatewayCaller(sandbox, token),
-    stop: async () => {
-      await sandbox.stop();
-    },
-    requestId: `idle-${now}`,
-  });
-  return NextResponse.json({ action: decision.action, decision });
+  const call = createSandboxGatewayCaller(sandbox, token);
+  const stop = async () => {
+    await sandbox.stop();
+  };
+
+  // Ceiling path: the platform deadline is near. Webhook traffic normally
+  // extends it; when extension stopped working (hard 24h plan maximum), go
+  // graceful before the platform kill, forcing at T-60s.
+  const expiresAt = sandbox.expiresAt?.getTime();
+  if (expiresAt !== undefined && expiresAt - now < CEILING_WINDOW_MS) {
+    const decision = await attemptSuspend(
+      { call, stop, requestId: REQUEST_ID },
+      { ceiling: { forceStopAtMs: expiresAt - CEILING_FORCE_STOP_MARGIN_MS } },
+    );
+    return { action: decision.action, path: 'ceiling', decision };
+  }
+
+  // Idle path.
+  const lastActivityAt = await defaultActivityStore.latest();
+  if (lastActivityAt === undefined || !isIdle({ lastActivityAt }, now, IDLE_THRESHOLD_MS)) {
+    return { action: 'none', reason: 'not idle', lastActivityAt };
+  }
+
+  const decision = await attemptSuspend({ call, stop, requestId: REQUEST_ID });
+
+  if (decision.action === 'rearm') {
+    // Busy = the gateway is working. Persist the re-arm so the next ticks
+    // skip cheaply instead of re-preparing every 5 minutes for a long run.
+    await defaultActivityStore.set(
+      'gateway-busy-rearm',
+      now - IDLE_THRESHOLD_MS + IDLE_REARM_MS,
+    );
+  }
+  return { action: decision.action, path: 'idle', decision };
 }

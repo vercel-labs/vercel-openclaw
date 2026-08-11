@@ -73,12 +73,12 @@ export function createSandboxGatewayCaller(
         method,
         '--url',
         `ws://127.0.0.1:${port}`,
-        '--token',
-        token,
         '--json',
         '--params',
         JSON.stringify(params),
       ],
+      // Token via env, not argv: argv is visible in the process table.
+      env: { OPENCLAW_GATEWAY_TOKEN: token },
     });
     // RPC-level failures (e.g. the conflict error) may exit non-zero and
     // print the error JSON on either stream; try both before giving up so
@@ -108,20 +108,40 @@ export function createSandboxGatewayCaller(
  */
 export function normalizePrepareResponse(raw: unknown): PrepareResult {
   const value = raw as Record<string, any>;
-  if (value?.status === 'ready') return value as SuspendReady;
+  // Validate per branch: this JSON comes from an external process, and a
+  // malformed "ready" must never be allowed to stop the sandbox.
+  if (value?.status === 'ready') {
+    if (typeof value.suspensionId !== 'string' || typeof value.expiresAtMs !== 'number') {
+      throw new Error(
+        `malformed ready response (missing suspensionId/expiresAtMs): ${JSON.stringify(raw).slice(0, 300)}`,
+      );
+    }
+    return { ...value, blockers: value.blockers ?? [] } as SuspendReady;
+  }
   if (value?.status === 'busy') {
-    return { ...value, retryAfterMs: value.retryAfterMs ?? 20_000 } as SuspendBusy;
+    return {
+      ...value,
+      reason: value.reason ?? 'active-work',
+      retryAfterMs: typeof value.retryAfterMs === 'number' ? value.retryAfterMs : 20_000,
+      blockers: Array.isArray(value.blockers) ? value.blockers : [],
+    } as SuspendBusy;
   }
   if (value?.status === 'recovering') {
-    return { ...value, retryAfterMs: value.retryAfterMs ?? 1_000 } as SuspendRecovering;
+    return {
+      status: 'recovering',
+      retryAfterMs: typeof value.retryAfterMs === 'number' ? value.retryAfterMs : 1_000,
+    };
   }
   const details = value?.error?.details ?? value?.details;
   if (details?.reason === 'gateway-suspension-conflict') {
-    return { status: 'conflict', expiresAtMs: details.expiresAtMs ?? Date.now() + 30_000 };
+    return {
+      status: 'conflict',
+      expiresAtMs: typeof details.expiresAtMs === 'number' ? details.expiresAtMs : Date.now() + 30_000,
+    };
   }
   // Scheduler recovery can also surface as an UNAVAILABLE error
   // (schedulerRecoveryError in the verified beta.7 handler).
-  if (details?.reason === 'scheduler-resume-failed' || value?.error?.retryAfterMs) {
+  if (details?.reason === 'scheduler-resume-failed' || typeof value?.error?.retryAfterMs === 'number') {
     return { status: 'recovering', retryAfterMs: value?.error?.retryAfterMs ?? 1_000 };
   }
   throw new Error(`unrecognized gateway.suspend.prepare response: ${JSON.stringify(raw).slice(0, 300)}`);
@@ -218,7 +238,20 @@ export async function attemptSuspend(
   const now = deps.now ?? Date.now;
   const raw = await deps.call('gateway.suspend.prepare', { requestId: deps.requestId });
   const decision = decideSuspendAction(normalizePrepareResponse(raw), now(), options);
-  if (decision.action === 'stop' || decision.action === 'force-stop') {
+  if (decision.action === 'stop') {
+    try {
+      await deps.stop();
+    } catch (err) {
+      // A failed stop leaves the lease HELD with gateway cron paused; release
+      // it instead of letting it burn its full 2-minute TTL.
+      try {
+        await cancelSuspend(deps.call, decision.suspensionId);
+      } catch {
+        // lease self-expires within 2 minutes; nothing better to do
+      }
+      throw err;
+    }
+  } else if (decision.action === 'force-stop') {
     await deps.stop();
   }
   return decision;

@@ -57,7 +57,7 @@ Enterprise, 45 minutes on Hobby (vercel.com/docs/sandbox/pricing, retrieved 2026
 1. `prepare` -> ready -> `stop()` immediately
 2. busy -> retry prepare every 20s (`retryAfterMs`); still busy at T-60s -> `stop()` anyway
    (forced). Note prepare never waits for a long task, so a busy agent at the ceiling always
-   ends in a forced stop; what an interrupted run does on restart is contract question 5.
+   ends in a forced stop; what an interrupted run does on restart is contract question 2.
 3. if the agent was mid-work: resume right away into a fresh session restored from the
    snapshot; host restarts the gateway (`onResume`), which reads its checkpointed state from
    disk. Fresh session, fresh 24h meter, same disk.
@@ -66,7 +66,7 @@ Design requirement: a mid-flight agent task MUST auto-continue after an immediat
 Rationale: the idle path can never stop mid-flight work (prepare gates it), so the only
 mid-flight stop is the ceiling roll-over, where the gap between stop and resume is seconds.
 The gateway seeing a checkpoint written moments ago should pick the task back up without a
-nudge. Whether 2026.7.2 behaves this way is contract question 5.
+nudge. Whether 2026.7.2 behaves this way is contract question 2.
 
 **Backstop:** if the host misses everything, the platform kills the session at `expiresAt`
 (75 min). Ungraceful but disk-safe: server-side timeout still snapshots (verified live
@@ -134,6 +134,11 @@ with the OpenClaw maintainers (Patrick Erichsen).
    container/sandbox fails with "Config write would drop agent roster entries without an
    explicit deletion: main" (observed in Vercel Sandbox and local docker, 2026-08-10). What
    is the supported non-interactive bootstrap for a fresh gateway?
+5. Do the gateway's channel HTTP endpoints (e.g. `/slack/events`) require the gateway token,
+   or is channel signature verification their only gate? The host forwards without the token
+   today; if the endpoints demand it, forwarding needs the auth header, and if they don't,
+   they are publicly routable ingress guarded only by channel signatures. UNVERIFIED either
+   way; needs a live probe or an upstream answer.
 
 ## Explicitly deferred (not v1)
 

@@ -29,12 +29,23 @@ jobs:
   mirror:
     runs-on: ubuntu-latest
     steps:
+      - name: Check secrets present
+        env:
+          VERCEL_VCR_TOKEN: ${{ secrets.VERCEL_VCR_TOKEN }}
+        run: |
+          if [ -z "$VERCEL_VCR_TOKEN" ]; then
+            echo "::notice::VERCEL_VCR_TOKEN not configured; skipping mirror (expected on forks)."
+            echo "SKIP_MIRROR=true" >> "$GITHUB_ENV"
+          fi
+
       - name: Install skopeo
+        if: env.SKIP_MIRROR != 'true'
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq skopeo
 
       - name: Log in to VCR
+        if: env.SKIP_MIRROR != 'true'
         env:
           VERCEL_VCR_TOKEN: ${{ secrets.VERCEL_VCR_TOKEN }}
           VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}
@@ -43,6 +54,7 @@ jobs:
             --username "$VERCEL_TEAM_ID" --password-stdin
 
       - name: Mirror tags (amd64, digest-checked)
+        if: env.SKIP_MIRROR != 'true'
         env:
           EXPLICIT_TAG: ${{ inputs.tag }}
         run: |
@@ -64,6 +76,12 @@ jobs:
             dst="docker://$DST_IMAGE:$tag"
 
             src_layers=$(skopeo inspect $ARCH_FLAGS --format '{{.Layers}}' "$src")
+            # Guard against a skopeo change rendering {{.Layers}} empty:
+            # "" == "" would silently skip every tag forever.
+            if [ -z "$src_layers" ]; then
+              echo "::error::empty source layer list for $tag (skopeo output changed?)"
+              exit 1
+            fi
             dst_layers=$(skopeo inspect $ARCH_FLAGS --format '{{.Layers}}' "$dst" 2>/dev/null || echo "absent")
 
             if [ "$src_layers" = "$dst_layers" ]; then
@@ -71,6 +89,6 @@ jobs:
               continue
             fi
 
-            echo "$tag: copying (source manifest: $(skopeo inspect $ARCH_FLAGS --format '{{.Digest}}' "$src"))"
+            echo "$tag: copying"
             skopeo copy $ARCH_FLAGS --retry-times 3 "$src" "$dst"
           done

@@ -43,12 +43,14 @@ It's a headless API-only Next.js app. Environment variables:
 | Variable | Purpose |
 | --- | --- |
 | `OPENCLAW_GATEWAY_TOKEN` | Gateway auth token; the host holds it, the gateway enforces it |
+| `SLACK_SIGNING_SECRET` | Verifies Slack webhooks at the host, before any compute wakes (fail-closed) |
+| `KV_REST_API_URL` + `KV_REST_API_TOKEN` | Redis-backed activity store (Upstash-compatible). **Required in production**: without it the idle clock is per-instance memory and the idle path never fires |
 | `OPENCLAW_SANDBOX_NAME` | Sandbox name (default `openclaw`) |
 | `OPENCLAW_IMAGE` | Image override (default `openclaw-foundation/openclaw/openclaw:latest`) |
 | `GATEWAY_URL` | Dev-only: skip the wake path, forward to a directly reachable gateway |
 | `CRON_SECRET` | Protects the cron route when set |
 
-Known v1 limitations, deliberate until the PoC with the OpenClaw team: the activity store is in-memory (per serverless instance — production needs Redis/KV), the webhook response blocks on cold wakes (Slack's 3s ack window needs an ack-then-forward pattern), and the 75-minute session timeout requires a Pro or Enterprise team (Hobby caps sessions at 45 minutes). Live validation runs against 2026.7.2 stable when it ships (the suspend contract landed in its betas; a beta bootstrap bug currently blocks a full live loop, see the spec's open questions).
+Known v1 limitations, deliberate until the PoC with the OpenClaw team: the webhook response blocks on cold wakes (Slack's 3s ack window needs an ack-then-forward pattern), and the deployment assumes a Pro or Enterprise team (the 75-minute session timeout, `maxDuration: 300`, and the 5-minute cron all exceed Hobby limits). Live validation runs against 2026.7.2 stable when it ships (the suspend contract landed in its betas; a beta bootstrap bug currently blocks a full live loop, see the spec's open questions).
 
 ## How the image stays current
 
