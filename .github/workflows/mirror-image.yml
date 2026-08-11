@@ -23,7 +23,7 @@ concurrency:
 
 env:
   SRC_IMAGE: ghcr.io/openclaw/openclaw
-  DST_IMAGE: vcr.vercel.com/vercel/openclaw/openclaw
+  DST_IMAGE: vcr.vercel.com/openclaw-foundation/openclaw/openclaw
 
 jobs:
   mirror:

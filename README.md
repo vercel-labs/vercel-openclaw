@@ -8,13 +8,13 @@ OpenClaw's official Docker image is mirrored into [Vercel Container Registry](ht
 import { Sandbox } from '@vercel/sandbox';
 
 const sandbox = await Sandbox.create({
-  image: 'vercel/openclaw/openclaw:latest',
+  image: 'openclaw-foundation/openclaw/openclaw:latest',
 });
 ```
 
 No Dockerfile, no build step, no bundle pipeline. The image is the same one OpenClaw publishes to `ghcr.io/openclaw/openclaw` (stable channel, `linux/amd64`).
 
-> **Status:** the VCR repository is being provisioned. The image reference above is final once it flips public; until then, see [Mirroring](#mirroring) for how the image gets there.
+> **Status:** the image is published to the OpenClaw Foundation's VCR repository ([vercel.com/openclaw-foundation/openclaw/images/openclaw](https://vercel.com/openclaw-foundation/openclaw/images/openclaw)) and flips public shortly. The reference above is final.
 
 ## Quickstart
 
@@ -27,6 +27,17 @@ npm run boot         # boots the image, prints `openclaw --version`
 ```
 
 `examples/boot.ts` is the smallest end-to-end proof: create a sandbox from the image, run `openclaw --version`, stop.
+
+## The host app (`host/`)
+
+The control plane that makes an OpenClaw sandbox sleep between messages and wake on demand, per [`docs/suspension-spec.md`](docs/suspension-spec.md):
+
+- `app/api/webhook/[channel]/route.ts` — webhooks terminate here (a sleeping VM is unreachable). Stamps the idle clock, wakes the sandbox, forwards the untouched raw body to the gateway's native handler.
+- `lib/wake.ts` — `ensureAwake()`: resume or create the sandbox, restart the gateway (`onResume` — processes don't survive stops, only disk does), health-check via `openclaw gateway call health`, return the exposed-port URL.
+- `lib/suspend.ts` — the verified `gateway.suspend.*` contract (2026.7.2-beta.7): prepare as idle-fence, 2-minute lease, busy/ready/conflict/recovering handling, ceiling force-stop.
+- `lib/activity.ts` + tests — the idle clock: which events reset it, 60-minute threshold, extend-timeout rules.
+
+Status: v1 wiring, pending live validation against 2026.7.2 stable (the suspend contract shipped in its betas).
 
 ## How the image stays current
 

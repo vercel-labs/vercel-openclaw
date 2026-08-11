@@ -14,7 +14,7 @@ the packing). The host always calls; the gateway always answers.
 
 ```
 Sandbox.create({
-  image: 'vercel/openclaw/openclaw:latest',
+  image: 'openclaw-foundation/openclaw/openclaw:latest',
   persistent: true,          // default: snapshot disk on stop, restore on resume
   timeout: 75 * 60 * 1000,   // 75 min platform backstop, 15 min behind the graceful path
   ports: [3000],             // gateway; add admin RPC / Telegram ports per contract answers

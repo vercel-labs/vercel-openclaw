@@ -3,7 +3,7 @@ import { Sandbox } from '@vercel/sandbox';
 // Boots OpenClaw's official image from Vercel Container Registry and proves
 // it runs. Auth: `vercel link` + `vercel env pull` in this directory so the
 // SDK can read an OIDC token (see README quickstart).
-const image = process.env.OPENCLAW_IMAGE ?? 'vercel/openclaw/openclaw:latest';
+const image = process.env.OPENCLAW_IMAGE ?? 'openclaw-foundation/openclaw/openclaw:latest';
 
 async function main() {
   console.log(`booting sandbox from ${image} ...`);

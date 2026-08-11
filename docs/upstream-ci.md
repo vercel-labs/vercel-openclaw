@@ -4,12 +4,12 @@ A ready-to-adopt patch for `openclaw/openclaw`'s `.github/workflows/docker-relea
 
 Written against `docker-release.yml` on `main` as of 2026-08-10. VCR facts below are from [vercel.com/docs/container-registry](https://vercel.com/docs/container-registry) (retrieved 2026-08-10).
 
-## What Vercel provides
+## Ownership
 
-- A VCR repository: `vcr.vercel.com/vercel/openclaw/openclaw`, public (any Vercel account can pull; read-only for everyone but the owning team).
-- Two secrets for this repo's CI:
-  - `VERCEL_VCR_TOKEN` — a Vercel access token scoped to the owning project. Rotation owner: Elisabeth Rülke (Vercel).
-  - `VERCEL_TEAM_ID` — the owning team's ID; VCR uses it as the docker login username.
+The VCR repository is `vcr.vercel.com/openclaw-foundation/openclaw/openclaw`, owned by the OpenClaw Foundation's own Vercel team (`openclaw-foundation`). Public once flipped: any Vercel account can pull, read-only for everyone outside the owning team. Because the Foundation owns the team, no Vercel-held credentials change hands:
+
+- `VERCEL_VCR_TOKEN` — a Vercel access token created by a Foundation member, scoped to the `openclaw-foundation` team (or just the `openclaw` project). Created at vercel.com/account/tokens; the Foundation owns rotation.
+- `VERCEL_TEAM_ID` — the `openclaw-foundation` team ID; VCR uses it as the docker login username.
 
 Auth is standard `docker login`:
 
@@ -32,7 +32,7 @@ env:
   DOCKERHUB_IMAGE_NAME: openclaw/openclaw
   # add:
   VCR_REGISTRY: vcr.vercel.com
-  VCR_IMAGE_NAME: vercel/openclaw/openclaw
+  VCR_IMAGE_NAME: openclaw-foundation/openclaw/openclaw
 ```
 
 ### 2. Login step (4 jobs: `build-amd64`, `build-arm64`, `create-manifest`, `verify-attestations`)
@@ -109,6 +109,6 @@ From [VCR limits & pricing](https://vercel.com/docs/container-registry/limits-an
 
 ## Rollout
 
-1. Vercel adds the two secrets to `openclaw/openclaw` (or hands them to a maintainer to add).
+1. A Foundation member creates the team-scoped token and adds both secrets to `openclaw/openclaw`.
 2. This patch lands; the next stable release publishes to three registries.
-3. Vercel retires its interim daily mirror (this repo's `mirror-image.yml` cron) and keeps manual dispatch as a backstop.
+3. The repository flips public (`vercel vcr config openclaw --public true`); the interim daily mirror (this repo's `mirror-image.yml` cron) retires, keeping manual dispatch as a backstop.
