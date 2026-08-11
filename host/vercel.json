@@ -1,0 +1,8 @@
+{
+  "crons": [
+    {
+      "path": "/api/cron/idle-check",
+      "schedule": "*/5 * * * *"
+    }
+  ]
+}

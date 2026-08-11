@@ -29,4 +29,16 @@ export class InMemoryActivityStore implements ActivityStore {
   async set(channel: string, timestampMs: number): Promise<void> {
     this.store.set(channel, timestampMs);
   }
+
+  /** Most recent activity across all channels (the idle clock's input). */
+  async latest(): Promise<number | undefined> {
+    return this.store.size ? Math.max(...this.store.values()) : undefined;
+  }
 }
+
+/**
+ * Shared store instance so the webhook route and the idle-check cron read the
+ * same clock. v1 LIMITATION: in-memory state is per serverless instance and
+ * lost on cold start; production needs a KV/Redis-backed ActivityStore.
+ */
+export const defaultActivityStore = new InMemoryActivityStore();

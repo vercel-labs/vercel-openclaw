@@ -32,12 +32,23 @@ npm run boot         # boots the image, prints `openclaw --version`
 
 The control plane that makes an OpenClaw sandbox sleep between messages and wake on demand, per [`docs/suspension-spec.md`](docs/suspension-spec.md):
 
-- `app/api/webhook/[channel]/route.ts` — webhooks terminate here (a sleeping VM is unreachable). Stamps the idle clock, wakes the sandbox, forwards the untouched raw body to the gateway's native handler.
+- `app/api/webhook/[channel]/route.ts` — webhooks terminate here (a sleeping VM is unreachable). Stamps the idle clock, wakes the sandbox, forwards the untouched raw bytes and original headers (signatures verify over both) to the gateway's native handler.
+- `app/api/cron/idle-check/route.ts` — the scheduler ([`vercel.json`](host/vercel.json), every 5 min): 60 minutes without host-visible activity triggers the suspend attempt.
 - `lib/wake.ts` — `ensureAwake()`: resume or create the sandbox, restart the gateway (`onResume` — processes don't survive stops, only disk does), health-check via `openclaw gateway call health`, return the exposed-port URL.
 - `lib/suspend.ts` — the verified `gateway.suspend.*` contract (2026.7.2-beta.7): prepare as idle-fence, 2-minute lease, busy/ready/conflict/recovering handling, ceiling force-stop.
 - `lib/activity.ts` + tests — the idle clock: which events reset it, 60-minute threshold, extend-timeout rules.
 
-Status: v1 wiring, pending live validation against 2026.7.2 stable (the suspend contract shipped in its betas).
+It's a headless API-only Next.js app. Environment variables:
+
+| Variable | Purpose |
+| --- | --- |
+| `OPENCLAW_GATEWAY_TOKEN` | Gateway auth token; the host holds it, the gateway enforces it |
+| `OPENCLAW_SANDBOX_NAME` | Sandbox name (default `openclaw`) |
+| `OPENCLAW_IMAGE` | Image override (default `openclaw-foundation/openclaw/openclaw:latest`) |
+| `GATEWAY_URL` | Dev-only: skip the wake path, forward to a directly reachable gateway |
+| `CRON_SECRET` | Protects the cron route when set |
+
+Known v1 limitations, deliberate until the PoC with the OpenClaw team: the activity store is in-memory (per serverless instance — production needs Redis/KV), the webhook response blocks on cold wakes (Slack's 3s ack window needs an ack-then-forward pattern), and the 75-minute session timeout requires a Pro or Enterprise team (Hobby caps sessions at 45 minutes). Live validation runs against 2026.7.2 stable when it ships (the suspend contract landed in its betas; a beta bootstrap bug currently blocks a full live loop, see the spec's open questions).
 
 ## How the image stays current
 
@@ -58,13 +69,13 @@ Access is read-only for everyone outside the owning team: no pushes, no deletes,
 Verified against the [images docs](https://vercel.com/docs/sandbox/concepts/images) (2026-08-10):
 
 - Sandbox runs `linux/amd64` images only. VCR prepares an optimized amd64 build after each push; `Sandbox.create()` returns `image_not_ready` until the repository shows **Ready**.
-- Docker `ENTRYPOINT`/`CMD` are **not** executed. Start OpenClaw explicitly, e.g. `sandbox.runCommand('openclaw', ['gateway', '--port', '3000', '--bind', 'loopback'])`.
+- Docker `ENTRYPOINT`/`CMD` are **not** executed. Start OpenClaw explicitly, e.g. `sandbox.runCommand({ cmd: 'openclaw', args: ['gateway', 'run', '--auth', 'token', '--port', '3000'], env: { OPENCLAW_GATEWAY_TOKEN: token }, detached: true })` (see `host/lib/wake.ts`).
 - `WORKDIR` is honored; otherwise commands start in `/`.
 - Persistence works with custom images: sandboxes snapshot on stop (including server-side timeout) and resume with the filesystem intact.
 
 ## Roadmap
 
-This repo replaces the archived `vercel-openclaw` template and its bundle supply chain. Next up: a control plane wired to OpenClaw's gateway suspension handshake (upstream [#103618](https://github.com/openclaw/openclaw/pull/103618), shipping in the 2026.7.2 line) so sandboxes sleep between messages and wake on demand.
+This repo replaces the archived `vercel-openclaw` template and its bundle supply chain. The suspension control plane (upstream [#103618](https://github.com/openclaw/openclaw/pull/103618), shipping in the 2026.7.2 line) is implemented in `host/`; next up is live end-to-end validation against 2026.7.2 stable, resolving the open contract questions in [`docs/suspension-spec.md`](docs/suspension-spec.md), a durable activity store, and cron-aware wake.
 
 ## License
 

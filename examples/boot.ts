@@ -17,10 +17,11 @@ async function main() {
     console.log(`openclaw --version -> ${(await result.stdout()).trim()}`);
 
     // Sandbox does not run the image's ENTRYPOINT/CMD. To start the gateway
-    // instead, run it explicitly:
+    // instead, run it explicitly (see host/lib/wake.ts for the full flow):
     //   await sandbox.runCommand({
     //     cmd: 'openclaw',
-    //     args: ['gateway', '--port', '3000', '--bind', 'loopback'],
+    //     args: ['gateway', 'run', '--auth', 'token', '--port', '3000'],
+    //     env: { OPENCLAW_GATEWAY_TOKEN: token },
     //     detached: true,
     //   });
   } finally {

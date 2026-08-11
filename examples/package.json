@@ -3,10 +3,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "boot": "tsx boot.ts"
+    "boot": "tsx --env-file=.env.local boot.ts"
   },
   "dependencies": {
-    "@vercel/sandbox": "^2.0.0"
+    "@vercel/sandbox": "^3.0.0"
   },
   "devDependencies": {
     "tsx": "^4.19.0"

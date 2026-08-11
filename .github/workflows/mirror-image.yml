@@ -36,10 +36,10 @@ jobs:
 
       - name: Log in to VCR
         env:
-          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_VCR_TOKEN: ${{ secrets.VERCEL_VCR_TOKEN }}
           VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}
         run: |
-          printf '%s' "$VERCEL_TOKEN" | skopeo login vcr.vercel.com \
+          printf '%s' "$VERCEL_VCR_TOKEN" | skopeo login vcr.vercel.com \
             --username "$VERCEL_TEAM_ID" --password-stdin
 
       - name: Mirror tags (amd64, digest-checked)

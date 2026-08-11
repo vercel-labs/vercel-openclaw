@@ -6,13 +6,18 @@ import { Sandbox } from '@vercel/sandbox';
  * the host forwards traffic to.
  *
  * The host runs OUTSIDE the sandbox, so the forwarding URL is always
- * sandbox.domain(GATEWAY_PORT) — never localhost. localhost:3000 only exists
- * inside the VM.
+ * sandbox.domain(GATEWAY_PORT) — never localhost. The gateway's default
+ * loopback bind is fine: exposed-port routing reaches loopback-bound
+ * listeners (verified 2026-08-11, see docs/suspension-spec.md).
  */
 
 const GATEWAY_PORT = 3000;
 const DEFAULT_IMAGE = 'openclaw-foundation/openclaw/openclaw:latest';
-const SESSION_TIMEOUT_MS = 75 * 60 * 1000; // platform backstop, 15 min behind graceful path
+const GATEWAY_LOG = '/tmp/openclaw-gateway.log';
+
+// 75 min platform backstop, 15 min behind the graceful path. Requires a
+// Pro/Enterprise team: the Hobby max session length is 45 minutes.
+const SESSION_TIMEOUT_MS = 75 * 60 * 1000;
 
 // image_not_ready is thrown while VCR prepares an optimized amd64 build after
 // a push. It happens at create/resume time, not when forwarding payloads.
@@ -28,7 +33,18 @@ export interface AwakeGateway {
   baseUrl: string;
 }
 
-export async function ensureAwake(name: string): Promise<AwakeGateway> {
+// Dampens concurrent webhook bursts: one wake per sandbox name per instance.
+const inflight = new Map<string, Promise<AwakeGateway>>();
+
+export function ensureAwake(name: string): Promise<AwakeGateway> {
+  const existing = inflight.get(name);
+  if (existing) return existing;
+  const attempt = ensureAwakeUncached(name).finally(() => inflight.delete(name));
+  inflight.set(name, attempt);
+  return attempt;
+}
+
+async function ensureAwakeUncached(name: string): Promise<AwakeGateway> {
   const token = process.env.OPENCLAW_GATEWAY_TOKEN;
   if (!token) throw new Error('OPENCLAW_GATEWAY_TOKEN not set');
 
@@ -66,16 +82,13 @@ export async function ensureAwake(name: string): Promise<AwakeGateway> {
 }
 
 async function startGateway(sandbox: Sandbox, token: string): Promise<void> {
+  // Output goes to a log file so failures are diagnosable after the fact
+  // (a detached command's own stdio is not otherwise retained).
   await sandbox.runCommand({
-    cmd: 'openclaw',
+    cmd: 'sh',
     args: [
-      'gateway',
-      'run',
-      '--allow-unconfigured',
-      '--auth',
-      'token',
-      '--port',
-      String(GATEWAY_PORT),
+      '-c',
+      `openclaw gateway run --allow-unconfigured --auth token --port ${GATEWAY_PORT} >> ${GATEWAY_LOG} 2>&1`,
     ],
     env: { OPENCLAW_GATEWAY_TOKEN: token },
     detached: true,
@@ -88,7 +101,7 @@ async function startGateway(sandbox: Sandbox, token: string): Promise<void> {
  * `openclaw gateway call health` (verified against 2026.7.2-beta.7).
  */
 async function waitForGatewayHealth(sandbox: Sandbox, token: string): Promise<void> {
-  let lastOutput = '';
+  let restartAttempted = false;
   for (let i = 0; i < HEALTH_ATTEMPTS; i++) {
     const result = await sandbox.runCommand({
       cmd: 'openclaw',
@@ -106,35 +119,59 @@ async function waitForGatewayHealth(sandbox: Sandbox, token: string): Promise<vo
       ],
     });
     if (result.exitCode === 0) return;
-    lastOutput = await result.stderr();
+    // Covers the sandbox-already-running case where neither onCreate nor
+    // onResume fired but the gateway died (crash, manual kill).
+    if (!restartAttempted) {
+      restartAttempted = true;
+      await startGateway(sandbox, token);
+    }
     await sleep(HEALTH_DELAY_MS);
   }
-  throw new Error(`gateway did not become healthy: ${lastOutput.slice(0, 500)}`);
+  // Surface the gateway's own log, not just the failed health probe.
+  const log = await sandbox.runCommand('sh', ['-c', `tail -20 ${GATEWAY_LOG} 2>/dev/null`]);
+  throw new Error(`gateway did not become healthy. gateway log tail:\n${(await log.stdout()).slice(-1000)}`);
 }
+
+/** Hop-by-hop / transport headers that must not be blindly forwarded. */
+const STRIP_HEADERS = new Set([
+  'host',
+  'connection',
+  'content-length',
+  'transfer-encoding',
+  'accept-encoding',
+  'keep-alive',
+  'upgrade',
+  'expect',
+]);
 
 /**
  * Forward a webhook into the gateway's native channel handler.
  *
- * The body MUST be byte-identical to what the sender posted: channel handlers
- * verify signatures over the raw body. Host metadata travels in headers only.
+ * Channel handlers verify signatures over the exact bytes and headers the
+ * sender produced (e.g. Slack's x-slack-signature + x-slack-request-timestamp
+ * over the raw body), so the body is forwarded as untouched bytes and the
+ * original headers pass through minus hop-by-hop ones.
  */
 export async function forwardPayload(
   baseUrl: string,
   path: string,
   options: {
-    rawBody: string;
-    contentType: string | null;
+    rawBody: ArrayBuffer | string;
+    headers: Headers;
     channel: string;
     receivedAt?: number;
   },
 ): Promise<Response> {
+  const headers = new Headers();
+  options.headers.forEach((value, key) => {
+    if (!STRIP_HEADERS.has(key.toLowerCase())) headers.set(key, value);
+  });
+  headers.set('x-openclaw-channel', options.channel);
+  headers.set('x-received-at', String(options.receivedAt ?? Date.now()));
+
   return fetch(new URL(path, baseUrl), {
     method: 'POST',
-    headers: {
-      ...(options.contentType ? { 'content-type': options.contentType } : {}),
-      'x-openclaw-channel': options.channel,
-      'x-received-at': String(options.receivedAt ?? Date.now()),
-    },
+    headers,
     body: options.rawBody,
     signal: AbortSignal.timeout(10_000),
   });

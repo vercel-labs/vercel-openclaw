@@ -13,7 +13,8 @@ the packing). The host always calls; the gateway always answers.
 ## Sandbox configuration
 
 ```
-Sandbox.create({
+Sandbox.getOrCreate({
+  name: 'openclaw',          // stable identity: resume finds the same sandbox + snapshot
   image: 'openclaw-foundation/openclaw/openclaw:latest',
   persistent: true,          // default: snapshot disk on stop, restore on resume
   timeout: 75 * 60 * 1000,   // 75 min platform backstop, 15 min behind the graceful path
@@ -94,7 +95,8 @@ for it.
 
 Source: read from `ghcr.io/openclaw/openclaw:2026.7.2-beta.7` ("OpenClaw 2026.7.2-beta.7
 (dabe191)"), files `/app/dist/suspend-*.js`, `/app/dist/gateway-suspend-coordinator-*.js`,
-`/app/docs/gateway/protocol.md` inside the image. Beta semantics; Patrick confirms stability.
+`/app/docs/gateway/protocol.md` inside the image. Beta semantics; stability to be confirmed
+with the OpenClaw maintainers (Patrick Erichsen).
 
 - Methods: `gateway.suspend.prepare` / `gateway.suspend.status` / `gateway.suspend.resume`,
   served as gateway methods over the gateway WebSocket (default port 3000). Probe/CLI:
@@ -115,6 +117,10 @@ Source: read from `ghcr.io/openclaw/openclaw:2026.7.2-beta.7` ("OpenClaw 2026.7.
   persistence, live terminal sessions.
 - Cron wake: `cron.list` / `cron.status` / `cron.get` exist as gateway methods; the host
   computes `nextWakeAt` from job schedules. v1 dependency satisfied.
+- Port routing: the exposed-port URL reaches loopback-bound listeners (observed 2026-08-11:
+  `python3 -m http.server 3000 --bind 127.0.0.1` answered HTTP 200 via `sandbox.domain(3000)`).
+  The gateway's default loopback bind therefore works with host forwarding. Exposed URLs are
+  publicly routable, so gateway token auth stays mandatory.
 
 ## Open contract questions (Patrick / 2026.7.2)
 

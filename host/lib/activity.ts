@@ -102,22 +102,18 @@ export function shouldExtendTimeout(
 }
 
 /**
- * Calculate the next time the idle check should run.
- *
- * The idle check runs every 5 minutes (per spec). This helper computes
- * when the next check is due based on the last activity time and the
- * check interval.
+ * Calculate when the sandbox becomes eligible for idle suspension.
  *
  * @param state Current activity state
- * @param checkIntervalMs Interval between idle checks (default: 5 minutes)
- * @returns Timestamp (ms) when the next idle check should run
+ * @param idleThresholdMs Idle threshold (default: 60 minutes, per spec)
+ * @returns Timestamp (ms) at which isIdle() starts returning true
  */
 export function getNextIdleCheckAt(
   state: ActivityState,
-  _checkIntervalMs: number = 5 * 60 * 1000
+  idleThresholdMs: number = 60 * 60 * 1000
 ): number {
-  // Next check is at lastActivityAt + idle threshold; but we check every 5 min
-  // so the earliest next check is in 5 minutes from the last activity
-  const idleThresholdMs = 60 * 60 * 1000;
+  // The earliest moment the sandbox can become idle-eligible. The cron polls
+  // every 5 minutes, so the actual suspend attempt lands within one interval
+  // after this.
   return state.lastActivityAt + idleThresholdMs;
 }

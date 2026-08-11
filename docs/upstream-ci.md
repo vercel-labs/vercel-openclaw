@@ -49,11 +49,13 @@ Mirror the existing Docker Hub login block, same pinned action:
           password: ${{ secrets.VERCEL_VCR_TOKEN }}
 ```
 
-with a small resolver step (secrets aren't directly usable in `if:`):
+with a small resolver step (secrets aren't directly usable in `if:`), added to **each of the four jobs** alongside the login:
 
 ```yaml
       - name: Resolve VCR availability
-        run: echo "VCR_ENABLED=${{ secrets.VERCEL_VCR_TOKEN != '' }}" >> "$GITHUB_ENV"
+        run: |
+          echo "VCR_ENABLED=${{ secrets.VERCEL_VCR_TOKEN != '' }}" >> "$GITHUB_ENV"
+          echo "VCR_IMAGE=${VCR_REGISTRY}/${VCR_IMAGE_NAME}" >> "$GITHUB_ENV"
 ```
 
 ### 3. Image refs in the tag resolvers and manifest job
@@ -67,7 +69,7 @@ if [[ "${VCR_ENABLED}" == "true" ]]; then
 fi
 ```
 
-In `create-manifest`, add a VCR `create_manifest` call following the Docker Hub pattern (per-arch tags rebuilt within the same registry, not cross-registry digests):
+In `create-manifest`, build a `vcr_tags` array the same way the existing per-registry tag arrays are built (same tag list, `${VCR_IMAGE}` as the image), then add a VCR `create_manifest` call following the Docker Hub pattern (per-arch tags rebuilt within the same registry, not cross-registry digests):
 
 ```bash
 create_manifest "${VCR_IMAGE}:${version}-amd64" "${VCR_IMAGE}:${version}-arm64" "${vcr_tags[@]}"

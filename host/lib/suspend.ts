@@ -80,14 +80,24 @@ export function createSandboxGatewayCaller(
         JSON.stringify(params),
       ],
     });
+    // RPC-level failures (e.g. the conflict error) may exit non-zero and
+    // print the error JSON on either stream; try both before giving up so
+    // error shapes still reach normalizePrepareResponse. The exact CLI error
+    // format is only partially verified (see spec, open questions).
     const stdout = await result.stdout();
-    try {
-      return JSON.parse(stdout);
-    } catch {
-      throw new Error(
-        `gateway call ${method} returned non-JSON (exit ${result.exitCode}): ${stdout.slice(0, 300)}`,
-      );
+    const stderr = await result.stderr();
+    for (const output of [stdout, stderr]) {
+      const trimmed = output.trim();
+      if (!trimmed) continue;
+      try {
+        return JSON.parse(trimmed);
+      } catch {
+        // fall through to the next stream / the final error
+      }
     }
+    throw new Error(
+      `gateway call ${method} returned no JSON (exit ${result.exitCode}): ${(stdout || stderr).slice(0, 300)}`,
+    );
   };
 }
 
@@ -98,13 +108,19 @@ export function createSandboxGatewayCaller(
  */
 export function normalizePrepareResponse(raw: unknown): PrepareResult {
   const value = raw as Record<string, any>;
-  if (value?.status === 'ready' || value?.status === 'busy' || value?.status === 'recovering') {
-    return value as PrepareResult;
+  if (value?.status === 'ready') return value as SuspendReady;
+  if (value?.status === 'busy') {
+    return { ...value, retryAfterMs: value.retryAfterMs ?? 20_000 } as SuspendBusy;
+  }
+  if (value?.status === 'recovering') {
+    return { ...value, retryAfterMs: value.retryAfterMs ?? 1_000 } as SuspendRecovering;
   }
   const details = value?.error?.details ?? value?.details;
   if (details?.reason === 'gateway-suspension-conflict') {
-    return { status: 'conflict', expiresAtMs: details.expiresAtMs ?? 0 };
+    return { status: 'conflict', expiresAtMs: details.expiresAtMs ?? Date.now() + 30_000 };
   }
+  // Scheduler recovery can also surface as an UNAVAILABLE error
+  // (schedulerRecoveryError in the verified beta.7 handler).
   if (details?.reason === 'scheduler-resume-failed' || value?.error?.retryAfterMs) {
     return { status: 'recovering', retryAfterMs: value?.error?.retryAfterMs ?? 1_000 };
   }
@@ -168,7 +184,7 @@ export function decideSuspendAction(
       // Another suspension holds the fence; it self-expires within 2 min.
       return {
         action: 'retry',
-        nextRetryAtMs: Math.min(result.expiresAtMs, now + 30_000),
+        nextRetryAtMs: Math.min(Math.max(result.expiresAtMs, now), now + 30_000),
         reason: 'different requestId holds the lease',
       };
     case 'recovering':

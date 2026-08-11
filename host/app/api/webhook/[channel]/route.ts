@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { InMemoryActivityStore } from '@/lib/activity-store';
+import { defaultActivityStore } from '@/lib/activity-store';
 import { ensureAwake, forwardPayload } from '@/lib/wake';
 
 /**
@@ -7,15 +7,22 @@ import { ensureAwake, forwardPayload } from '@/lib/wake';
  *
  * Webhooks terminate at the host, never at the sandbox (a sleeping VM is
  * unreachable). This route: stamps lastActivityAt, wakes the sandbox if
- * needed, and forwards the ORIGINAL body into the gateway's native channel
- * handler. See docs/suspension-spec.md, "Wake paths".
+ * needed, and forwards the ORIGINAL bytes and headers into the gateway's
+ * native channel handler. See docs/suspension-spec.md, "Wake paths".
+ *
+ * v1 LIMITATION: the response blocks on the wake, which can take minutes on
+ * a cold resume, while e.g. Slack expects a 3-second ack and retries on
+ * timeout. The PoC answer (ack-then-forward via `after()`, and how the
+ * gateway dedupes redelivery) is part of the open contract questions.
  */
 
-const activityStore = new InMemoryActivityStore();
+export const maxDuration = 300;
+
+const activityStore = defaultActivityStore;
 
 // Gateway-native handler paths per channel. Slack's is verified from the
-// previous deployment's audit; add others as their paths are confirmed
-// (open contract question with the OpenClaw team).
+// earlier vercel-openclaw deployment; add others as their paths are
+// confirmed (open contract question with the OpenClaw team).
 const CHANNEL_PATHS: Record<string, string> = {
   slack: '/slack/events',
 };
@@ -35,9 +42,10 @@ export async function POST(
     );
   }
 
-  // Read the raw body: channel handlers verify signatures over the exact
-  // bytes the sender posted, so it must never be re-serialized.
-  const rawBody = await req.text();
+  // Raw bytes, not text: channel handlers verify signatures over the exact
+  // bytes the sender posted, and a UTF-8 decode/re-encode round trip corrupts
+  // any non-UTF-8 payload.
+  const rawBody = await req.arrayBuffer();
   const receivedAt = Date.now();
   await activityStore.set(channel, receivedAt);
 
@@ -49,7 +57,7 @@ export async function POST(
 
     const upstream = await forwardPayload(baseUrl, path, {
       rawBody,
-      contentType: req.headers.get('content-type'),
+      headers: req.headers,
       channel,
       receivedAt,
     });

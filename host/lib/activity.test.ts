@@ -115,15 +115,13 @@ describe("activity", () => {
       expect(result.lastActivityAt).toBeGreaterThan(Date.now() - 100);
     });
 
-    it("does not reset clock for gateway internal work (LLM calls)", () => {
-      const oldLastActivityAt = 1000000;
-      const state: ActivityState = { lastActivityAt: oldLastActivityAt };
+    it("recordActivity is the only mutation path and returns a new state", () => {
+      const oldState: ActivityState = { lastActivityAt: 1000000 };
+      const newState = recordActivity(oldState, "sandbox-wake", 2000000);
 
-      // Simulate gateway internal work - the spec explicitly states these
-      // should NOT reset the clock. This test verifies we don't have a method
-      // that would incorrectly allow it.
-      // The only way to reset is via the three documented activity events.
-      expect(state.lastActivityAt).toBe(oldLastActivityAt);
+      // Original state untouched (pure function), new state carries the event time
+      expect(oldState.lastActivityAt).toBe(1000000);
+      expect(newState.lastActivityAt).toBe(2000000);
     });
   });
 
@@ -209,15 +207,13 @@ describe("activity", () => {
       expect(nextCheck).toBe(lastActivityAt + 60 * 60 * 1000);
     });
 
-    it("accepts custom check interval (though typically not used)", () => {
+    it("accepts a custom idle threshold", () => {
       const lastActivityAt = 1000000;
       const state: ActivityState = { lastActivityAt };
-      const customIntervalMs = 10 * 60 * 1000; // 10 min
+      const customThresholdMs = 10 * 60 * 1000; // 10 min
 
-      // The function returns idle threshold, not the custom interval
-      // but we pass it to show flexibility
-      const nextCheck = getNextIdleCheckAt(state, customIntervalMs);
-      expect(nextCheck).toBe(lastActivityAt + 60 * 60 * 1000);
+      const nextCheck = getNextIdleCheckAt(state, customThresholdMs);
+      expect(nextCheck).toBe(lastActivityAt + customThresholdMs);
     });
   });
 
