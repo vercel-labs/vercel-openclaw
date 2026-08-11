@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { APIError, Sandbox } from '@vercel/sandbox';
 import { defaultActivityStore } from '@/lib/activity-store';
-import { isIdle } from '@/lib/activity';
+import { isIdle, IDLE_THRESHOLD_MS } from '@/lib/activity';
 import { attemptSuspend, createSandboxGatewayCaller, IDLE_REARM_MS } from '@/lib/suspend';
 import { startGateway } from '@/lib/wake';
 
@@ -16,10 +16,11 @@ import { startGateway } from '@/lib/wake';
  *   platform would do anyway; the disk snapshot is taken either way.
  */
 
-export const maxDuration = 120;
+// Must cover the in-request ceiling loop: up to CEILING_WINDOW_MS of
+// re-prepare attempts before the force-stop margin.
+export const maxDuration = 300;
 
 const SANDBOX_NAME = process.env.OPENCLAW_SANDBOX_NAME ?? 'openclaw';
-const IDLE_THRESHOLD_MS = 60 * 60 * 1000;
 const CEILING_WINDOW_MS = 5 * 60 * 1000;
 const CEILING_FORCE_STOP_MARGIN_MS = 60 * 1000;
 
@@ -82,15 +83,27 @@ async function runCheck(token: string) {
   };
 
   // Ceiling path: the platform deadline is near. Webhook traffic normally
-  // extends it; when extension stopped working (hard 24h plan maximum), go
-  // graceful before the platform kill, forcing at T-60s.
+  // tops the deadline up; when extension stopped working (hard 24h plan
+  // maximum), go graceful before the platform kill, forcing at T-60s. The
+  // 5-minute cron granularity can't honor the contract's 20s retry cadence,
+  // so the loop runs INSIDE this request until stop or force-stop.
   const expiresAt = sandbox.expiresAt?.getTime();
   if (expiresAt !== undefined && expiresAt - now < CEILING_WINDOW_MS) {
-    const decision = await attemptSuspend(
-      { call, stop, requestId: REQUEST_ID },
-      { ceiling: { forceStopAtMs: expiresAt - CEILING_FORCE_STOP_MARGIN_MS } },
-    );
-    return { action: decision.action, path: 'ceiling', decision };
+    const forceStopAtMs = expiresAt - CEILING_FORCE_STOP_MARGIN_MS;
+    while (true) {
+      const decision = await attemptSuspend(
+        { call, stop, requestId: REQUEST_ID },
+        { ceiling: { forceStopAtMs } },
+      );
+      if (decision.action !== 'retry') {
+        return { action: decision.action, path: 'ceiling', decision };
+      }
+      const waitMs = Math.min(
+        Math.max(decision.nextRetryAtMs - Date.now(), 1_000),
+        Math.max(forceStopAtMs - Date.now(), 0),
+      );
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
+    }
   }
 
   // Idle path.

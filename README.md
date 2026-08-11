@@ -38,13 +38,13 @@ The control plane that makes an OpenClaw sandbox sleep between messages and wake
 - `lib/suspend.ts` — the verified `gateway.suspend.*` contract (2026.7.2-beta.7): prepare as idle-fence, 2-minute lease, busy/ready/conflict/recovering handling, ceiling force-stop.
 - `lib/activity.ts` + tests — the idle clock: which events reset it, 60-minute threshold, extend-timeout rules.
 
-It's a headless API-only Next.js app. Environment variables:
+It's a headless API-only Next.js app. Deploy with the Vercel project's **Root Directory set to `host`** — `vercel.json` (the cron schedule) lives there, and without it the idle path silently never runs. Environment variables:
 
 | Variable | Purpose |
 | --- | --- |
 | `OPENCLAW_GATEWAY_TOKEN` | Gateway auth token; the host holds it, the gateway enforces it |
 | `SLACK_SIGNING_SECRET` | Verifies Slack webhooks at the host, before any compute wakes (fail-closed) |
-| `KV_REST_API_URL` + `KV_REST_API_TOKEN` | Redis-backed activity store (Upstash-compatible). **Required in production**: without it the idle clock is per-instance memory and the idle path never fires |
+| `KV_REST_API_URL` + `KV_REST_API_TOKEN` | Redis-backed activity store (Upstash REST protocol; `UPSTASH_REDIS_REST_URL`/`UPSTASH_REDIS_REST_TOKEN` also accepted). **Required in production**: without it the idle clock is per-instance memory and the idle path never fires |
 | `OPENCLAW_SANDBOX_NAME` | Sandbox name (default `openclaw`) |
 | `OPENCLAW_IMAGE` | Image override (default `openclaw-foundation/openclaw/openclaw:latest`) |
 | `GATEWAY_URL` | Dev-only: skip the wake path, forward to a directly reachable gateway |

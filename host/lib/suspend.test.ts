@@ -62,6 +62,14 @@ describe('normalizePrepareResponse', () => {
     expect(result).toEqual({ status: 'conflict', expiresAtMs: NOW + 60_000 });
   });
 
+  it('defaults a conflict without expiresAtMs to now + 30s (injected clock)', () => {
+    const result = normalizePrepareResponse(
+      { error: { details: { reason: 'gateway-suspension-conflict' } } },
+      NOW,
+    );
+    expect(result).toEqual({ status: 'conflict', expiresAtMs: NOW + 30_000 });
+  });
+
   it('maps scheduler recovery arriving as an error', () => {
     const result = normalizePrepareResponse({
       error: { details: { reason: 'scheduler-resume-failed' }, retryAfterMs: 1_000 },

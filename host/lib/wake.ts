@@ -97,15 +97,21 @@ async function ensureAwakeUncached(name: string): Promise<AwakeGateway> {
   return { sandbox, baseUrl: sandbox.domain(GATEWAY_PORT) };
 }
 
-export async function startGateway(sandbox: Sandbox, token: string): Promise<void> {
+export async function startGateway(
+  sandbox: Sandbox,
+  token: string,
+  opts: { appendLog?: boolean } = {},
+): Promise<void> {
   // Output goes to a log file so failures are diagnosable after the fact
-  // (a detached command's own stdio is not otherwise retained). Truncate on
-  // each start: /tmp is on the snapshotted disk and survives resumes.
+  // (a detached command's own stdio is not otherwise retained). Primary
+  // starts truncate (/tmp is on the snapshotted disk and survives resumes);
+  // fallback restarts append so they can't destroy the first attempt's log.
+  const redirect = opts.appendLog ? '>>' : '>';
   await sandbox.runCommand({
     cmd: 'sh',
     args: [
       '-c',
-      `openclaw gateway run --allow-unconfigured --auth token --port ${GATEWAY_PORT} > ${GATEWAY_LOG} 2>&1`,
+      `openclaw gateway run --allow-unconfigured --auth token --port ${GATEWAY_PORT} ${redirect} ${GATEWAY_LOG} 2>&1`,
     ],
     env: { OPENCLAW_GATEWAY_TOKEN: token },
     detached: true,
@@ -124,10 +130,14 @@ async function waitForGatewayHealth(
   token: string,
   deadline: number,
 ): Promise<void> {
+  // Deliberate trade: the cache is per-instance and a gateway that dies
+  // inside the 30s window gets one message forwarded into a 502 before the
+  // next probe notices. Accepted to avoid a probe round trip per message.
   const cached = lastHealthyAt.get(name);
   if (cached && Date.now() - cached < HEALTH_CACHE_MS) return;
 
   let restartAttempted = false;
+  let failures = 0;
   while (true) {
     const result = await sandbox.runCommand({
       cmd: 'openclaw',
@@ -150,9 +160,15 @@ async function waitForGatewayHealth(
     // Covers the sandbox-already-running case where neither onCreate nor
     // onResume fired but the gateway died (crash, manual kill), and the
     // partial-create case where onCreate threw after the sandbox existed.
-    if (!restartAttempted) {
+    // Requires 3 consecutive failures first: right after a create/resume the
+    // first probes legitimately fail while the freshly-started gateway binds,
+    // and restarting then would spawn a duplicate process contending for the
+    // port. The restart appends to the log so it can't truncate the primary
+    // process's failure output.
+    failures += 1;
+    if (failures >= 3 && !restartAttempted) {
       restartAttempted = true;
-      await startGateway(sandbox, token);
+      await startGateway(sandbox, token, { appendLog: true });
     }
     if (Date.now() + HEALTH_DELAY_MS >= deadline) break;
     await sleep(HEALTH_DELAY_MS);
@@ -164,25 +180,15 @@ async function waitForGatewayHealth(
   );
 }
 
-/** Hop-by-hop / transport headers that must not be blindly forwarded. */
-const STRIP_HEADERS = new Set([
-  'host',
-  'connection',
-  'content-length',
-  'transfer-encoding',
-  'accept-encoding',
-  'keep-alive',
-  'upgrade',
-  'expect',
-]);
-
 /**
  * Forward a webhook into the gateway's native channel handler.
  *
  * Channel handlers verify signatures over the exact bytes and headers the
  * sender produced (e.g. Slack's x-slack-signature + x-slack-request-timestamp
  * over the raw body), so the body is forwarded as untouched bytes and the
- * original headers pass through minus hop-by-hop ones.
+ * caller supplies an ALLOWLIST of which inbound headers travel with it. An
+ * allowlist, not a denylist: the gateway URL is publicly routable, and
+ * unknown-but-sensitive headers (cookies, platform headers) must not leak.
  */
 export async function forwardPayload(
   baseUrl: string,
@@ -190,14 +196,17 @@ export async function forwardPayload(
   options: {
     rawBody: ArrayBuffer | string;
     headers: Headers;
+    /** Lowercase header names to pass through from the inbound request. */
+    forwardHeaders: string[];
     channel: string;
     receivedAt?: number;
   },
 ): Promise<Response> {
   const headers = new Headers();
-  options.headers.forEach((value, key) => {
-    if (!STRIP_HEADERS.has(key.toLowerCase())) headers.set(key, value);
-  });
+  for (const name of options.forwardHeaders) {
+    const value = options.headers.get(name);
+    if (value !== null) headers.set(name, value);
+  }
   headers.set('x-openclaw-channel', options.channel);
   headers.set('x-received-at', String(options.receivedAt ?? Date.now()));
 

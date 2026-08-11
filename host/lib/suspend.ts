@@ -106,7 +106,7 @@ export function createSandboxGatewayCaller(
  * payloads carry a status field; the conflict case arrives as an UNAVAILABLE
  * error with reason "gateway-suspension-conflict" (verified shape).
  */
-export function normalizePrepareResponse(raw: unknown): PrepareResult {
+export function normalizePrepareResponse(raw: unknown, nowMs: number = Date.now()): PrepareResult {
   const value = raw as Record<string, any>;
   // Validate per branch: this JSON comes from an external process, and a
   // malformed "ready" must never be allowed to stop the sandbox.
@@ -136,7 +136,7 @@ export function normalizePrepareResponse(raw: unknown): PrepareResult {
   if (details?.reason === 'gateway-suspension-conflict') {
     return {
       status: 'conflict',
-      expiresAtMs: typeof details.expiresAtMs === 'number' ? details.expiresAtMs : Date.now() + 30_000,
+      expiresAtMs: typeof details.expiresAtMs === 'number' ? details.expiresAtMs : nowMs + 30_000,
     };
   }
   // Scheduler recovery can also surface as an UNAVAILABLE error
@@ -237,7 +237,7 @@ export async function attemptSuspend(
 ): Promise<SuspendAction> {
   const now = deps.now ?? Date.now;
   const raw = await deps.call('gateway.suspend.prepare', { requestId: deps.requestId });
-  const decision = decideSuspendAction(normalizePrepareResponse(raw), now(), options);
+  const decision = decideSuspendAction(normalizePrepareResponse(raw, now()), now(), options);
   if (decision.action === 'stop') {
     try {
       await deps.stop();
