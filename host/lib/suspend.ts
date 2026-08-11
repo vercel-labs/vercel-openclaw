@@ -13,12 +13,24 @@ import type { Sandbox } from '@vercel/sandbox';
 
 // ---- gateway.suspend.prepare result shapes (verified) ----
 
+/**
+ * Live shape observed 2026-08-11 (beta.7): structured objects, e.g.
+ * {kind: "chat-run", count: 1, message: "1 active chat run(s)"}, with an
+ * extended form for tasks. Kept loose; the host only logs them.
+ */
+export interface SuspendBlocker {
+  kind: string;
+  count?: number;
+  message?: string;
+  [key: string]: unknown;
+}
+
 export interface SuspendReady {
   status: 'ready';
   suspensionId: string;
   expiresAtMs: number;
   activeCount: number;
-  blockers: string[];
+  blockers: SuspendBlocker[];
 }
 
 export interface SuspendBusy {
@@ -26,7 +38,7 @@ export interface SuspendBusy {
   reason: 'active-work' | 'gateway-draining';
   retryAfterMs: number; // 20_000 in beta.7
   activeCount: number;
-  blockers: string[];
+  blockers: SuspendBlocker[];
 }
 
 /** A different requestId already holds the lease (arrives as an RPC error). */
@@ -73,12 +85,15 @@ export function createSandboxGatewayCaller(
         method,
         '--url',
         `ws://127.0.0.1:${port}`,
+        // --token must be explicit: with a --url override the CLI refuses
+        // env-only credentials (verified live 2026-08-11). argv visibility
+        // is acceptable in a single-tenant VM.
+        '--token',
+        token,
         '--json',
         '--params',
         JSON.stringify(params),
       ],
-      // Token via env, not argv: argv is visible in the process table.
-      env: { OPENCLAW_GATEWAY_TOKEN: token },
     });
     // RPC-level failures (e.g. the conflict error) may exit non-zero and
     // print the error JSON on either stream; try both before giving up so
@@ -89,11 +104,23 @@ export function createSandboxGatewayCaller(
     for (const output of [stdout, stderr]) {
       const trimmed = output.trim();
       if (!trimmed) continue;
+      let parsed: unknown;
       try {
-        return JSON.parse(trimmed);
+        parsed = JSON.parse(trimmed);
       } catch {
-        // fall through to the next stream / the final error
+        continue; // fall through to the next stream / the final error
       }
+      // The CLI wraps transport failures (gateway unreachable, socket
+      // closed) in {ok:false, error:{...}} ON STDOUT with valid JSON.
+      // Verified live 2026-08-11: treating that envelope as a result made
+      // resume report success against a dead listener. Throw instead.
+      const envelope = parsed as { ok?: boolean; error?: { type?: string; message?: string } };
+      if (envelope?.ok === false && envelope.error) {
+        throw new Error(
+          `gateway call ${method} transport error: ${envelope.error.type ?? 'unknown'}: ${envelope.error.message ?? ''}`,
+        );
+      }
+      return parsed;
     }
     throw new Error(
       `gateway call ${method} returned no JSON (exit ${result.exitCode}): ${(stdout || stderr).slice(0, 300)}`,
@@ -152,7 +179,7 @@ export function normalizePrepareResponse(raw: unknown, nowMs: number = Date.now(
 export type SuspendAction =
   | { action: 'stop'; suspensionId: string; leaseExpiresAtMs: number }
   | { action: 'force-stop'; reason: string }
-  | { action: 'rearm'; nextCheckAtMs: number; blockers: string[] }
+  | { action: 'rearm'; nextCheckAtMs: number; blockers: SuspendBlocker[] }
   | { action: 'retry'; nextRetryAtMs: number; reason: string };
 
 export const IDLE_REARM_MS = 15 * 60 * 1000;
@@ -185,7 +212,7 @@ export function decideSuspendAction(
         if (now >= options.ceiling.forceStopAtMs) {
           return {
             action: 'force-stop',
-            reason: `ceiling reached while busy (${result.reason}: ${result.blockers.join(', ')})`,
+            reason: `ceiling reached while busy (${result.reason}: ${result.blockers.map((b) => b.message ?? b.kind).join(', ')})`,
           };
         }
         return {

@@ -122,6 +122,32 @@ with the OpenClaw maintainers (Patrick Erichsen).
   The gateway's default loopback bind therefore works with host forwarding. Exposed URLs are
   publicly routable, so gateway token auth stays mandatory.
 
+## Lifecycle LIVE-VALIDATED 2026-08-11 (host/scripts/e2e-lifecycle.ts, beta.7)
+
+Two full sleep/wake cycles through the production host code against
+`2026.7.2-beta.7` in a real sandbox:
+
+- create/resume -> gateway boot -> health -> `prepare` -> `ready` -> `stop()` -> snapshot,
+  twice. Wake-from-snapshot to healthy gateway: ~18s. Ready shape matched the code-derived
+  contract field for field.
+- The gateway boots non-interactively with plain `gateway run --allow-unconfigured` (no
+  `--dev`): the bootstrap bug in question 4 is DEV-MODE ONLY.
+- Question 2 ANSWERED by observation: after an abrupt stop mid-work, the restarted gateway
+  auto-continues the interrupted run (a recovery task titled "[System] Your previous turn was
+  interrupted by a gateway restart... Continue from the existing transcript" appeared as an
+  active blocker, and prepare correctly refused to suspend it). Our ceiling-path design
+  requirement is shipped behavior.
+- Live `blockers` are structured objects ({kind, count, message}, extended for tasks), not
+  strings.
+- CLI transport failures arrive as `{ok:false, error:{...}}` JSON on stdout; the host caller
+  detects the envelope and throws rather than mistaking it for a result.
+- NEW upstream issue (question 6): once `prepare` returns `ready`, the gateway's WebSocket
+  listener goes down and does NOT come back at lease expiry (process alive, port closed;
+  observed wedged >5 min). The production idle path is unaffected (after ready the host only
+  calls `sandbox.stop()`), but lease renewal, `status`, and `resume`/cancel are impossible
+  while held, contradicting the protocol doc's claim that status/resume operate on a held
+  lease.
+
 ## Open contract questions (Patrick / 2026.7.2)
 
 1. Is the beta.7 contract above frozen for 2026.7.2 stable?
@@ -139,6 +165,11 @@ with the OpenClaw maintainers (Patrick Erichsen).
    today; if the endpoints demand it, forwarding needs the auth header, and if they don't,
    they are publicly routable ingress guarded only by channel signatures. UNVERIFIED either
    way; needs a live probe or an upstream answer.
+6. Bug observed live (2026-08-11, beta.7): after `prepare` returns `ready`, the gateway's
+   WebSocket listener closes and does not reopen at lease expiry (process survives, port 3000
+   stays closed). This makes same-requestId renewal, `suspend.status`, and `suspend.resume`
+   unusable while a lease is held, though the protocol doc describes them as operating on the
+   held lease. Is this known, and is it fixed in 2026.7.2 stable?
 
 ## Explicitly deferred (not v1)
 

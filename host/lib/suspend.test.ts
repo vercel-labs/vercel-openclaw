@@ -18,12 +18,13 @@ const ready: SuspendReady = {
   blockers: [],
 };
 
+// Live blocker shape observed 2026-08-11 on 2026.7.2-beta.7
 const busy: SuspendBusy = {
   status: 'busy',
   reason: 'active-work',
   retryAfterMs: 20_000,
   activeCount: 2,
-  blockers: ['chat-run'],
+  blockers: [{ kind: 'chat-run', count: 1, message: '1 active chat run(s)' }],
 };
 
 describe('normalizePrepareResponse', () => {
@@ -97,7 +98,7 @@ describe('decideSuspendAction', () => {
     expect(decision).toEqual({
       action: 'rearm',
       nextCheckAtMs: NOW + IDLE_REARM_MS,
-      blockers: ['chat-run'],
+      blockers: busy.blockers,
     });
   });
 

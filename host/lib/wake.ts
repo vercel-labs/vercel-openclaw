@@ -133,8 +133,13 @@ async function waitForGatewayHealth(
   // Deliberate trade: the cache is per-instance and a gateway that dies
   // inside the 30s window gets one message forwarded into a 502 before the
   // next probe notices. Accepted to avoid a probe round trip per message.
+  // Only valid while the session is actually running: after a stop, a cached
+  // "healthy" would skip the resume + gateway restart entirely (observed
+  // live 2026-08-11 in the e2e: 0.1s "wake" of a stopped sandbox).
   const cached = lastHealthyAt.get(name);
-  if (cached && Date.now() - cached < HEALTH_CACHE_MS) return;
+  if (cached && Date.now() - cached < HEALTH_CACHE_MS && sandbox.status === 'running') {
+    return;
+  }
 
   let restartAttempted = false;
   let failures = 0;
@@ -147,11 +152,16 @@ async function waitForGatewayHealth(
         'health',
         '--url',
         `ws://127.0.0.1:${GATEWAY_PORT}`,
+        // --token must be explicit: with a --url override the CLI refuses
+        // env-only credentials ("gateway url override requires explicit
+        // credentials", verified live 2026-08-11). argv visibility is
+        // acceptable in a single-tenant VM where every process is ours.
+        '--token',
+        token,
         '--json',
         '--timeout',
         '5000',
       ],
-      env: { OPENCLAW_GATEWAY_TOKEN: token },
     });
     if (result.exitCode === 0) {
       lastHealthyAt.set(name, Date.now());
