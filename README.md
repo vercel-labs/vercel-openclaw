@@ -14,8 +14,6 @@ const sandbox = await Sandbox.create({
 
 No Dockerfile, no build step, no bundle pipeline. The image is the same one OpenClaw publishes to `ghcr.io/openclaw/openclaw` (stable channel, `linux/amd64`).
 
-> **Status:** the image is published to the OpenClaw Foundation's VCR repository ([vercel.com/openclaw-foundation/openclaw/images/openclaw](https://vercel.com/openclaw-foundation/openclaw/images/openclaw)) and flips public shortly. The reference above is final.
-
 ## Quickstart
 
 ```bash
