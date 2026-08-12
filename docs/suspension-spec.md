@@ -128,9 +128,16 @@ Two full sleep/wake cycles through the production host code against
 `2026.7.2-beta.7` in a real sandbox:
 
 - create/resume -> gateway boot -> health -> `prepare` -> `ready` -> `stop()` -> snapshot,
-  twice. Wake-from-snapshot to healthy gateway: ~18-19s; first-ever cold create (image pull +
-  VM boot + gateway cold start): ~14s. Ready shape matched the code-derived contract field for
-  field. Independently reproduced same day by a second operator on a fresh sandbox name.
+  twice. Ready shape matched the code-derived contract field for field. Independently
+  reproduced same day by a second operator on a fresh sandbox name.
+- Wake latency, measured then optimized (2026-08-12): ~10-11s end to end, both cold create and
+  wake-from-snapshot (was 14-19s before the host's health loop was rebuilt: one in-VM 300ms
+  port-waiter instead of host-side 5s polling, and the ~3s CLI protocol confirm skipped when
+  this call spawned the gateway itself). Phase decomposition of a wake: platform resume
+  including snapshot restore <1s; spawn round trip ~1.5s; OpenClaw gateway boot to port bind
+  ~7s (config + db check + 13 plugins) — the dominant, upstream-owned chunk and a natural
+  fast-boot conversation with the OpenClaw team. A freshly-woken gateway may report busy for
+  its own startup work for ~10s; the idle cron's re-arm handles that by design.
 - SDK semantics behavior-confirmed by probe (host/scripts/sdk-probe.ts): `extendTimeout(d)` is
   ADDITIVE (deadline moved by exactly d per call, anchored at session start), so the
   extend-by-shortfall pattern is required; and `onResume` fires DURING the first post-stop

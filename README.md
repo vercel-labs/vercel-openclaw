@@ -52,7 +52,7 @@ It's a headless API-only Next.js app. Deploy with the Vercel project's **Root Di
 
 Known v1 limitations, deliberate until the PoC with the OpenClaw team: the webhook response blocks on cold wakes (Slack's 3s ack window needs an ack-then-forward pattern), and the deployment assumes a Pro or Enterprise team (the 75-minute session timeout, `maxDuration: 300`, and the 5-minute cron all exceed Hobby limits).
 
-**Live-validated 2026-08-11** against `2026.7.2-beta.7`: two full sleep/wake cycles through this code path — gateway boot, health, `prepare` → `ready` → stop → snapshot → resume → gateway restart (`host/scripts/e2e-lifecycle.ts`, ~18s wake-from-snapshot). The same run confirmed interrupted work auto-continues after an abrupt stop, and surfaced one upstream issue with held leases (spec, contract question 6). Re-validation against 2026.7.2 stable when it ships.
+**Live-validated** against `2026.7.2-beta.7`: two full sleep/wake cycles through this code path — gateway boot, health, `prepare` → `ready` → stop → snapshot → resume → gateway restart (`host/scripts/e2e-lifecycle.ts`). End-to-end wake is **~10s** (cold and from snapshot alike); the sandbox's own resume including snapshot restore is sub-second, and ~7s of the total is the OpenClaw gateway booting. The runs also confirmed interrupted work auto-continues after an abrupt stop, and surfaced one upstream issue with held leases (spec, contract question 6). Re-validation against 2026.7.2 stable when it ships.
 
 ## How the image stays current
 

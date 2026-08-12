@@ -38,16 +38,24 @@ async function cycle(label: string) {
 
   step(`${label}: attemptSuspend (prepare -> ready -> stop, the real idle path)`);
   const call = createSandboxGatewayCaller(awake.sandbox, token);
-  const decision = await attemptSuspend({
-    call,
-    stop: async () => {
-      await awake.sandbox.stop();
-    },
-    requestId: `e2e-${label}`,
-  });
-  console.log('decision:', JSON.stringify(decision));
+  // A freshly-woken gateway can truthfully report busy while its own startup
+  // work drains (the idle cron would simply come back on a later tick), so
+  // model that: retry busy a few times before treating it as a failure.
+  let decision;
+  for (let attempt = 1; ; attempt++) {
+    decision = await attemptSuspend({
+      call,
+      stop: async () => {
+        await awake.sandbox.stop();
+      },
+      requestId: `e2e-${label}`,
+    });
+    console.log(`decision (attempt ${attempt}):`, JSON.stringify(decision));
+    if (decision.action === 'stop' || attempt >= 6) break;
+    await new Promise((r) => setTimeout(r, 10_000));
+  }
   if (decision.action !== 'stop') {
-    throw new Error(`expected stop, got ${decision.action}`);
+    throw new Error(`expected stop after retries, got ${decision.action}`);
   }
   console.log('sandbox stopped, disk snapshotted');
 }
