@@ -2,7 +2,12 @@ import { NextRequest, NextResponse } from 'next/server';
 import { APIError, Sandbox } from '@vercel/sandbox';
 import { defaultActivityStore } from '@/lib/activity-store';
 import { isIdle, IDLE_THRESHOLD_MS } from '@/lib/activity';
-import { attemptSuspend, createSandboxGatewayCaller, IDLE_REARM_MS } from '@/lib/suspend';
+import {
+  attemptSuspend,
+  createSandboxGatewayCaller,
+  GatewaySuspendUnsupportedError,
+  IDLE_REARM_MS,
+} from '@/lib/suspend';
 import { startGateway } from '@/lib/wake';
 
 /**
@@ -91,10 +96,21 @@ async function runCheck(token: string) {
   if (expiresAt !== undefined && expiresAt - now < CEILING_WINDOW_MS) {
     const forceStopAtMs = expiresAt - CEILING_FORCE_STOP_MARGIN_MS;
     while (true) {
-      const decision = await attemptSuspend(
-        { call, stop, requestId: REQUEST_ID },
-        { ceiling: { forceStopAtMs } },
-      );
+      let decision;
+      try {
+        decision = await attemptSuspend(
+          { call, stop, requestId: REQUEST_ID },
+          { ceiling: { forceStopAtMs } },
+        );
+      } catch (err) {
+        if (err instanceof GatewaySuspendUnsupportedError) {
+          // No graceful path exists on a pre-2026.7.2 gateway; a direct stop
+          // at the ceiling equals what the platform would do, disk-safe.
+          await stop();
+          return { action: 'force-stop', path: 'ceiling', reason: err.message };
+        }
+        throw err;
+      }
       if (decision.action !== 'retry') {
         return { action: decision.action, path: 'ceiling', decision };
       }
@@ -112,7 +128,22 @@ async function runCheck(token: string) {
     return { action: 'none', reason: 'not idle', lastActivityAt };
   }
 
-  const decision = await attemptSuspend({ call, stop, requestId: REQUEST_ID });
+  let decision;
+  try {
+    decision = await attemptSuspend({ call, stop, requestId: REQUEST_ID });
+  } catch (err) {
+    if (err instanceof GatewaySuspendUnsupportedError) {
+      // Without prepare there is no idle-fence, so stopping could interrupt
+      // running work. Idle suspension is disabled; the platform timeout is
+      // the only lifecycle event, exactly the pre-handshake world.
+      return {
+        action: 'none',
+        reason:
+          'gateway predates the suspension API (needs OpenClaw >= 2026.7.2); idle path disabled, platform-timeout backstop only',
+      };
+    }
+    throw err;
+  }
 
   if (decision.action === 'rearm') {
     // Busy = the gateway is working. Persist the re-arm so the next ticks

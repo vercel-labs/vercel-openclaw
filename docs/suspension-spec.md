@@ -149,6 +149,12 @@ Two full sleep/wake cycles through the production host code against
   strings.
 - CLI transport failures arrive as `{ok:false, error:{...}}` JSON on stdout; the host caller
   detects the envelope and throws rather than mistaking it for a result.
+- Pre-suspension gateways (probed live against 2026.7.1): the wake path works unchanged (same
+  boot command), and `gateway.suspend.prepare` returns `{ok:false, error:{type:
+  "gateway_request_error", code:"INVALID_REQUEST", message:"unknown method:
+  gateway.suspend.prepare", retryable:false}}`. The host maps this to a typed error and
+  degrades: idle path disabled (no fence, never stop blind), ceiling becomes a direct stop,
+  platform timeout remains the backstop. Repro: host/scripts/probe-legacy-gateway.ts.
 - NEW upstream issue (question 6): once `prepare` returns `ready`, the gateway's WebSocket
   listener goes down and does NOT come back at lease expiry (process alive, port closed;
   observed wedged >5 min). The production idle path is unaffected (after ready the host only

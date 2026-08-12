@@ -66,6 +66,20 @@ export type GatewayCaller = (
 ) => Promise<unknown>;
 
 /**
+ * The targeted gateway predates the suspension API (< 2026.7.2). Observed
+ * live 2026-08-11 against 2026.7.1: {ok:false, error:{type:
+ * "gateway_request_error", code:"INVALID_REQUEST", message:"unknown method:
+ * gateway.suspend.prepare", retryable:false}}. Hosts should disable the idle
+ * path and rely on the platform-timeout backstop.
+ */
+export class GatewaySuspendUnsupportedError extends Error {
+  constructor(method: string) {
+    super(`gateway does not support ${method} (predates OpenClaw 2026.7.2)`);
+    this.name = 'GatewaySuspendUnsupportedError';
+  }
+}
+
+/**
  * Call gateway methods by running OpenClaw's own CLI inside the sandbox
  * (`openclaw gateway call <method> --json`). Avoids reimplementing the
  * gateway's WebSocket protocol in the host; requires the sandbox awake,
@@ -116,6 +130,12 @@ export function createSandboxGatewayCaller(
       // resume report success against a dead listener. Throw instead.
       const envelope = parsed as { ok?: boolean; error?: { type?: string; message?: string } };
       if (envelope?.ok === false && envelope.error) {
+        if (
+          method.startsWith('gateway.suspend.') &&
+          envelope.error.message?.startsWith('unknown method')
+        ) {
+          throw new GatewaySuspendUnsupportedError(method);
+        }
         throw new Error(
           `gateway call ${method} transport error: ${envelope.error.type ?? 'unknown'}: ${envelope.error.message ?? ''}`,
         );

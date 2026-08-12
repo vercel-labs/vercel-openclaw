@@ -3,6 +3,7 @@ import {
   normalizePrepareResponse,
   decideSuspendAction,
   attemptSuspend,
+  GatewaySuspendUnsupportedError,
   IDLE_REARM_MS,
   type SuspendReady,
   type SuspendBusy,
@@ -166,6 +167,24 @@ describe('attemptSuspend', () => {
     });
     expect(decision.action).toBe('rearm');
     expect(stopped).toBe(false);
+  });
+
+  it('surfaces GatewaySuspendUnsupportedError for pre-2026.7.2 gateways', async () => {
+    // Live shape from 2026.7.1 (2026-08-11): the caller maps the CLI envelope
+    // {ok:false, error:{message:"unknown method: gateway.suspend.prepare"}}
+    // to a typed error the cron uses to disable the idle path.
+    await expect(
+      attemptSuspend({
+        call: async (method) => {
+          throw new GatewaySuspendUnsupportedError(method);
+        },
+        stop: async () => {
+          throw new Error('must not stop');
+        },
+        requestId: 'req-legacy',
+        now: () => NOW,
+      }),
+    ).rejects.toBeInstanceOf(GatewaySuspendUnsupportedError);
   });
 
   it('releases the held lease when stop() fails', async () => {
