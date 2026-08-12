@@ -56,11 +56,11 @@ Known v1 limitations, deliberate until the PoC with the OpenClaw team: the webho
 
 ## How the image stays current
 
-Two mechanisms, one active at a time:
+The VCR repository belongs to the OpenClaw Foundation, so keeping it current is theirs to run. This repo provides both mechanisms ready-made:
 
-1. **Interim (this repo):** [`mirror-image.yml`](.github/workflows/mirror-image.yml) runs daily and copies the `latest` and `slim` tags from `ghcr.io/openclaw/openclaw` to VCR. Copies are digest-checked and skipped when VCR is already current. Betas are excluded by construction: OpenClaw's release pipeline only promotes stable releases to the moving tags this mirror tracks.
+1. **Target state:** OpenClaw's release CI pushes to VCR directly, the same way it already publishes to ghcr.io and Docker Hub. The ready-to-adopt patch lives in [`docs/upstream-ci.md`](docs/upstream-ci.md).
 
-2. **Target state:** OpenClaw's release CI pushes to VCR directly, the same way it already publishes to ghcr.io and Docker Hub. The ready-to-adopt patch lives in [`docs/upstream-ci.md`](docs/upstream-ci.md). Once that lands, the mirror retires (cron removed, manual dispatch kept as backstop).
+2. **Until then:** [`mirror-image.yml`](.github/workflows/mirror-image.yml) is a drop-in scheduled workflow that copies the `latest` and `slim` tags from `ghcr.io/openclaw/openclaw` to VCR — digest-checked, idempotent, betas excluded by construction (upstream's release pipeline never promotes betas to the moving tags it tracks). Adopt it in any repo with two secrets (`VERCEL_VCR_TOKEN` scoped to the owning team, `VERCEL_TEAM_ID`).
 
 ## What "public" means
 
