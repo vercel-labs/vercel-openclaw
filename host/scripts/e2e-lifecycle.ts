@@ -34,7 +34,7 @@ async function cycle(label: string) {
   step(`${label}: ensureAwake (sandbox + gateway + health)`);
   const t0 = Date.now();
   const awake = await ensureAwake(SANDBOX_NAME);
-  console.log(`awake in ${((Date.now() - t0) / 1000).toFixed(1)}s, baseUrl: ${awake.baseUrl}`);
+  console.log(`awake in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
 
   step(`${label}: attemptSuspend (prepare -> ready -> stop, the real idle path)`);
   const call = createSandboxGatewayCaller(awake.sandbox, token);

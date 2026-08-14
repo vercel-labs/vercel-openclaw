@@ -1,4 +1,5 @@
 import type { Sandbox } from '@vercel/sandbox';
+import { GATEWAY_PORT } from './wake';
 
 /**
  * Suspend logic per docs/suspension-spec.md, "Contract facts, VERIFIED
@@ -88,7 +89,7 @@ export class GatewaySuspendUnsupportedError extends Error {
 export function createSandboxGatewayCaller(
   sandbox: Sandbox,
   token: string,
-  port = 3000,
+  port = GATEWAY_PORT,
 ): GatewayCaller {
   return async (method, params) => {
     const result = await sandbox.runCommand({
@@ -154,7 +155,11 @@ export function createSandboxGatewayCaller(
  * error with reason "gateway-suspension-conflict" (verified shape).
  */
 export function normalizePrepareResponse(raw: unknown, nowMs: number = Date.now()): PrepareResult {
-  const value = raw as Record<string, any>;
+  const value = raw as Record<string, unknown>;
+  const error =
+    value?.error && typeof value.error === 'object'
+      ? (value.error as Record<string, unknown>)
+      : undefined;
   // Validate per branch: this JSON comes from an external process, and a
   // malformed "ready" must never be allowed to stop the sandbox.
   if (value?.status === 'ready') {
@@ -179,7 +184,11 @@ export function normalizePrepareResponse(raw: unknown, nowMs: number = Date.now(
       retryAfterMs: typeof value.retryAfterMs === 'number' ? value.retryAfterMs : 1_000,
     };
   }
-  const details = value?.error?.details ?? value?.details;
+  const rawDetails = error?.details ?? value?.details;
+  const details =
+    rawDetails && typeof rawDetails === 'object'
+      ? (rawDetails as Record<string, unknown>)
+      : undefined;
   if (details?.reason === 'gateway-suspension-conflict') {
     return {
       status: 'conflict',
@@ -188,8 +197,11 @@ export function normalizePrepareResponse(raw: unknown, nowMs: number = Date.now(
   }
   // Scheduler recovery can also surface as an UNAVAILABLE error
   // (schedulerRecoveryError in the verified beta.7 handler).
-  if (details?.reason === 'scheduler-resume-failed' || typeof value?.error?.retryAfterMs === 'number') {
-    return { status: 'recovering', retryAfterMs: value?.error?.retryAfterMs ?? 1_000 };
+  if (details?.reason === 'scheduler-resume-failed' || typeof error?.retryAfterMs === 'number') {
+    return {
+      status: 'recovering',
+      retryAfterMs: typeof error?.retryAfterMs === 'number' ? error.retryAfterMs : 1_000,
+    };
   }
   throw new Error(`unrecognized gateway.suspend.prepare response: ${JSON.stringify(raw).slice(0, 300)}`);
 }

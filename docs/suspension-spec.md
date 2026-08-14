@@ -18,18 +18,20 @@ Sandbox.getOrCreate({
   image: 'openclaw-foundation/openclaw/openclaw:latest',
   persistent: true,          // default: snapshot disk on stop, restore on resume
   timeout: 75 * 60 * 1000,   // 75 min platform backstop, 15 min behind the graceful path
-  ports: [3000],             // gateway; add admin RPC / Telegram ports per contract answers
 })
 ```
+
+No sandbox port route is exposed. `openclaw agent` runs inside the VM and uses
+the gateway's loopback listener on its default port, 18789.
 
 ## Activity definition
 
 `lastActivityAt` (host storage), reset by every host-visible event:
 
-- a webhook the host forwards (any channel)
+- a verified Connect event the host accepts for an agent turn
 - a UI request the host proxies (WebChat/Control UI route through the host precisely so
   activity is visible)
-- any sandbox wake (message, cron, manual)
+- any sandbox wake (message or manual)
 
 Deliberately NOT counted: the gateway's own outbound work (LLM calls mid-task). The idle
 timer only initiates; the prepare handshake is the correctness gate that protects running
@@ -58,15 +60,10 @@ Enterprise, 45 minutes on Hobby (vercel.com/docs/sandbox/pricing, retrieved 2026
 2. busy -> retry prepare every 20s (`retryAfterMs`); still busy at T-60s -> `stop()` anyway
    (forced). Note prepare never waits for a long task, so a busy agent at the ceiling always
    ends in a forced stop; what an interrupted run does on restart is contract question 2.
-3. if the agent was mid-work: resume right away into a fresh session restored from the
-   snapshot; host restarts the gateway (`onResume`), which reads its checkpointed state from
-   disk. Fresh session, fresh 24h meter, same disk.
-
-Design requirement: a mid-flight agent task MUST auto-continue after an immediate resume.
-Rationale: the idle path can never stop mid-flight work (prepare gates it), so the only
-mid-flight stop is the ceiling roll-over, where the gap between stop and resume is seconds.
-The gateway seeing a checkpoint written moments ago should pick the task back up without a
-nudge. Whether the 2026.8.1 line behaves this way is contract question 2.
+3. if the agent was mid-work: the snapshot retains its checkpoint, but v1 does not yet issue
+   an immediate host wake. The next accepted message resumes the sandbox and the gateway
+   recovers the interrupted task from disk. Immediate ceiling rollover into a fresh session
+   is deferred; until then, recovery latency depends on the next inbound message.
 
 **Backstop:** if the host misses everything, the platform kills the session at `expiresAt`
 (75 min). Ungraceful but disk-safe: server-side timeout still snapshots (verified live
@@ -74,16 +71,14 @@ nudge. Whether the 2026.8.1 line behaves this way is contract question 2.
 
 ## Wake paths
 
-1. **Message:** webhooks terminate at the host, never at the sandbox (a sleeping VM is
-   unreachable; the URL registered with Slack/Telegram is the host's). Host resumes the
-   sandbox if stopped, restarts the gateway, forwards the original payload to the gateway's
-   native handler through the exposed port.
-2. **Cron (in scope for v1):** during shutdown, after ready and before `stop()`, host asks
-   the gateway for its next scheduled job time and stores `nextWakeAt`; the host scheduler
-   resumes the sandbox ~1 min before. Dependency: a next-cron-time query on the admin RPC
-   (cron projection was drafted upstream in July; whether the 2026.8.1 line ships it is a contract
-   question). Fallback if absent: read the gateway's cron config from disk via `runCommand`
-   before stopping.
+1. **Message:** Connect verifies Slack and forwards the event to the host, never to the
+   sandbox (a sleeping VM is unreachable). The host resumes the sandbox if stopped,
+   restarts the gateway, runs `openclaw agent` inside the VM, and posts the reply with a
+   per-call Connect token. Slack credentials and payload signatures never enter the VM.
+2. **OpenClaw scheduled jobs (deferred):** the host does not yet project gateway cron jobs
+   into Vercel wakeups. A sleeping sandbox therefore does not wake itself for an OpenClaw
+   scheduled job. Before enabling those jobs in production, query `cron.list` before stop,
+   persist the earliest `nextWakeAt`, and schedule a host wake about one minute beforehand.
 
 ## Force-stop is acceptable by design
 
@@ -99,7 +94,7 @@ Source: read from `ghcr.io/openclaw/openclaw:2026.7.2-beta.7` ("OpenClaw 2026.7.
 with the OpenClaw maintainers (Patrick Erichsen).
 
 - Methods: `gateway.suspend.prepare` / `gateway.suspend.status` / `gateway.suspend.resume`,
-  served as gateway methods over the gateway WebSocket (default port 3000). Probe/CLI:
+  served as gateway methods over the gateway WebSocket (default port 18789). Probe/CLI:
   `openclaw gateway call <method> --url ws://... --token ...`. An `admin-http-rpc` extension
   also ships (`/app/dist/extensions/admin-http-rpc/`), not yet probed.
 - Auth: gateway auth modes `none|token|password|trusted-proxy`; token defaults from
@@ -115,12 +110,11 @@ with the OpenClaw maintainers (Patrick Erichsen).
   gateway auto-resumes scheduling and reopens admission.
 - Tracked work = active cron runs, active chat runs, queued turns, pending terminal
   persistence, live terminal sessions.
-- Cron wake: `cron.list` / `cron.status` / `cron.get` exist as gateway methods; the host
-  computes `nextWakeAt` from job schedules. v1 dependency satisfied.
-- Port routing: the exposed-port URL reaches loopback-bound listeners (observed 2026-08-11:
-  `python3 -m http.server 3000 --bind 127.0.0.1` answered HTTP 200 via `sandbox.domain(3000)`).
-  The gateway's default loopback bind therefore works with host forwarding. Exposed URLs are
-  publicly routable, so gateway token auth stays mandatory.
+- Cron wake building blocks: `cron.list` / `cron.status` / `cron.get` exist as gateway
+  methods, but the host does not yet compute or persist `nextWakeAt`.
+- Port routing was verified during the original lifecycle probe, but the
+  production sandbox no longer exposes a route. Channel turns and lifecycle
+  calls run inside the VM against the loopback listener on port 18789.
 
 ## Lifecycle LIVE-VALIDATED 2026-08-11 (host/scripts/e2e-lifecycle.ts, beta.7)
 
@@ -147,7 +141,7 @@ Two full sleep/wake cycles through the production host code against
   moves; only `expiresAt` reflects the live deadline.
 - The gateway boots non-interactively with plain `gateway run --allow-unconfigured` (no
   `--dev`): the bootstrap bug in question 4 is DEV-MODE ONLY.
-- Question 2 ANSWERED by observation: after an abrupt stop mid-work, the restarted gateway
+- Recovery behavior ANSWERED by observation: after an abrupt stop mid-work, the restarted gateway
   auto-continues the interrupted run (a recovery task titled "[System] Your previous turn was
   interrupted by a gateway restart... Continue from the existing transcript" appeared as an
   active blocker, and prepare correctly refused to suspend it). Our ceiling-path design
@@ -172,22 +166,18 @@ Two full sleep/wake cycles through the production host code against
 ## Open contract questions (Patrick / 2026.8.1)
 
 1. Is the beta.7 contract above frozen for 2026.8.1 stable? (2026.7.2 never shipped stable; the beta line moved to 2026.8.1.)
-2. What happens to an interrupted (force-stopped) chat run when the gateway restarts after
-   resume: retried, resumed, or dropped? (Our ceiling path depends on this; a busy agent at
-   the 24h ceiling always ends in a forced stop, since prepare never drains.)
+2. Resolved by observation: an interrupted chat run auto-continues when the gateway next
+   restarts. Immediate host-driven restart at the ceiling is still deferred.
 3. `admin-http-rpc` extension: intended for hosts like us, or is the gateway WebSocket the
    recommended host integration path?
 4. Beta bug to report: `openclaw gateway run --dev --reset --allow-unconfigured` in a fresh
    container/sandbox fails with "Config write would drop agent roster entries without an
    explicit deletion: main" (observed in Vercel Sandbox and local docker, 2026-08-10). What
    is the supported non-interactive bootstrap for a fresh gateway?
-5. Do the gateway's channel HTTP endpoints (e.g. `/slack/events`) require the gateway token,
-   or is channel signature verification their only gate? The host forwards without the token
-   today; if the endpoints demand it, forwarding needs the auth header, and if they don't,
-   they are publicly routable ingress guarded only by channel signatures. UNVERIFIED either
-   way; needs a live probe or an upstream answer.
+5. Resolved by architecture: the host owns Slack through Connect and invokes an agent turn
+   inside the VM, so gateway channel HTTP endpoints are not public ingress.
 6. Bug observed live (2026-08-11, beta.7): after `prepare` returns `ready`, the gateway's
-   WebSocket listener closes and does not reopen at lease expiry (process survives, port 3000
+   WebSocket listener closes and does not reopen at lease expiry (process survives, port 18789
    stays closed). This makes same-requestId renewal, `suspend.status`, and `suspend.resume`
    unusable while a lease is held, though the protocol doc describes them as operating on the
    held lease. Is this known, and is it fixed in the 2026.8.1 line?
@@ -196,5 +186,6 @@ Two full sleep/wake cycles through the production host code against
 
 - Multi-sandbox / multi-agent routing
 - Channel transports beyond the first channel + WebChat
-- Credential brokering via network-policy header injection (old wrapper pattern; evaluate
-  after the suspend loop works)
+- Additional sandbox egress destinations beyond AI Gateway
+- Waking a sleeping sandbox for OpenClaw scheduled jobs
+- Immediately resuming a fresh sandbox session after a hard-ceiling stop
