@@ -8,7 +8,6 @@ import {
   GatewaySuspendUnsupportedError,
   IDLE_REARM_MS,
 } from '@/lib/suspend';
-import { startGateway } from '@/lib/wake';
 
 /**
  * The lifecycle scheduler per docs/suspension-spec.md: runs every 5 minutes
@@ -65,10 +64,6 @@ async function runCheck(token: string) {
     sandbox = await Sandbox.get({
       name: SANDBOX_NAME,
       resume: false,
-      // The SDK auto-resumes a stopped sandbox on the first command; if that
-      // happens mid-check the gateway must come back too, or we'd leave a
-      // gatewayless VM running.
-      onResume: async (sbx) => startGateway(sbx, token),
     });
   } catch (err) {
     // Only a genuine not-found is a quiet no-op; anything else (auth,

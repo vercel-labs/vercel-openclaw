@@ -30,9 +30,9 @@ npm run boot         # boots the image, prints `openclaw --version`
 
 The control plane that makes an OpenClaw sandbox sleep between messages and wake on demand, per [`docs/suspension-spec.md`](docs/suspension-spec.md):
 
-- `app/api/webhook/[channel]/route.ts` — webhooks terminate here (a sleeping VM is unreachable). Stamps the idle clock, wakes the sandbox, forwards the untouched raw bytes and original headers (signatures verify over both) to the gateway's native handler.
+- `app/api/webhook/[channel]/route.ts` — webhooks terminate here (a sleeping VM is unreachable). Verifies Slack and acknowledges inside its three-second window, then stamps the idle clock, wakes the sandbox, and forwards the untouched raw bytes and original headers to the gateway's native handler in the background.
 - `app/api/cron/idle-check/route.ts` — the scheduler ([`vercel.json`](host/vercel.json), every 5 min): 60 minutes without host-visible activity triggers the suspend attempt.
-- `lib/wake.ts` — `ensureAwake()`: resume or create the sandbox, restart the gateway (`onResume` — processes don't survive stops, only disk does), health-check via `openclaw gateway call health`, return the exposed-port URL.
+- `lib/wake.ts` — `ensureAwake()`: resume or create the sandbox, install/configure the Slack and Vercel AI Gateway providers, restart the gateway (`onResume` — processes don't survive stops, only disk does), health-check via `openclaw gateway call health`, return the exposed-port URL.
 - `lib/suspend.ts` — the verified `gateway.suspend.*` contract (2026.7.2-beta.7): prepare as idle-fence, 2-minute lease, busy/ready/conflict/recovering handling, ceiling force-stop.
 - `lib/activity.ts` + tests — the idle clock: which events reset it, 60-minute threshold, extend-timeout rules.
 
@@ -42,13 +42,15 @@ It's a headless API-only Next.js app. Deploy with the Vercel project's **Root Di
 | --- | --- |
 | `OPENCLAW_GATEWAY_TOKEN` | Gateway auth token; the host holds it, the gateway enforces it |
 | `SLACK_SIGNING_SECRET` | Verifies Slack webhooks at the host, before any compute wakes (fail-closed) |
+| `SLACK_BOT_TOKEN` | Slack bot token used by OpenClaw to read context and post replies |
+| `AI_GATEWAY_API_KEY` | Optional explicit Vercel AI Gateway key. On Vercel, the host passes the request-scoped OIDC token supplied in `x-vercel-oidc-token` to the sandbox when this is absent |
 | `KV_REST_API_URL` + `KV_REST_API_TOKEN` | Redis-backed activity store (Upstash REST protocol; `UPSTASH_REDIS_REST_URL`/`UPSTASH_REDIS_REST_TOKEN` also accepted). **Required in production**: without it the idle clock is per-instance memory and the idle path never fires |
 | `OPENCLAW_SANDBOX_NAME` | Sandbox name (default `openclaw`) |
 | `OPENCLAW_IMAGE` | Image override (default `openclaw-foundation/openclaw/openclaw:latest`) |
 | `GATEWAY_URL` | Dev-only: skip the wake path, forward to a directly reachable gateway |
 | `CRON_SECRET` | Protects the cron route when set |
 
-Known v1 limitations, deliberate until the PoC with the OpenClaw team: the webhook response blocks on cold wakes (Slack's 3s ack window needs an ack-then-forward pattern), and the deployment assumes a Pro or Enterprise team (the 75-minute session timeout, `maxDuration: 300`, and the 5-minute cron all exceed Hobby limits).
+For a direct Slack app, point Event Subscriptions, Interactivity, and the optional `/openclaw` slash command at `/api/webhook/slack` on the production domain. Add the `reactions:write` bot scope and reinstall the app if you want the host to acknowledge each message with an eyes reaction before waking OpenClaw. Slack Incoming Webhooks are not used and can remain disabled. The deployment assumes a Pro or Enterprise team because the 75-minute session timeout, `maxDuration: 300`, and the 5-minute cron exceed Hobby limits.
 
 **Live-validated** against `2026.7.2-beta.7`: two full sleep/wake cycles through this code path — gateway boot, health, `prepare` → `ready` → stop → snapshot → resume → gateway restart (`host/scripts/e2e-lifecycle.ts`). End-to-end wake is **~10s** (cold and from snapshot alike); the sandbox's own resume including snapshot restore is sub-second, and ~7s of the total is the OpenClaw gateway booting. The runs also confirmed interrupted work auto-continues after an abrupt stop, and surfaced one upstream issue with held leases (spec, contract question 6). Re-validation against 2026.7.2 stable when it ships.
 

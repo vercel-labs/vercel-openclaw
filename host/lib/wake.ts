@@ -1,4 +1,10 @@
 import { APIError, Sandbox } from '@vercel/sandbox';
+import {
+  buildOpenClawRuntime,
+  OPENCLAW_SLACK_PLUGIN,
+  VERCEL_AI_GATEWAY_PLUGIN,
+  type OpenClawRuntime,
+} from './openclaw-runtime';
 
 /**
  * Wake path per docs/suspension-spec.md: resume (or create) the sandbox,
@@ -14,6 +20,8 @@ import { APIError, Sandbox } from '@vercel/sandbox';
 export const GATEWAY_PORT = 3000;
 const DEFAULT_IMAGE = 'openclaw-foundation/openclaw/openclaw:latest';
 const GATEWAY_LOG = '/tmp/openclaw-gateway.log';
+const RUNTIME_MARKER = '/tmp/vercel-openclaw-runtime-fingerprint';
+const RUNTIME_LOCK = '/tmp/vercel-openclaw-runtime.lock';
 
 // 75 min platform backstop, 15 min behind the graceful path. Requires a
 // Pro/Enterprise team: the Hobby max session length is 45 minutes.
@@ -40,26 +48,29 @@ export interface AwakeGateway {
 const inflight = new Map<string, Promise<AwakeGateway>>();
 const lastHealthyAt = new Map<string, number>();
 
-export function ensureAwake(name: string): Promise<AwakeGateway> {
+export function ensureAwake(
+  name: string,
+  options: { aiGatewayCredential?: string } = {},
+): Promise<AwakeGateway> {
   const existing = inflight.get(name);
   if (existing) return existing;
-  const attempt = ensureAwakeUncached(name).finally(() => inflight.delete(name));
+  const attempt = ensureAwakeUncached(name, options).finally(() =>
+    inflight.delete(name),
+  );
   inflight.set(name, attempt);
   return attempt;
 }
 
-async function ensureAwakeUncached(name: string): Promise<AwakeGateway> {
+async function ensureAwakeUncached(
+  name: string,
+  options: { aiGatewayCredential?: string },
+): Promise<AwakeGateway> {
   const token = process.env.OPENCLAW_GATEWAY_TOKEN;
   if (!token) throw new Error('OPENCLAW_GATEWAY_TOKEN not set');
+  const runtime = buildOpenClawRuntime(process.env, token, options);
 
   const image = process.env.OPENCLAW_IMAGE ?? DEFAULT_IMAGE;
   const deadline = Date.now() + WAKE_BUDGET_MS;
-
-  // Whether THIS call spawned the gateway (create/resume/restart). If so,
-  // the port binding is sufficient proof of health: we started the process
-  // with our own token moments ago. The CLI protocol confirm (~3s: it boots
-  // the whole openclaw CLI) is only needed for the unknown-state path.
-  let spawnedFresh = false;
 
   let sandbox: Sandbox | undefined;
   for (let attempt = 1; ; attempt++) {
@@ -70,16 +81,6 @@ async function ensureAwakeUncached(name: string): Promise<AwakeGateway> {
         persistent: true,
         timeout: SESSION_TIMEOUT_MS,
         ports: [GATEWAY_PORT],
-        onCreate: async (sbx) => {
-          spawnedFresh = true;
-          await startGateway(sbx, token);
-        },
-        // Fires on every session resume: processes die on stop, only disk
-        // survives, so the gateway must be restarted.
-        onResume: async (sbx) => {
-          spawnedFresh = true;
-          await startGateway(sbx, token);
-        },
       });
       break;
     } catch (err) {
@@ -101,6 +102,20 @@ async function ensureAwakeUncached(name: string): Promise<AwakeGateway> {
     }
   }
 
+  // The first command also resumes a stopped persistent VM. Include Linux's
+  // boot ID in the marker so a new session can never mistake a snapshot's old
+  // marker for a running gateway.
+  const bootId = await readSandboxBootId(sandbox);
+  const desiredMarker = `${runtime.fingerprint}:${bootId}`;
+  const spawnedFresh = await ensureRuntimeReady(
+    name,
+    sandbox,
+    token,
+    runtime,
+    desiredMarker,
+    deadline,
+  );
+
   // getOrCreate retrieves without resuming; the session resumes on the first
   // SDK call (such as runCommand) and onResume runs at that point — per the
   // SDK reference (vercel.com/docs/sandbox/sdk-reference, getOrCreate).
@@ -111,8 +126,45 @@ async function ensureAwakeUncached(name: string): Promise<AwakeGateway> {
 export async function startGateway(
   sandbox: Sandbox,
   token: string,
-  opts: { appendLog?: boolean } = {},
+  opts: { appendLog?: boolean; runtime?: OpenClawRuntime } = {},
 ): Promise<void> {
+  const runtime = opts.runtime ?? buildOpenClawRuntime(process.env, token);
+
+  if (runtime.needsSlackPlugin) {
+    await ensurePluginInstalled(
+      sandbox,
+      OPENCLAW_SLACK_PLUGIN,
+      "*/node_modules/@openclaw/slack/package.json",
+      'OpenClaw Slack',
+      runtime.gatewayEnv,
+    );
+  }
+  if (runtime.needsAiGatewayPlugin) {
+    await ensurePluginInstalled(
+      sandbox,
+      VERCEL_AI_GATEWAY_PLUGIN,
+      "*/node_modules/@openclaw/vercel-ai-gateway-provider/package.json",
+      'Vercel AI Gateway',
+      runtime.gatewayEnv,
+    );
+  }
+  if (runtime.configOperations.length > 0) {
+    const configured = await sandbox.runCommand({
+      cmd: 'openclaw',
+      args: [
+        'config',
+        'set',
+        '--batch-json',
+        JSON.stringify(runtime.configOperations),
+      ],
+      env: runtime.gatewayEnv,
+    });
+    if (configured.exitCode !== 0) {
+      const detail = await commandOutput(configured);
+      throw new Error(`OpenClaw runtime configuration failed: ${detail}`);
+    }
+  }
+
   // Output goes to a log file so failures are diagnosable after the fact
   // (a detached command's own stdio is not otherwise retained). Primary
   // starts truncate (/tmp is on the snapshotted disk and survives resumes);
@@ -124,9 +176,200 @@ export async function startGateway(
       '-c',
       `openclaw gateway run --allow-unconfigured --auth token --port ${GATEWAY_PORT} ${redirect} ${GATEWAY_LOG} 2>&1`,
     ],
-    env: { OPENCLAW_GATEWAY_TOKEN: token },
+    env: runtime.gatewayEnv,
     detached: true,
   });
+}
+
+async function ensurePluginInstalled(
+  sandbox: Sandbox,
+  packageSpec: string,
+  packagePath: string,
+  label: string,
+  env: Record<string, string>,
+): Promise<void> {
+  const installed = await sandbox.runCommand({
+    cmd: 'sh',
+    args: [
+      '-c',
+      `find /home/node/.openclaw/npm/projects -path '${packagePath}' -print -quit 2>/dev/null | grep -q .`,
+    ],
+  });
+  if (installed.exitCode === 0) return;
+
+  const result = await sandbox.runCommand({
+    cmd: 'openclaw',
+    args: ['plugins', 'install', packageSpec, '--pin'],
+    env,
+  });
+  if (result.exitCode !== 0) {
+    throw new Error(`${label} plugin installation failed: ${await commandOutput(result)}`);
+  }
+}
+
+async function ensureRuntimeReady(
+  name: string,
+  sandbox: Sandbox,
+  token: string,
+  runtime: OpenClawRuntime,
+  desiredMarker: string,
+  deadline: number,
+): Promise<boolean> {
+  if (await isRuntimeReady(sandbox, runtime, desiredMarker)) {
+    lastHealthyAt.set(name, Date.now());
+    return false;
+  }
+
+  await acquireRuntimeLock(sandbox);
+  try {
+    // Another function instance may have completed startup while this one
+    // waited. Re-check under the cross-instance sandbox lock.
+    if (await isRuntimeReady(sandbox, runtime, desiredMarker)) {
+      lastHealthyAt.set(name, Date.now());
+      return false;
+    }
+
+    lastHealthyAt.delete(name);
+    await stopGateway(sandbox);
+    await startGateway(sandbox, token, { appendLog: true, runtime });
+    await waitForGatewayHealth(name, sandbox, token, deadline, () => true);
+    if (runtime.needsSlackPlugin) await waitForSlackRoute(sandbox);
+    await writeRuntimeFingerprint(sandbox, desiredMarker);
+    lastHealthyAt.set(name, Date.now());
+    return true;
+  } finally {
+    await releaseRuntimeLock(sandbox);
+  }
+}
+
+async function isRuntimeReady(
+  sandbox: Sandbox,
+  runtime: OpenClawRuntime,
+  desiredMarker: string,
+): Promise<boolean> {
+  if ((await readRuntimeFingerprint(sandbox)) !== desiredMarker) return false;
+  if (!runtime.needsSlackPlugin) return true;
+  return probeSlackRoute(sandbox);
+}
+
+async function acquireRuntimeLock(sandbox: Sandbox): Promise<void> {
+  const result = await sandbox.runCommand({
+    cmd: 'bash',
+    args: [
+      '-c',
+      `for i in $(seq 1 700); do
+        mkdir ${RUNTIME_LOCK} 2>/dev/null && exit 0
+        if find ${RUNTIME_LOCK} -maxdepth 0 -mmin +2 -print -quit 2>/dev/null | grep -q .; then
+          rmdir ${RUNTIME_LOCK} 2>/dev/null || true
+        fi
+        sleep 0.3
+      done
+      exit 1`,
+    ],
+  });
+  if (result.exitCode !== 0) {
+    throw new Error(`timed out waiting for sandbox runtime lock: ${await commandOutput(result)}`);
+  }
+}
+
+async function releaseRuntimeLock(sandbox: Sandbox): Promise<void> {
+  await sandbox.runCommand('rmdir', [RUNTIME_LOCK]);
+}
+
+async function readSandboxBootId(sandbox: Sandbox): Promise<string> {
+  const result = await sandbox.runCommand('cat', ['/proc/sys/kernel/random/boot_id']);
+  if (result.exitCode !== 0) {
+    throw new Error(`could not read sandbox boot ID: ${await commandOutput(result)}`);
+  }
+  return (await result.stdout()).trim();
+}
+
+async function readRuntimeFingerprint(sandbox: Sandbox): Promise<string> {
+  const result = await sandbox.runCommand('sh', [
+    '-c',
+    `cat ${RUNTIME_MARKER} 2>/dev/null || true`,
+  ]);
+  return (await result.stdout()).trim();
+}
+
+async function writeRuntimeFingerprint(
+  sandbox: Sandbox,
+  fingerprint: string,
+): Promise<void> {
+  const result = await sandbox.runCommand({
+    cmd: 'sh',
+    args: [
+      '-c',
+      `umask 077; printf %s "$OPENCLAW_RUNTIME_FINGERPRINT" > ${RUNTIME_MARKER}`,
+    ],
+    env: { OPENCLAW_RUNTIME_FINGERPRINT: fingerprint },
+  });
+  if (result.exitCode !== 0) {
+    throw new Error(`could not persist runtime fingerprint: ${await commandOutput(result)}`);
+  }
+}
+
+async function probeSlackRoute(sandbox: Sandbox): Promise<boolean> {
+  const result = await sandbox.runCommand({
+    cmd: 'curl',
+    args: [
+      '-sS',
+      '-o',
+      '/tmp/slack-route-probe',
+      '-w',
+      '%{http_code}',
+      '-X',
+      'POST',
+      `http://127.0.0.1:${GATEWAY_PORT}/slack/events`,
+      '-H',
+      'content-type: application/json',
+      '--data',
+      '{}',
+    ],
+  });
+  const status = (await result.stdout()).trim();
+  return result.exitCode === 0 && status !== '' && status !== '000' && status !== '404';
+}
+
+async function waitForSlackRoute(sandbox: Sandbox): Promise<void> {
+  const result = await sandbox.runCommand({
+    cmd: 'bash',
+    args: [
+      '-c',
+      `for i in $(seq 1 100); do
+        status=$(curl -sS -o /tmp/slack-route-probe -w '%{http_code}' -X POST http://127.0.0.1:${GATEWAY_PORT}/slack/events -H 'content-type: application/json' --data '{}' 2>/dev/null || true)
+        case "$status" in ''|000|404) ;; *) exit 0 ;; esac
+        sleep 0.3
+      done
+      exit 1`,
+    ],
+  });
+  if (result.exitCode !== 0) {
+    const log = await sandbox.runCommand('sh', [
+      '-c',
+      `tail -30 ${GATEWAY_LOG} 2>/dev/null`,
+    ]);
+    throw new Error(
+      `Slack route did not mount after gateway startup. gateway log tail:\n${(
+        await log.stdout()
+      ).slice(-1500)}`,
+    );
+  }
+}
+
+async function stopGateway(sandbox: Sandbox): Promise<void> {
+  await sandbox.runCommand('sh', [
+    '-c',
+    "pkill -TERM -f '^openclaw-gateway$' 2>/dev/null || true; sleep 1",
+  ]);
+}
+
+async function commandOutput(result: {
+  stdout(): Promise<string>;
+  stderr(): Promise<string>;
+}): Promise<string> {
+  const [stdout, stderr] = await Promise.all([result.stdout(), result.stderr()]);
+  return `${stdout}\n${stderr}`.trim().slice(-1500) || 'no command output';
 }
 
 /**
@@ -160,7 +403,12 @@ async function waitForGatewayHealth(
   // "healthy" would skip the resume + gateway restart entirely (observed
   // live 2026-08-11 in the e2e: 0.1s "wake" of a stopped sandbox).
   const cached = lastHealthyAt.get(name);
-  if (cached && Date.now() - cached < HEALTH_CACHE_MS && sandbox.status === 'running') {
+  if (
+    !spawnedFresh() &&
+    cached &&
+    Date.now() - cached < HEALTH_CACHE_MS &&
+    sandbox.status === 'running'
+  ) {
     return;
   }
 
