@@ -44,12 +44,24 @@ export interface AgentTurnResult {
 }
 
 /**
- * Builds the session key for one Slack user in one channel. A stable key across
- * top-level threads preserves that user's conversational memory while the
- * channel component prevents private context leaking into another channel.
+ * Builds the session key for a Slack channel. One session per channel, shared by
+ * everyone in it, and stable across threads.
+ *
+ * The channel is the whole key on purpose. Elisabeth's call, 2026-08-14: the
+ * agent "should have full context from an entire channel rather than scoped per
+ * user", which is also what Andrew Qu asked for ("each channel should maintain
+ * the same session"). Adding the user id gave each person a private notebook, so
+ * the agent could answer one person fluently and then draw a blank with the next
+ * — and since every reply is public while the notebook is not, that reads as
+ * broken rather than private.
+ *
+ * Where a reply is POSTED is a separate question: replies still land in the
+ * thread the mention came from. Session identity and reply target are decoupled.
+ *
+ * In a DM this is per-person anyway, because a DM has its own channel id.
  */
-export function slackSessionKey(channelId: string, userId: string, agentId = DEFAULT_AGENT_ID) {
-  return `agent:${agentId}:slack-${channelId}-${userId}`;
+export function slackSessionKey(channelId: string, agentId = DEFAULT_AGENT_ID) {
+  return `agent:${agentId}:slack-${channelId}`;
 }
 
 export async function runAgentTurn(options: {
@@ -63,6 +75,28 @@ export async function runAgentTurn(options: {
    * opening a websocket`. Passed through the environment rather than `--token`
    * to keep it out of argv.
    */
+  gatewayToken: string;
+  budget?: ExecutionBudget;
+}): Promise<AgentTurnResult> {
+  try {
+    return await runAgentTurnOnce(options);
+  } catch (err) {
+    // One session per channel means two people in the same channel can now land
+    // on the same session at once, where per-user keys could not. OpenClaw
+    // refuses the second turn with "Session ... changed while starting work.
+    // Retry." (observed live 2026-08-14), which is worth one retry rather than a
+    // silently dropped mention.
+    if (!/changed while starting work/i.test(String(err))) throw err;
+    console.warn(`session ${options.sessionKey} was busy; retrying once`);
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+    return await runAgentTurnOnce(options);
+  }
+}
+
+async function runAgentTurnOnce(options: {
+  sandbox: Sandbox;
+  message: string;
+  sessionKey: string;
   gatewayToken: string;
   budget?: ExecutionBudget;
 }): Promise<AgentTurnResult> {

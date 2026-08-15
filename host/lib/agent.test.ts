@@ -258,18 +258,24 @@ describe('runAgentTurn', () => {
 });
 
 describe('slackSessionKey', () => {
-  it('maps one user in one channel onto a durable OpenClaw session', () => {
-    expect(slackSessionKey('C123', 'U123')).toBe(
-      'agent:main:slack-C123-U123',
-    );
+  it('maps a whole channel onto one durable OpenClaw session', () => {
+    expect(slackSessionKey('C123')).toBe('agent:main:slack-C123');
   });
 
-  it('isolates different users and different channels', () => {
-    expect(slackSessionKey('C123', 'U1')).not.toBe(slackSessionKey('C123', 'U2'));
-    expect(slackSessionKey('C1', 'U1')).not.toBe(slackSessionKey('C2', 'U1'));
+  it('does not depend on who is speaking, so a channel has one shared context', () => {
+    // Verified in Slack on 2026-08-14: with the user id in the key, a second
+    // person in the same channel started from nothing while watching the agent
+    // answer someone else fluently.
+    const forOnePerson = slackSessionKey('C123');
+    const forAnother = slackSessionKey('C123');
+    expect(forOnePerson).toBe(forAnother);
+  });
+
+  it('isolates different channels', () => {
+    expect(slackSessionKey('C1')).not.toBe(slackSessionKey('C2'));
   });
 
   it('supports a non-default agent id', () => {
-    expect(slackSessionKey('C123', 'U1', 'ops')).toBe('agent:ops:slack-C123-U1');
+    expect(slackSessionKey('C123', 'ops')).toBe('agent:ops:slack-C123');
   });
 });

@@ -12,7 +12,7 @@ const mocks = vi.hoisted(() => ({
   activitySet: vi.fn(async () => undefined),
   ensureAwake: vi.fn(async () => ({ sandbox: {} })),
   topUpSessionTimeout: vi.fn(async () => undefined),
-  slackSessionKey: vi.fn(() => 'agent:main:slack-C123-U123'),
+  slackSessionKey: vi.fn(() => 'agent:main:slack-C123'),
   runAgentTurn: vi.fn(async () => ({ reply: 'hello from OpenClaw' })),
   postSlackReaction: vi.fn(async () => undefined),
   removeSlackReaction: vi.fn(async () => undefined),
@@ -82,7 +82,7 @@ describe('POST /api/slack', () => {
     mocks.activitySet.mockReset().mockResolvedValue(undefined);
     mocks.ensureAwake.mockReset().mockResolvedValue({ sandbox: {} });
     mocks.topUpSessionTimeout.mockReset().mockResolvedValue(undefined);
-    mocks.slackSessionKey.mockReset().mockReturnValue('agent:main:slack-C123-U123');
+    mocks.slackSessionKey.mockReset().mockReturnValue('agent:main:slack-C123');
     mocks.runAgentTurn
       .mockReset()
       .mockResolvedValue({ reply: 'hello from OpenClaw' });
@@ -160,7 +160,8 @@ describe('POST /api/slack', () => {
     expect(mocks.runAgentTurn).toHaveBeenCalledWith(
       expect.objectContaining({ budget: mocks.budget }),
     );
-    expect(mocks.slackSessionKey).toHaveBeenCalledWith('C123', 'U123');
+    // Channel only: one shared session per channel, not one per person.
+    expect(mocks.slackSessionKey).toHaveBeenCalledWith('C123');
     expect(mocks.postSlackReply).toHaveBeenCalledWith(
       expect.objectContaining({ budget: mocks.budget }),
     );

@@ -138,7 +138,9 @@ async function handleTurn(
   message: SlackThreadMessage,
   context: SlackTurnContext,
 ): Promise<void> {
-  const sessionKey = slackSessionKey(message.channelId, message.userId);
+  // Keyed by channel only, so the agent has the whole channel's context rather
+  // than a private thread of its own with each person.
+  const sessionKey = slackSessionKey(message.channelId);
   const startedAt = Date.now();
   let slackToken: string | undefined;
   let reactionAdded = false;
