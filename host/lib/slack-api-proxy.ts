@@ -10,6 +10,7 @@ interface SlackApiProxyDependencies {
   bridgeToken: () => string | undefined;
   slackToken: SlackTokenProvider;
   fetcher?: Fetcher;
+  logger?: (entry: Record<string, unknown>) => void;
 }
 
 function authorized(request: Request, expected: string | undefined): boolean {
@@ -27,6 +28,7 @@ function authorized(request: Request, expected: string | undefined): boolean {
  */
 export function createSlackApiProxy(deps: SlackApiProxyDependencies) {
   const fetcher = deps.fetcher ?? fetch;
+  const logger = deps.logger ?? ((entry: Record<string, unknown>) => console.info(entry));
 
   return async function proxySlackApi(request: Request, method: string): Promise<Response> {
     if (!authorized(request, deps.bridgeToken())) {
@@ -51,6 +53,14 @@ export function createSlackApiProxy(deps: SlackApiProxyDependencies) {
       headers,
       body,
       redirect: 'error',
+    });
+
+    logger({
+      event: 'slack_proxy_upstream',
+      method,
+      tokenSource: 'connect',
+      status: upstream.status,
+      slackRequestId: upstream.headers.get('x-slack-req-id') ?? undefined,
     });
 
     const responseHeaders = new Headers();

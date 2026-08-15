@@ -11,10 +11,12 @@ describe('createSlackApiProxy', () => {
         }),
     );
     const slackToken = vi.fn(async () => 'xoxb-short-lived');
+    const logger = vi.fn();
     const proxy = createSlackApiProxy({
       bridgeToken: () => 'host-secret',
       slackToken,
       fetcher: fetcher as typeof fetch,
+      logger,
     });
     const request = new Request('https://host.example/api/slack-proxy/chat.postMessage', {
       method: 'POST',
@@ -36,15 +38,27 @@ describe('createSlackApiProxy', () => {
     expect(new Headers(init?.headers).has(HOST_AUTH_HEADER)).toBe(false);
     expect(Buffer.from(init?.body as ArrayBuffer).toString('utf8')).toContain('thread_ts=123.4');
     expect(response.headers.get('x-slack-req-id')).toBe('req-1');
+    expect(logger).toHaveBeenCalledWith({
+      event: 'slack_proxy_upstream',
+      method: 'chat.postMessage',
+      tokenSource: 'connect',
+      status: 200,
+      slackRequestId: 'req-1',
+    });
+    expect(JSON.stringify(logger.mock.calls)).not.toMatch(
+      /host-secret|xoxb-short-lived|openclaw-host-bridge|thread_ts|hello|authorization/i,
+    );
   });
 
   it('rejects an invalid host assertion before minting a Slack token', async () => {
     const slackToken = vi.fn(async () => 'xoxb-never-used');
     const fetcher = vi.fn();
+    const logger = vi.fn();
     const proxy = createSlackApiProxy({
       bridgeToken: () => 'host-secret',
       slackToken,
       fetcher: fetcher as typeof fetch,
+      logger,
     });
 
     const response = await proxy(
@@ -58,5 +72,6 @@ describe('createSlackApiProxy', () => {
     expect(response.status).toBe(401);
     expect(slackToken).not.toHaveBeenCalled();
     expect(fetcher).not.toHaveBeenCalled();
+    expect(logger).not.toHaveBeenCalled();
   });
 });

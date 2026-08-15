@@ -7,14 +7,17 @@ import {
 
 describe('createConnectWebhookHandler', () => {
   it('acknowledges after Connect verification and schedules the exact raw envelope', async () => {
-    const rawBody = '{"type":"event_callback","event_id":"Ev1","event":{"type":"app_mention"}}';
+    const rawBody =
+      '{ "type": "event_callback", "event_id": "Ev1", "event": { "type": "app_mention" } }\n';
     const scheduled: Array<() => void | Promise<void>> = [];
     const verify = vi.fn(async () => true);
     const processVerifiedWebhook = vi.fn(async (_message: BackgroundConnectWebhook) => {});
+    const logger = vi.fn();
     const handler = createConnectWebhookHandler({
       verify,
       schedule: (task) => scheduled.push(task),
       processVerifiedWebhook,
+      logger,
       now: () => 1_700_000_000_000,
     });
     const request = new NextRequest('https://example.com/api/slack', {
@@ -31,6 +34,14 @@ describe('createConnectWebhookHandler', () => {
     expect(response.status).toBe(200);
     expect(processVerifiedWebhook).not.toHaveBeenCalled();
     expect(verify).toHaveBeenCalledWith(request, rawBody);
+    expect(logger).toHaveBeenCalledWith({
+      event: 'slack_ingress_verified',
+      eventId: 'Ev1',
+      rawBodySha256: 'b66d74888b1af98ea649b9111f5c51a7e74c100e8a7aaae6eb045ee1dbe78f58',
+    });
+    expect(JSON.stringify(logger.mock.calls)).not.toMatch(
+      /verified-connect-oidc|app_mention|authorization/i,
+    );
     await scheduled[0]();
     const forwarded = processVerifiedWebhook.mock.calls[0][0];
     expect(Buffer.from(forwarded.rawBody).toString('utf8')).toBe(rawBody);
@@ -39,12 +50,14 @@ describe('createConnectWebhookHandler', () => {
 
   it('does not schedule work when Connect verification fails', async () => {
     const schedule = vi.fn();
+    const logger = vi.fn();
     const handler = createConnectWebhookHandler({
       verify: vi.fn(async () => {
         throw new Error('bad OIDC');
       }),
       schedule,
       processVerifiedWebhook: vi.fn(async () => {}),
+      logger,
     });
     const request = new NextRequest('https://example.com/api/slack', {
       method: 'POST',
@@ -56,5 +69,28 @@ describe('createConnectWebhookHandler', () => {
 
     expect(response.status).toBe(401);
     expect(schedule).not.toHaveBeenCalled();
+    expect(logger).not.toHaveBeenCalled();
+  });
+
+  it('does not log acceptance when the verified request has no bearer', async () => {
+    const schedule = vi.fn();
+    const logger = vi.fn();
+    const handler = createConnectWebhookHandler({
+      verify: vi.fn(async () => true),
+      schedule,
+      processVerifiedWebhook: vi.fn(async () => {}),
+      logger,
+    });
+
+    const response = await handler(
+      new NextRequest('https://example.com/api/slack', {
+        method: 'POST',
+        body: '{"type":"event_callback","event_id":"Ev-not-accepted"}',
+      }),
+    );
+
+    expect(response.status).toBe(401);
+    expect(schedule).not.toHaveBeenCalled();
+    expect(logger).not.toHaveBeenCalled();
   });
 });
