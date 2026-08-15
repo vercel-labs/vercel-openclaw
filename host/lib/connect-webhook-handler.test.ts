@@ -45,7 +45,8 @@ describe('createConnectWebhookHandler', () => {
     await scheduled[0]();
     const forwarded = processVerifiedWebhook.mock.calls[0][0];
     expect(Buffer.from(forwarded.rawBody).toString('utf8')).toBe(rawBody);
-    expect(forwarded.vercelOidcToken).toBe('verified-connect-oidc');
+    expect(forwarded.oidcToken).toBe('verified-connect-oidc');
+    expect(forwarded.headers.has('authorization')).toBe(false);
   });
 
   it('does not schedule work when Connect verification fails', async () => {
@@ -72,7 +73,7 @@ describe('createConnectWebhookHandler', () => {
     expect(logger).not.toHaveBeenCalled();
   });
 
-  it('does not log acceptance when the verified request has no bearer', async () => {
+  it('rejects a verified request that has no bearer to broker at the firewall', async () => {
     const schedule = vi.fn();
     const logger = vi.fn();
     const handler = createConnectWebhookHandler({

@@ -4,6 +4,7 @@ import { after, NextRequest, NextResponse } from 'next/server';
 import { decideAccess } from '@/lib/access';
 import { defaultActivityStore } from '@/lib/activity-store';
 import { runAgentTurn, slackSessionKey } from '@/lib/agent';
+import { createConnectWebhookHandler } from '@/lib/connect-webhook-handler';
 import { claimEvent } from '@/lib/dedupe';
 import {
   createExecutionBudget,
@@ -18,6 +19,7 @@ import {
   type SlackReplyTarget,
   type SlackThreadMessage,
 } from '@/lib/slack';
+import { processVerifiedSlackWebhook } from '@/lib/slack-connect-processor';
 import { ensureAwake, topUpSessionTimeout } from '@/lib/wake';
 
 /**
@@ -57,6 +59,22 @@ const SANDBOX_NAME = process.env.OPENCLAW_SANDBOX_NAME ?? 'openclaw';
  * environment", not "this came from our Slack connector".
  */
 const verifyConnectWebhook = createConnectWebhookVerifier();
+const handleNativeSlackWebhook = createConnectWebhookHandler({
+  verify: async (request, rawBody) => await verifyConnectWebhook(request, rawBody),
+  schedule: (task) => after(task),
+  processVerifiedWebhook: processVerifiedSlackWebhook,
+});
+
+function nativeSlackModeEnabled(): boolean {
+  const tokenConfigured = Boolean(process.env.OPENCLAW_SLACK_HOST_BRIDGE_TOKEN);
+  const apiUrlConfigured = Boolean(process.env.OPENCLAW_SLACK_HOST_BRIDGE_API_URL);
+  if (tokenConfigured !== apiUrlConfigured) {
+    throw new Error(
+      'OPENCLAW_SLACK_HOST_BRIDGE_TOKEN and OPENCLAW_SLACK_HOST_BRIDGE_API_URL must be set together',
+    );
+  }
+  return tokenConfigured;
+}
 
 /** Connector UID, e.g. `slack/openclaw`. */
 function slackConnector(): string {
@@ -65,7 +83,7 @@ function slackConnector(): string {
   return connector;
 }
 
-export async function POST(req: NextRequest) {
+async function handleHostOwnedSlackWebhook(req: NextRequest) {
   const budget = createExecutionBudget();
   const rawBody = await req.text();
 
@@ -120,6 +138,16 @@ export async function POST(req: NextRequest) {
   after(() => handleTurn(message, { oidcToken, budget }));
 
   return NextResponse.json({ ok: true });
+}
+
+/**
+ * Main keeps the host-owned Connect channel from PR #2. The PoC activates the
+ * native OpenClaw Slack pipeline only when its complete host bridge is present.
+ */
+export async function POST(req: NextRequest) {
+  return nativeSlackModeEnabled()
+    ? handleNativeSlackWebhook(req)
+    : handleHostOwnedSlackWebhook(req);
 }
 
 /**

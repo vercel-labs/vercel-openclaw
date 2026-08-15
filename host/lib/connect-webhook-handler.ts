@@ -5,8 +5,8 @@ export interface BackgroundConnectWebhook {
   rawBody: ArrayBuffer;
   headers: Headers;
   receivedAt: number;
-  /** Exact Connect bearer already accepted by the verifier. */
-  vercelOidcToken: string;
+  /** The exact bearer already accepted by the Connect verifier. */
+  oidcToken: string;
 }
 
 type ScheduledTask = () => void | Promise<void>;
@@ -46,12 +46,11 @@ export function createConnectWebhookHandler(deps: ConnectWebhookHandlerDependenc
     } catch {
       return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
     }
-
-    const vercelOidcToken = req.headers
+    const oidcToken = req.headers
       .get('authorization')
       ?.match(/^Bearer\s+(.+)$/i)?.[1]
       ?.trim();
-    if (!vercelOidcToken) {
+    if (!oidcToken) {
       return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
     }
 
@@ -61,11 +60,13 @@ export function createConnectWebhookHandler(deps: ConnectWebhookHandlerDependenc
       rawBodySha256: createHash('sha256').update(Buffer.from(rawBody)).digest('hex'),
     });
 
+    const verifiedHeaders = new Headers(req.headers);
+    verifiedHeaders.delete('authorization');
     const message: BackgroundConnectWebhook = {
       rawBody,
-      headers: new Headers(req.headers),
+      headers: verifiedHeaders,
       receivedAt: now(),
-      vercelOidcToken,
+      oidcToken,
     };
     deps.schedule(async () => {
       try {
