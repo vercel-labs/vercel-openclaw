@@ -38,9 +38,9 @@ const GATEWAY_LOG = '/tmp/openclaw-gateway.log';
 const RUNTIME_MARKER = '/tmp/vercel-openclaw-runtime-fingerprint';
 const RUNTIME_LOCK = '/tmp/vercel-openclaw-runtime.lock';
 
-// 75 min platform backstop, 15 min behind the graceful path. Requires a
-// Pro/Enterprise team: the Hobby max session length is 45 minutes.
-export const SESSION_TIMEOUT_MS = 75 * 60 * 1000;
+// Keep the PoC deployable on personal Hobby projects, whose maximum persistent
+// Sandbox session length is 45 minutes. Idle suspension should normally win.
+export const SESSION_TIMEOUT_MS = 45 * 60 * 1000;
 
 // image_not_ready is thrown while VCR prepares an optimized amd64 build after
 // a push. It happens at create/resume time, not when forwarding payloads.
