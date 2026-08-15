@@ -1,0 +1,13 @@
+# PROTOTYPE ONLY. Do not use this image outside the Connect Slack PoC.
+# The public VCR mirror currently lags the plugin API required by the PoC.
+FROM node:24-bookworm-slim
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends bash ca-certificates curl git procps tini \
+  && rm -rf /var/lib/apt/lists/*
+RUN npm install --global openclaw@2026.8.1-beta.1 \
+  && npm cache clean --force \
+  && openclaw --version | grep -q '2026.8.1-beta.1'
+USER node
+WORKDIR /home/node
+EXPOSE 3000
