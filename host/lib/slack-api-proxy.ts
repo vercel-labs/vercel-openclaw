@@ -1,3 +1,5 @@
+import { timingSafeEqual } from 'node:crypto';
+
 const HOST_AUTH_HEADER = 'x-openclaw-slack-host-authorization';
 const SLACK_METHOD_RE = /^[a-zA-Z0-9._]+$/;
 
@@ -12,7 +14,11 @@ interface SlackApiProxyDependencies {
 
 function authorized(request: Request, expected: string | undefined): boolean {
   if (!expected) return false;
-  return request.headers.get(HOST_AUTH_HEADER) === `Bearer ${expected}`;
+  const actual = request.headers.get(HOST_AUTH_HEADER);
+  if (!actual) return false;
+  const actualBytes = Buffer.from(actual);
+  const expectedBytes = Buffer.from(`Bearer ${expected}`);
+  return actualBytes.length === expectedBytes.length && timingSafeEqual(actualBytes, expectedBytes);
 }
 
 /**
