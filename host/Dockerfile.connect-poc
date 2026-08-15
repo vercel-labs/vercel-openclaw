@@ -1,13 +1,15 @@
 # PROTOTYPE ONLY. Do not use this image outside the Connect Slack PoC.
-# The public VCR mirror currently lags the plugin API required by the PoC.
+# Build context must include openclaw-connect-poc.tgz from the companion branch.
 FROM node:24-bookworm-slim
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends bash ca-certificates curl git procps tini \
   && rm -rf /var/lib/apt/lists/*
-RUN npm install --global openclaw@2026.8.1-beta.1 \
+COPY openclaw-connect-poc.tgz /tmp/openclaw-connect-poc.tgz
+RUN npm install --global /tmp/openclaw-connect-poc.tgz \
+  && rm /tmp/openclaw-connect-poc.tgz \
   && npm cache clean --force \
-  && openclaw --version | grep -q '2026.8.1-beta.1'
+  && openclaw --version
 USER node
 WORKDIR /home/node
 EXPOSE 3000
