@@ -5,7 +5,7 @@ import {
   resolveModel,
 } from './model-credentials';
 
-const RUNTIME_CONFIG_VERSION = 6;
+const RUNTIME_CONFIG_VERSION = 7;
 
 export type RuntimeEnvironment = Record<string, string | undefined>;
 
@@ -35,13 +35,26 @@ export function buildOpenClawRuntime(
 ): OpenClawRuntime {
   const model = resolveModel(env);
   const configOperations: ConfigOperation[] = [
-    { path: 'plugins.entries.slack.enabled', value: false },
-    { path: 'plugins.entries.vercel-ai-gateway.enabled', value: false },
+    // Both plugins are installed at create (see PLUGIN_SPECS) because the
+    // official image ships neither. Enabling them is what makes OpenClaw own
+    // the Slack channel and reach the model through the sanctioned provider
+    // rather than a repointed `openai` baseUrl.
+    { path: 'plugins.entries.slack.enabled', value: true },
+    { path: 'plugins.entries.vercel-ai-gateway.enabled', value: true },
+    // Explicitly trust exactly these two. Without it the gateway warns that
+    // "plugins.allow is empty; discovered non-bundled plugins may auto-load"
+    // (observed 2026-08-14), which means anything that lands under the plugin
+    // directory would load unreviewed.
+    { path: 'plugins.allow', value: ['vercel-ai-gateway', 'slack'] },
     ...modelConfigEntries(model).map(([path, value]) => ({ path, value })),
   ];
   const gatewayEnv = {
     OPENCLAW_GATEWAY_TOKEN: gatewayToken,
-    OPENAI_API_KEY: PLACEHOLDER_MODEL_KEY,
+    // The provider plugin reads AI_GATEWAY_API_KEY and sends it as a Bearer to
+    // ai-gateway.vercel.sh. This value is a placeholder: the sandbox firewall
+    // replaces that header on egress with the app's real OIDC token, so the
+    // credential never enters the VM. See lib/model-credentials.ts.
+    AI_GATEWAY_API_KEY: PLACEHOLDER_MODEL_KEY,
   };
 
   const fingerprint = createHash('sha256')

@@ -6,7 +6,13 @@ import {
   withExecutionBudget,
   type ExecutionBudget,
 } from './execution-budget';
-import { buildNetworkPolicy, readOidcToken } from './model-credentials';
+import {
+  PLACEHOLDER_MODEL_KEY,
+  PLUGIN_SPECS,
+  buildInstallNetworkPolicy,
+  buildNetworkPolicy,
+  readOidcToken,
+} from './model-credentials';
 import { buildOpenClawRuntime, type OpenClawRuntime } from './openclaw-runtime';
 
 /**
@@ -145,6 +151,7 @@ async function ensureAwakeUncached(
     runtime,
     desiredMarker,
     budget,
+    oidcToken,
   );
 
   // getOrCreate retrieves without resuming; updateNetworkPolicy above is the
@@ -157,6 +164,100 @@ async function ensureAwakeUncached(
     () => runtimeStarted,
   );
   return { sandbox };
+}
+
+/**
+ * Installs the plugins the official image does not ship.
+ *
+ * Verified on 2026-08-14 against `openclaw-foundation/openclaw/openclaw:latest`:
+ * a fresh sandbox carries 69 stock plugins and neither the Slack channel nor the
+ * AI Gateway provider is among them, so `channels.slack` configures fine and
+ * then the gateway reports "no channel plugin is installed or loadable" and
+ * `/slack/events` 404s.
+ *
+ * npm is reachable for the duration of the install and then taken away again,
+ * before the gateway starts and therefore before any agent code runs. That is
+ * the only window in which the sandbox can reach the registry, and it exists
+ * because network policies can be swapped on a running sandbox.
+ *
+ * The plugins land under `/home/node/.openclaw/npm`, which is on the snapshotted
+ * disk, so a resumed sandbox already has them and never repeats this.
+ */
+async function installPlugins(
+  sandbox: Sandbox,
+  oidcToken: string,
+  budget: ExecutionBudget,
+): Promise<void> {
+  await withExecutionBudget(
+    budget,
+    'open npm egress for plugin install',
+    async (signal) =>
+      sandbox.updateNetworkPolicy(buildInstallNetworkPolicy(oidcToken), { signal }),
+    { capMs: 15_000 },
+  );
+
+  try {
+    for (const spec of PLUGIN_SPECS) {
+      const result = await sandbox.runCommand({
+        cmd: 'openclaw',
+        args: ['plugins', 'install', spec],
+        ...operationAbortOptions(budget, `install ${spec}`, { capMs: 120_000 }),
+      });
+      if (result.exitCode !== 0) {
+        throw new Error(
+          `plugin install failed for ${spec}: ${await commandOutput(result, budget)}`,
+        );
+      }
+    }
+  } finally {
+    // Always narrow back, including when an install failed. A sandbox left with
+    // the registry reachable is exactly the hole the policy exists to close.
+    await withExecutionBudget(
+      budget,
+      'restore steady-state egress policy',
+      async (signal) => sandbox.updateNetworkPolicy(buildNetworkPolicy(oidcToken), { signal }),
+      { capMs: 15_000 },
+    );
+  }
+}
+
+/**
+ * Seeds the placeholder the AI Gateway provider plugin looks for.
+ *
+ * The plugin resolves auth from a per-agent SQLite auth store, not from the
+ * process environment. Observed live 2026-08-14: exporting `AI_GATEWAY_API_KEY`
+ * to the gateway, and again writing it to `~/.openclaw/.env`, both still failed
+ * with `No API key found for provider "vercel-ai-gateway"`; `openclaw models
+ * status` reports `Shell env : off`. Registering a profile is what makes the
+ * provider effective:
+ *
+ *   vercel-ai-gateway effective=profiles:…/openclaw-agent.sqlite | api_key=1
+ *
+ * `paste-api-key` reads the value from stdin, so it works without a TTY.
+ *
+ * Storing a credential on the sandbox disk would normally be the wrong instinct.
+ * It is right here precisely because the value is not a credential: the firewall
+ * replaces the Authorization header on the way out, so the string has no power
+ * and anyone reading it inside the VM learns nothing.
+ */
+async function seedProviderPlaceholder(
+  sandbox: Sandbox,
+  budget: ExecutionBudget,
+): Promise<void> {
+  const result = await sandbox.runCommand({
+    cmd: 'sh',
+    args: [
+      '-c',
+      `printf '%s\\n' '${PLACEHOLDER_MODEL_KEY}' | ` +
+        `openclaw models auth paste-api-key --provider vercel-ai-gateway`,
+    ],
+    ...operationAbortOptions(budget, 'register provider placeholder', { capMs: 60_000 }),
+  });
+  if (result.exitCode !== 0) {
+    throw new Error(
+      `could not seed the provider placeholder: ${await commandOutput(result, budget)}`,
+    );
+  }
 }
 
 export async function startGateway(
@@ -218,6 +319,7 @@ async function ensureRuntimeReady(
   runtime: OpenClawRuntime,
   desiredMarker: string,
   budget: ExecutionBudget,
+  oidcToken: string,
 ): Promise<boolean> {
   if (await isRuntimeReady(sandbox, desiredMarker, budget)) {
     return false;
@@ -234,6 +336,12 @@ async function ensureRuntimeReady(
     const configurationCurrent =
       (await readRuntimeFingerprint(sandbox, budget)) === desiredMarker;
     lastHealthyAt.delete(name);
+    // Same condition as the config write: a fresh sandbox, or one whose runtime
+    // fingerprint changed. Both are exactly when plugins may be missing.
+    if (!configurationCurrent) {
+      await installPlugins(sandbox, oidcToken, budget);
+      await seedProviderPlaceholder(sandbox, budget);
+    }
     await stopGateway(sandbox, budget);
     await startGateway(sandbox, token, {
       appendLog: true,

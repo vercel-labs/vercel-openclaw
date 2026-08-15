@@ -86,7 +86,13 @@ export function buildNetworkPolicy(oidcToken: string): NetworkPolicy {
 }
 
 /** Default model, addressed through the `openai` provider we repoint at AI Gateway. */
-export const DEFAULT_MODEL_ID = 'openai/gpt-5.6-sol';
+/**
+ * Model ref for the official AI Gateway provider plugin. Refs take the form
+ * `vercel-ai-gateway/<upstream-provider>/<model>` and the gateway routes on that
+ * prefix (docs.openclaw.ai/providers/vercel-ai-gateway, retrieved 2026-08-14).
+ * The upstream model here is the one already proven to resolve end to end.
+ */
+export const DEFAULT_MODEL_ID = 'vercel-ai-gateway/openai/gpt-5.6-sol';
 
 export function resolveModel(
   env: Record<string, string | undefined> = process.env,
@@ -114,9 +120,48 @@ export function resolveModel(
  * `executionTrace.winnerModel: "gpt-5.6-sol"` with `result: "success"`.
  */
 export function modelConfigEntries(model = resolveModel()): Array<[string, string]> {
-  return [
-    ['models.providers.openai.baseUrl', AI_GATEWAY_BASE_URL],
-    ['models.providers.openai.apiKey', PLACEHOLDER_MODEL_KEY],
-    ['agents.defaults.model.primary', model],
-  ];
+  // The provider plugin owns the endpoint and the auth header, so the only
+  // thing left to set is which model to use. Refs are
+  // `vercel-ai-gateway/<upstream>/<model>`; the gateway routes on that prefix.
+  return [['agents.defaults.model.primary', model]];
+}
+
+/**
+ * Plugins the image does not ship, installed once at create.
+ *
+ * Verified against `openclaw-foundation/openclaw/openclaw:latest` on
+ * 2026-08-14: a fresh sandbox has 69 stock plugins under /app/dist/extensions
+ * and neither of these is among them. `openclaw plugins install` fetches each
+ * from npm and links its peer dependency back to the image's own install.
+ *
+ * They land under `/home/node/.openclaw/npm/...`, which is on the snapshotted
+ * disk, so this is a one-time cost at create rather than a per-wake one.
+ *
+ * `@openclaw/slack` is what lets OpenClaw own the Slack channel outright, so
+ * the user's own allow/deny lists, approvals and mention policies apply
+ * (Patrick Erichsen, 2026-08-14: without it "users can't configure things like
+ * allow/deny lists, approvals, etc - would be pretty bricked").
+ */
+export const PLUGIN_SPECS = [
+  '@openclaw/vercel-ai-gateway-provider',
+  '@openclaw/slack',
+] as const;
+
+/** Registry hosts npm needs while installing the plugins above. */
+const NPM_DOMAINS = ['registry.npmjs.org', '*.npmjs.org'];
+
+/**
+ * Egress policy for the install step only.
+ *
+ * Deliberately separate from the steady-state policy: npm is reachable while
+ * plugins are being fetched at create, and then `buildNetworkPolicy` replaces
+ * it before the gateway starts, so no agent code ever runs with the registry
+ * reachable. Policies can be swapped on a running sandbox, which is what makes
+ * this two-phase approach possible.
+ */
+export function buildInstallNetworkPolicy(oidcToken: string): NetworkPolicy {
+  const base = buildNetworkPolicy(oidcToken) as { allow: Record<string, unknown[]> };
+  const allow = { ...base.allow };
+  for (const domain of NPM_DOMAINS) allow[domain] = [];
+  return { allow } as NetworkPolicy;
 }

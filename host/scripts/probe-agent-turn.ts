@@ -64,7 +64,10 @@ async function main() {
     }
 
     step(`run a real turn (model ${resolveModel()})`);
-    const sessionKey = slackSessionKey('CPROBE', '1712345678.000100');
+    // Channel only. Passing a second argument here used to mean the thread
+    // timestamp; it is now the agent id, and passing a timestamp produced
+    // `Agent "1712345678-000100" no longer exists in configuration`.
+    const sessionKey = slackSessionKey('CPROBE');
     console.log(`session key: ${sessionKey}\nprompt: ${PROMPT}`);
     const turnStart = Date.now();
     let turnFailed: unknown;

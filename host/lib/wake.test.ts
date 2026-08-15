@@ -92,10 +92,22 @@ describe('ensureAwake', () => {
       budget: { deadlineMs: Date.now() + 60_000, replyReserveMs: 15_000 },
     });
 
-    expect(harness.state.policies).toHaveLength(2);
+    // First wake: steady policy, then npm opened for the plugin install, then
+    // narrowed again. Second wake: steady policy only, since the plugins are
+    // already on the snapshotted disk.
+    expect(harness.state.policies).toHaveLength(4);
     const serializedPolicies = JSON.stringify(harness.state.policies);
     expect(serializedPolicies).toContain('Bearer request-token-one');
     expect(serializedPolicies).toContain('Bearer request-token-two');
+
+    // The registry is reachable for exactly one window, and the sandbox is not
+    // left in that state. Without this, an install failure could leave npm open
+    // to agent code, which is the hole the policy exists to close.
+    const npmWindows = harness.state.policies.filter((policy) =>
+      JSON.stringify(policy).includes('npmjs.org'),
+    );
+    expect(npmWindows).toHaveLength(1);
+    expect(JSON.stringify(harness.state.policies.at(-1))).not.toContain('npmjs.org');
 
     const serializedCommands = JSON.stringify(harness.state.commands);
     expect(serializedCommands).not.toContain('request-token-one');
