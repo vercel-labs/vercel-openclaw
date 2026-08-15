@@ -38,17 +38,43 @@ export function createSlackApiProxy(deps: SlackApiProxyDependencies) {
       return Response.json({ ok: false, error: 'invalid_method' }, { status: 400 });
     }
 
-    const slackToken = await deps.slackToken();
+    const upstreamUrl = new URL(`https://slack.com/api/${method}`);
+    const requestUrl = new URL(request.url);
+    for (const [name, value] of requestUrl.searchParams) {
+      if (name !== 'token') upstreamUrl.searchParams.append(name, value);
+    }
+
     const headers = new Headers();
-    headers.set('authorization', `Bearer ${slackToken}`);
     for (const name of ['accept', 'content-type']) {
       const value = request.headers.get(name);
       if (value) headers.set(name, value);
     }
-    const body = request.method === 'GET' || request.method === 'HEAD'
-      ? undefined
-      : await request.arrayBuffer();
-    const upstream = await fetcher(`https://slack.com/api/${method}`, {
+    let body: BodyInit | undefined;
+    if (request.method !== 'GET' && request.method !== 'HEAD') {
+      const contentType = request.headers.get('content-type') ?? '';
+      if (contentType.startsWith('application/x-www-form-urlencoded')) {
+        const fields = new URLSearchParams(await request.text());
+        // Connect is the only Slack credential owner. The sandbox may provide
+        // method arguments, but it can never select or override Slack auth.
+        fields.delete('token');
+        body = fields.toString();
+      } else if (contentType.startsWith('application/json')) {
+        const fields = await request.json() as Record<string, unknown>;
+        delete fields.token;
+        body = JSON.stringify(fields);
+      } else if (contentType.startsWith('multipart/form-data')) {
+        const fields = await request.formData();
+        fields.delete('token');
+        body = fields;
+        // Fetch must generate a new boundary for the sanitized FormData body.
+        headers.delete('content-type');
+      } else {
+        return Response.json({ ok: false, error: 'unsupported_content_type' }, { status: 415 });
+      }
+    }
+    const slackToken = await deps.slackToken();
+    headers.set('authorization', `Bearer ${slackToken}`);
+    const upstream = await fetcher(upstreamUrl.toString(), {
       method: request.method,
       headers,
       body,
