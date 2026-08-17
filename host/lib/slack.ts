@@ -123,7 +123,19 @@ export function stripMentions(text: string): string {
 }
 
 /**
- * Posts a reply in thread.
+ * Placeholder posted the moment a turn is accepted, then edited into the answer.
+ *
+ * A wake plus a turn takes tens of seconds, and until something appears in the
+ * thread the mention looks ignored. Italics mark it as transient rather than as
+ * the agent's own words.
+ */
+export const THINKING_TEXT = '_Thinking…_';
+
+/**
+ * Posts a reply in thread and returns its timestamp.
+ *
+ * The `ts` is what makes the placeholder editable: `updateSlackMessage` needs it
+ * to turn this message into the final answer instead of posting a second one.
  *
  * The token is passed in rather than read here, because it is minted per call
  * through Vercel Connect and the caller owns that lifecycle.
@@ -132,7 +144,7 @@ export async function postSlackReply(options: SlackReplyTarget & {
   token: string;
   text: string;
   budget?: ExecutionBudget;
-}): Promise<void> {
+}): Promise<{ ts?: string }> {
   const requestTimeoutMs = operationTimeoutMs(
     options.budget ?? createExecutionBudget(),
     'Slack reply',
@@ -154,9 +166,54 @@ export async function postSlackReply(options: SlackReplyTarget & {
 
   // Slack answers 200 with `ok: false` for application errors, so the status
   // code alone proves nothing.
-  const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+  const data = (await res.json().catch(() => ({}))) as {
+    ok?: boolean;
+    error?: string;
+    ts?: string;
+  };
   if (!res.ok || !data.ok) {
     throw new Error(`chat.postMessage failed: status=${res.status} error=${data.error ?? 'unknown'}`);
+  }
+  // Optional on purpose: a send that succeeded without a usable `ts` should
+  // still count as sent. The caller falls back to posting a fresh message.
+  return { ts: typeof data.ts === 'string' ? data.ts : undefined };
+}
+
+/**
+ * Edits a message in place, which is how the placeholder becomes the answer.
+ *
+ * Uses `chat:write`, the same scope `chat.postMessage` already needs, so this
+ * adds no Connect scope and no reinstall.
+ */
+export async function updateSlackMessage(options: {
+  token: string;
+  channelId: string;
+  ts: string;
+  text: string;
+  budget?: ExecutionBudget;
+}): Promise<void> {
+  const requestTimeoutMs = operationTimeoutMs(
+    options.budget ?? createExecutionBudget(),
+    'Slack message update',
+    { capMs: 10_000, reserveReply: false },
+  );
+  const res = await fetch('https://slack.com/api/chat.update', {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${options.token}`,
+      'content-type': 'application/json; charset=utf-8',
+    },
+    body: JSON.stringify({
+      channel: options.channelId,
+      ts: options.ts,
+      text: options.text,
+    }),
+    signal: AbortSignal.timeout(requestTimeoutMs),
+  });
+
+  const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+  if (!res.ok || !data.ok) {
+    throw new Error(`chat.update failed: status=${res.status} error=${data.error ?? 'unknown'}`);
   }
 }
 

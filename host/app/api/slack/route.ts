@@ -11,10 +11,10 @@ import {
   type ExecutionBudget,
 } from '@/lib/execution-budget';
 import {
+  THINKING_TEXT,
   parseSlackEvent,
-  postSlackReaction,
   postSlackReply,
-  removeSlackReaction,
+  updateSlackMessage,
   type SlackReplyTarget,
   type SlackThreadMessage,
 } from '@/lib/slack';
@@ -143,21 +143,19 @@ async function handleTurn(
   const sessionKey = slackSessionKey(message.channelId);
   const startedAt = Date.now();
   let slackToken: string | undefined;
-  let reactionAdded = false;
+  let placeholderTs: string | undefined;
 
   try {
     slackToken = await mintSlackToken(context.budget, context.oidcToken);
+    // Post the placeholder before waking anything: the wake alone is ~10s, and
+    // an unanswered mention is indistinguishable from a broken agent. Failure to
+    // post it is not fatal, it just means `settle` posts a fresh message instead.
     try {
-      await postSlackReaction({
-        token: slackToken,
-        channelId: message.channelId,
-        messageTs: message.messageTs,
-        name: 'eyes',
-        budget: context.budget,
-      });
-      reactionAdded = true;
+      placeholderTs = (
+        await postReply(message, THINKING_TEXT, context.budget, slackToken)
+      ).ts;
     } catch (err) {
-      console.warn(`Slack progress reaction failed for ${sessionKey}:`, err);
+      console.warn(`Slack thinking placeholder failed for ${sessionKey}:`, err);
     }
 
     // The idle clock is bookkeeping. Keep it after the visible acknowledgement
@@ -198,16 +196,19 @@ async function handleTurn(
       throw new Error(`turn for ${sessionKey} produced no reply text`);
     }
 
-    await postReply(message, reply, context.budget, slackToken);
+    await settle(message, placeholderTs, reply, context.budget, slackToken);
     console.info(`slack turn complete session=${sessionKey} durationMs=${Date.now() - startedAt}`);
   } catch (err) {
     console.error(`turn failed for ${sessionKey}:`, err);
     // Say something rather than leaving the mention unanswered. Deliberately
-    // generic: error text can carry paths, tokens, and internals.
+    // generic: error text can carry paths, tokens, and internals. Editing the
+    // placeholder also clears it, so a failed turn cannot leave "Thinking…" as
+    // the last word in the thread.
     try {
       slackToken ??= await mintSlackToken(context.budget, context.oidcToken);
-      await postReply(
+      await settle(
         message,
+        placeholderTs,
         'Something went wrong handling that. Check the logs.',
         context.budget,
         slackToken,
@@ -215,17 +216,34 @@ async function handleTurn(
     } catch (postErr) {
       console.error('failed to post the failure notice:', postErr);
     }
-  } finally {
-    if (slackToken && reactionAdded) {
-      await removeSlackReaction({
-        token: slackToken,
-        channelId: message.channelId,
-        messageTs: message.messageTs,
-        name: 'eyes',
-        budget: context.budget,
-      }).catch((err) => console.warn(`Slack progress reaction cleanup failed for ${sessionKey}:`, err));
-    }
   }
+}
+
+/**
+ * Puts final text in front of the user: edits the placeholder when there is one,
+ * posts a fresh message when it never made it.
+ *
+ * Editing rather than posting keeps one message per turn, so the thread reads as
+ * a question and an answer instead of a progress log.
+ */
+async function settle(
+  message: SlackReplyTarget,
+  placeholderTs: string | undefined,
+  text: string,
+  budget: ExecutionBudget,
+  token: string,
+): Promise<void> {
+  if (placeholderTs) {
+    await updateSlackMessage({
+      token,
+      channelId: message.channelId,
+      ts: placeholderTs,
+      text,
+      budget,
+    });
+    return;
+  }
+  await postReply(message, text, budget, token);
 }
 
 /** Mints one short-lived bot token for acknowledgement and reply operations. */
@@ -249,14 +267,17 @@ async function mintSlackToken(
   );
 }
 
-/** Posts a final or controlled-failure reply in the originating thread. */
+/**
+ * Posts a message in the originating thread and passes back its timestamp, so
+ * the placeholder can be edited later.
+ */
 async function postReply(
   message: SlackReplyTarget,
   text: string,
   budget: ExecutionBudget,
   token: string,
-): Promise<void> {
-  await postSlackReply({
+): Promise<{ ts?: string }> {
+  return postSlackReply({
     token,
     channelId: message.channelId,
     threadTs: message.threadTs,

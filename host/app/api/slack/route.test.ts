@@ -14,9 +14,10 @@ const mocks = vi.hoisted(() => ({
   topUpSessionTimeout: vi.fn(async () => undefined),
   slackSessionKey: vi.fn(() => 'agent:main:slack-C123'),
   runAgentTurn: vi.fn(async () => ({ reply: 'hello from OpenClaw' })),
-  postSlackReaction: vi.fn(async () => undefined),
-  removeSlackReaction: vi.fn(async () => undefined),
-  postSlackReply: vi.fn(async () => undefined),
+  // Return type widened deliberately: `ts` is optional on the real helper, and
+  // one test covers a successful send that carries no usable timestamp.
+  postSlackReply: vi.fn(async (): Promise<{ ts?: string }> => ({ ts: 'placeholder-ts' })),
+  updateSlackMessage: vi.fn(async () => undefined),
 }));
 
 vi.mock('next/server', async (importOriginal) => {
@@ -60,9 +61,9 @@ vi.mock('@/lib/slack', () => ({
       text: 'hello',
     },
   }),
-  postSlackReaction: mocks.postSlackReaction,
+  THINKING_TEXT: '_Thinking…_',
   postSlackReply: mocks.postSlackReply,
-  removeSlackReaction: mocks.removeSlackReaction,
+  updateSlackMessage: mocks.updateSlackMessage,
 }));
 vi.mock('@/lib/wake', () => ({
   ensureAwake: mocks.ensureAwake,
@@ -86,9 +87,8 @@ describe('POST /api/slack', () => {
     mocks.runAgentTurn
       .mockReset()
       .mockResolvedValue({ reply: 'hello from OpenClaw' });
-    mocks.postSlackReaction.mockReset().mockResolvedValue(undefined);
-    mocks.removeSlackReaction.mockReset().mockResolvedValue(undefined);
-    mocks.postSlackReply.mockReset().mockResolvedValue(undefined);
+    mocks.postSlackReply.mockReset().mockResolvedValue({ ts: 'placeholder-ts' });
+    mocks.updateSlackMessage.mockReset().mockResolvedValue(undefined);
     mocks.tasks.length = 0;
     process.env.OPENCLAW_GATEWAY_TOKEN = 'gateway-token';
     process.env.SLACK_CONNECTOR = 'slack/openclaw';
@@ -198,7 +198,7 @@ describe('POST /api/slack', () => {
     expect(outcome).toBe('acknowledged');
   });
 
-  it('adds a visible reaction before waking the sandbox', async () => {
+  it('posts the thinking placeholder before waking, then edits it into the answer', async () => {
     await POST(
       new NextRequest('https://example.test/api/slack', {
         method: 'POST',
@@ -209,29 +209,32 @@ describe('POST /api/slack', () => {
 
     await mocks.tasks[0]();
 
-    expect(mocks.postSlackReaction).toHaveBeenCalledWith({
+    // The placeholder is the whole point of the glimmer: it has to be in the
+    // thread before the ~10s wake, not after it.
+    expect(mocks.postSlackReply).toHaveBeenCalledWith({
       token: 'connect-token',
       channelId: 'C123',
-      messageTs: '1.0',
-      name: 'eyes',
-      budget: mocks.budget,
-    });
-    expect(mocks.postSlackReaction.mock.invocationCallOrder[0]).toBeLessThan(
-      mocks.ensureAwake.mock.invocationCallOrder[0],
-    );
-    expect(mocks.removeSlackReaction).toHaveBeenCalledWith({
-      token: 'connect-token',
-      channelId: 'C123',
-      messageTs: '1.0',
-      name: 'eyes',
+      threadTs: '1.0',
+      text: '_Thinking…_',
       budget: mocks.budget,
     });
     expect(mocks.postSlackReply.mock.invocationCallOrder[0]).toBeLessThan(
-      mocks.removeSlackReaction.mock.invocationCallOrder[0],
+      mocks.ensureAwake.mock.invocationCallOrder[0],
     );
+
+    // And the answer edits that same message rather than adding a second one, so
+    // the thread stays one question and one answer.
+    expect(mocks.updateSlackMessage).toHaveBeenCalledWith({
+      token: 'connect-token',
+      channelId: 'C123',
+      ts: 'placeholder-ts',
+      text: 'hello from OpenClaw',
+      budget: mocks.budget,
+    });
+    expect(mocks.postSlackReply).toHaveBeenCalledTimes(1);
   });
 
-  it('adds the visible reaction before activity bookkeeping can stall', async () => {
+  it('posts the placeholder before activity bookkeeping can stall', async () => {
     let releaseActivity!: () => void;
     mocks.activitySet.mockImplementationOnce(
       () => new Promise<undefined>((resolve) => (releaseActivity = () => resolve(undefined))),
@@ -246,18 +249,41 @@ describe('POST /api/slack', () => {
 
     const turn = Promise.resolve(mocks.tasks[0]());
     const outcome = await Promise.race([
-      vi.waitFor(() => expect(mocks.postSlackReaction).toHaveBeenCalled(), {
+      vi.waitFor(() => expect(mocks.postSlackReply).toHaveBeenCalled(), {
         interval: 1,
         timeout: 20,
-      }).then(() => 'reacted'),
+      }).then(() => 'posted'),
       new Promise<string>((resolve) => setTimeout(() => resolve('blocked'), 25)),
     ]);
 
     releaseActivity?.();
     await turn;
-    expect(outcome).toBe('reacted');
-    expect(mocks.postSlackReaction.mock.invocationCallOrder[0]).toBeLessThan(
+    expect(outcome).toBe('posted');
+    expect(mocks.postSlackReply.mock.invocationCallOrder[0]).toBeLessThan(
       mocks.activitySet.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('falls back to a fresh message when the placeholder never posted', async () => {
+    // A placeholder that fails must not swallow the answer, and a successful
+    // send with no usable ts must not be treated as editable.
+    mocks.postSlackReply
+      .mockRejectedValueOnce(new Error('slack down'))
+      .mockResolvedValueOnce({ ts: undefined });
+
+    await POST(
+      new NextRequest('https://example.test/api/slack', {
+        method: 'POST',
+        headers: { authorization: 'Bearer verified-runtime-oidc-token' },
+        body: '{}',
+      }),
+    );
+
+    await mocks.tasks[0]();
+
+    expect(mocks.updateSlackMessage).not.toHaveBeenCalled();
+    expect(mocks.postSlackReply).toHaveBeenLastCalledWith(
+      expect.objectContaining({ text: 'hello from OpenClaw' }),
     );
   });
 
@@ -272,8 +298,11 @@ describe('POST /api/slack', () => {
     );
 
     await mocks.tasks[0]();
-    expect(mocks.postSlackReply).toHaveBeenCalledWith(
+    // Edited into the placeholder, so a failed turn cannot leave "Thinking…" as
+    // the last word in the thread.
+    expect(mocks.updateSlackMessage).toHaveBeenCalledWith(
       expect.objectContaining({
+        ts: 'placeholder-ts',
         text: 'Something went wrong handling that. Check the logs.',
       }),
     );
@@ -290,8 +319,9 @@ describe('POST /api/slack', () => {
     );
 
     await mocks.tasks[0]();
-    expect(mocks.postSlackReply).toHaveBeenCalledWith(
+    expect(mocks.updateSlackMessage).toHaveBeenCalledWith(
       expect.objectContaining({
+        ts: 'placeholder-ts',
         text: 'Something went wrong handling that. Check the logs.',
       }),
     );
