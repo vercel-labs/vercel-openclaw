@@ -336,13 +336,24 @@ async function ensureRuntimeReady(
     const configurationCurrent =
       (await readRuntimeFingerprint(sandbox, budget)) === desiredMarker;
     lastHealthyAt.delete(name);
+    // Stop the gateway BEFORE anything that widens egress, and keep it that way.
+    //
+    // `installPlugins` opens registry.npmjs.org. On a fresh sandbox nothing is
+    // running, but this branch is also reached on a *running* sandbox whenever
+    // the fingerprint moved: a deploy that changes RUNTIME_CONFIG_VERSION or
+    // configOperations, a different OPENCLAW_MODEL, or a rotated gateway token.
+    // Installing first would leave the old gateway serving, possibly with an
+    // agent turn in flight, while the registry was reachable for up to the
+    // install timeout. That is precisely the invariant this design sells:
+    // "no agent code ever runs with the registry reachable"
+    // (lib/model-credentials.ts).
+    await stopGateway(sandbox, budget);
     // Same condition as the config write: a fresh sandbox, or one whose runtime
     // fingerprint changed. Both are exactly when plugins may be missing.
     if (!configurationCurrent) {
       await installPlugins(sandbox, oidcToken, budget);
       await seedProviderPlaceholder(sandbox, budget);
     }
-    await stopGateway(sandbox, budget);
     await startGateway(sandbox, token, {
       appendLog: true,
       budget,
@@ -624,12 +635,17 @@ async function waitForGatewayHealth(
   // blocked network resolution is alive with a child `npm`/`node` still running
   // (observed 2026-08-17). Without the ps snapshot that failure reads as a
   // generic timeout with a zero-byte log.
+  //
+  // Order matters: the caller keeps only the tail of this output, so the two
+  // highest-value sections are emitted last. OpenClaw's own log goes first and
+  // is the one bounded hardest, with `-q` to suppress the per-file `==>` headers
+  // that would otherwise crowd out the primary log when several files match.
   const log = await sandbox.runCommand({
     cmd: 'sh',
     args: [
       '-c',
-      `echo "--- ${GATEWAY_LOG} ---"; tail -20 ${GATEWAY_LOG} 2>/dev/null; ` +
-        `echo "--- /tmp/openclaw/*.log ---"; tail -20 /tmp/openclaw/*.log 2>/dev/null; ` +
+      `echo "--- openclaw internal log ---"; tail -q -n 8 /tmp/openclaw/*.log 2>/dev/null; ` +
+        `echo "--- ${GATEWAY_LOG} ---"; tail -20 ${GATEWAY_LOG} 2>/dev/null; ` +
         `echo "--- processes ---"; ps -eo pid,etime,args 2>/dev/null | grep -iE 'openclaw|npm' | grep -v grep`,
     ],
     ...operationAbortOptions(budget, 'gateway log tail', { capMs: 5_000 }),

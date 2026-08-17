@@ -46,9 +46,15 @@ export function buildOpenClawRuntime(
   ];
   // Deliberately only the gateway token. `AI_GATEWAY_API_KEY` is NOT set here.
   //
-  // It never worked for auth: OpenClaw reports `Shell env : off` and the
-  // provider resolves from the profile written by `seedProviderPlaceholder`
-  // instead (see the comment above it in lib/wake.ts). Worse, setting it makes
+  // Removal is safe structurally, not because of any upstream behaviour claim.
+  // `seedProviderPlaceholder` writes the provider's SQLite profile, and it runs
+  // on exactly the same condition as the config write, so any sandbox whose
+  // fingerprint does not match this runtime re-seeds on its next wake. Sandboxes
+  // provisioned by the previous runtime version cannot match (the fingerprint
+  // hashes RUNTIME_CONFIG_VERSION and the config shape), and ones provisioned by
+  // this version already have the profile on their snapshotted disk. Either way
+  // the value was a recognizable placeholder with no power, so nothing that could
+  // read it lost anything. Worse, setting it makes
   // OpenClaw treat `vercel-ai-gateway` as a *configured* plugin, so if the
   // plugin is ever missing the startup doctor tries to resolve it from npm.
   // Under the steady-state egress policy npm is unreachable, and that resolution
