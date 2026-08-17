@@ -52,15 +52,16 @@ It's a headless API-only Next.js app. Deploy with the Vercel project's **Root Di
 
 For a direct Slack app, point Event Subscriptions, Interactivity, and the optional `/openclaw` slash command at `/api/webhook/slack` on the production domain. Add the `reactions:write` bot scope and reinstall the app if you want the host to acknowledge each message with an eyes reaction before waking OpenClaw. Slack Incoming Webhooks are not used and can remain disabled. The deployment assumes a Pro or Enterprise team because the 75-minute session timeout, `maxDuration: 300`, and the 5-minute cron exceed Hobby limits.
 
-**Live-validated** against `2026.7.2-beta.7`: two full sleep/wake cycles through this code path — gateway boot, health, `prepare` → `ready` → stop → snapshot → resume → gateway restart (`host/scripts/e2e-lifecycle.ts`). End-to-end wake is **~10s** (cold and from snapshot alike); the sandbox's own resume including snapshot restore is sub-second, and ~7s of the total is the OpenClaw gateway booting. The runs also confirmed interrupted work auto-continues after an abrupt stop, and surfaced one upstream issue with held leases (spec, contract question 6). Re-validation against 2026.7.2 stable when it ships.
+**Live-validated** against `2026.7.2-beta.7`: two full sleep/wake cycles through this code path — gateway boot, health, `prepare` → `ready` → stop → snapshot → resume → gateway restart (`host/scripts/e2e-lifecycle.ts`). End-to-end wake is **~10s** (cold and from snapshot alike); the sandbox's own resume including snapshot restore is sub-second, and ~7s of the total is the OpenClaw gateway booting. The runs also confirmed interrupted work auto-continues after an abrupt stop, and surfaced one upstream issue with held leases (spec, contract question 6). Re-validation is pending a stable release that carries the suspend API. 2026.7.2 never shipped stable: the beta line moved to 2026.8.1, so the target is **2026.8.1 stable**. Verified 2026-08-17 from npm: `latest` is 2026.7.1-2, `beta` is 2026.8.1-beta.2, and the `gateway.suspend.*` triad is present in 2026.8.1-beta.2.
 
 ## How the image stays current
 
-The VCR repository belongs to the OpenClaw Foundation, so keeping it current is theirs to run. This repo provides both mechanisms ready-made:
+OpenClaw's own release CI publishes to VCR, so the image is theirs end to end and this repo carries no mirroring machinery.
 
-1. **Target state:** OpenClaw's release CI pushes to VCR directly, the same way it already publishes to ghcr.io and Docker Hub. The ready-to-adopt patch lives in [`docs/upstream-ci.md`](docs/upstream-ci.md).
+- [`vercel-container-registry-publish.yml`](https://github.com/openclaw/openclaw/pull/120058) (merged 2026-08-10) publishes stable, extended-stable and beta releases: default, slim and browser variants across amd64, arm64 and multi-platform indexes. It runs as an independent sibling after the Docker publish and smoke-tests the immutable image in Vercel Sandbox before promoting moving aliases.
+- [`docker-image-refresh.yml`](https://github.com/openclaw/openclaw/pull/123348) (merged 2026-08-14) rebuilds the moving tags weekly so `latest` picks up base-image security updates between releases.
 
-2. **Until then:** [`mirror-image.yml`](.github/workflows/mirror-image.yml) is a drop-in scheduled workflow that copies the `latest` and `slim` tags from `ghcr.io/openclaw/openclaw` to VCR — digest-checked, idempotent, betas excluded by construction (upstream's release pipeline never promotes betas to the moving tags it tracks). Adopt it in any repo with two secrets (`VERCEL_VCR_TOKEN` scoped to the owning team, `VERCEL_TEAM_ID`).
+Boot-verified from a non-owning Vercel team on 2026-08-17: `latest` and `slim` run OpenClaw 2026.7.1, and `2026.7.2-beta.7` runs in its plain, `-slim` and `-amd64` forms. The `2026.8.1` beta tags did not resolve from VCR at that time, though `2026.8.1-beta.2` was present on ghcr.
 
 ## What "public" means
 
@@ -79,7 +80,7 @@ Verified against the [images docs](https://vercel.com/docs/sandbox/concepts/imag
 
 ## Roadmap
 
-This repo replaces the archived `vercel-openclaw` template and its bundle supply chain. The suspension control plane (upstream [#103618](https://github.com/openclaw/openclaw/pull/103618), shipping in the 2026.7.2 line) is implemented in `host/`; next up is live end-to-end validation against 2026.7.2 stable, resolving the open contract questions in [`docs/suspension-spec.md`](docs/suspension-spec.md), a durable activity store, and cron-aware wake.
+This repo replaces the archived `vercel-openclaw` template and its bundle supply chain. The suspension control plane (upstream [#103618](https://github.com/openclaw/openclaw/pull/103618), first released in the 2026.7.2 beta line, reaching stable in 2026.8.1) is implemented in `host/`; next up is live end-to-end validation against 2026.8.1 stable, resolving the open contract questions in [`docs/suspension-spec.md`](docs/suspension-spec.md), a durable activity store, and cron-aware wake.
 
 ## License
 
