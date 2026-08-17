@@ -616,9 +616,22 @@ async function waitForGatewayHealth(
     break;
   }
   // Surface the gateway's own log, not just the failed health probe.
+  //
+  // Three sources, because the obvious one can be empty. OpenClaw writes its
+  // structured log to /tmp/openclaw/*.log separately from this stdout redirect,
+  // and anything failing before the logger initializes appears in neither. In
+  // that case the process table is the only evidence: a gateway wedged on a
+  // blocked network resolution is alive with a child `npm`/`node` still running
+  // (observed 2026-08-17). Without the ps snapshot that failure reads as a
+  // generic timeout with a zero-byte log.
   const log = await sandbox.runCommand({
     cmd: 'sh',
-    args: ['-c', `tail -20 ${GATEWAY_LOG} 2>/dev/null`],
+    args: [
+      '-c',
+      `echo "--- ${GATEWAY_LOG} ---"; tail -20 ${GATEWAY_LOG} 2>/dev/null; ` +
+        `echo "--- /tmp/openclaw/*.log ---"; tail -20 /tmp/openclaw/*.log 2>/dev/null; ` +
+        `echo "--- processes ---"; ps -eo pid,etime,args 2>/dev/null | grep -iE 'openclaw|npm' | grep -v grep`,
+    ],
     ...operationAbortOptions(budget, 'gateway log tail', { capMs: 5_000 }),
   });
   const logTail = await withExecutionBudget(
@@ -628,7 +641,7 @@ async function waitForGatewayHealth(
     { capMs: 5_000 },
   );
   throw new Error(
-    `gateway did not become healthy within the wake budget. gateway log tail:\n${logTail.slice(-1000)}`,
+    `gateway did not become healthy within the wake budget. gateway diagnostics:\n${logTail.slice(-2500)}`,
   );
 }
 

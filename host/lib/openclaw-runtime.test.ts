@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'vitest';
-import { PLACEHOLDER_MODEL_KEY } from './model-credentials';
 import { buildOpenClawRuntime } from './openclaw-runtime';
 
 describe('buildOpenClawRuntime', () => {
@@ -10,12 +9,17 @@ describe('buildOpenClawRuntime', () => {
     // provider plugin replaces an earlier hack that repointed `openai.baseUrl`.
     const runtime = buildOpenClawRuntime({}, 'gateway-token');
 
+    // Only the gateway token. `AI_GATEWAY_API_KEY` must stay out: it never
+    // authenticated anything (OpenClaw reports `Shell env : off`; the profile
+    // seeded by `seedProviderPlaceholder` is what works), and setting it marks
+    // `vercel-ai-gateway` as configured, so a missing plugin sends the startup
+    // doctor to npm. npm is unreachable under the steady-state egress policy and
+    // that resolution runs before the logger starts, so the gateway hangs with
+    // an empty log. Measured 2026-08-17: never bound with it set, 7.42s without.
     expect(runtime.gatewayEnv).toEqual({
       OPENCLAW_GATEWAY_TOKEN: 'gateway-token',
-      // Read by the provider plugin and sent as a Bearer to AI Gateway, where
-      // the sandbox firewall replaces it with the real OIDC token.
-      AI_GATEWAY_API_KEY: PLACEHOLDER_MODEL_KEY,
     });
+    expect(runtime.gatewayEnv).not.toHaveProperty('AI_GATEWAY_API_KEY');
     expect(runtime.configOperations).toEqual(
       expect.arrayContaining([
         { path: 'plugins.entries.slack.enabled', value: true },

@@ -1,9 +1,5 @@
 import { createHash } from 'node:crypto';
-import {
-  PLACEHOLDER_MODEL_KEY,
-  modelConfigEntries,
-  resolveModel,
-} from './model-credentials';
+import { modelConfigEntries, resolveModel } from './model-credentials';
 
 const RUNTIME_CONFIG_VERSION = 7;
 
@@ -48,13 +44,25 @@ export function buildOpenClawRuntime(
     { path: 'plugins.allow', value: ['vercel-ai-gateway', 'slack'] },
     ...modelConfigEntries(model).map(([path, value]) => ({ path, value })),
   ];
+  // Deliberately only the gateway token. `AI_GATEWAY_API_KEY` is NOT set here.
+  //
+  // It never worked for auth: OpenClaw reports `Shell env : off` and the
+  // provider resolves from the profile written by `seedProviderPlaceholder`
+  // instead (see the comment above it in lib/wake.ts). Worse, setting it makes
+  // OpenClaw treat `vercel-ai-gateway` as a *configured* plugin, so if the
+  // plugin is ever missing the startup doctor tries to resolve it from npm.
+  // Under the steady-state egress policy npm is unreachable, and that resolution
+  // runs before the logger initializes, so the gateway hangs with an empty log.
+  //
+  // Measured 2026-08-17: env set + plugin missing + npm blocked never bound
+  // (40.8s on 2026.7.1, 54.6s on beta.7, alive on `npm view`); env unset in the
+  // same conditions bound in 7.42s. Removal verified over 3 production-config
+  // runs: port bound, health ok, agent turn returned through vercel-ai-gateway.
+  //
+  // Safe to change without re-provisioning: gatewayEnv is not an input to the
+  // runtime fingerprint below.
   const gatewayEnv = {
     OPENCLAW_GATEWAY_TOKEN: gatewayToken,
-    // The provider plugin reads AI_GATEWAY_API_KEY and sends it as a Bearer to
-    // ai-gateway.vercel.sh. This value is a placeholder: the sandbox firewall
-    // replaces that header on egress with the app's real OIDC token, so the
-    // credential never enters the VM. See lib/model-credentials.ts.
-    AI_GATEWAY_API_KEY: PLACEHOLDER_MODEL_KEY,
   };
 
   const fingerprint = createHash('sha256')
