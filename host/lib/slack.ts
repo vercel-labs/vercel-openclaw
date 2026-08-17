@@ -94,6 +94,20 @@ export function parseSlackEvent(body: unknown): SlackParseResult {
 
   const threadTs = typeof event.thread_ts === 'string' && event.thread_ts ? event.thread_ts : ts;
   const rawText = typeof event.text === 'string' ? event.text : '';
+  const text = stripMentions(rawText);
+
+  // A bare `@openclaw` with no words strips to the empty string, and an empty
+  // prompt is not a turn. Without this guard it reaches `openclaw agent
+  // --message ""`, which exits 1 with "Missing message" only AFTER a full
+  // sandbox wake, so the user gets "Something went wrong handling that" for what
+  // was really an empty question.
+  //
+  // Observed live twice on 2026-08-17 (12.6s and 5.3s of wake burned, one of them
+  // with the app already a channel member, which rules out the invite as the
+  // cause). Ignoring costs nothing and claims nothing false.
+  if (!text) {
+    return { handle: false, reason: 'mention with no message text' };
+  }
 
   return {
     handle: true,
@@ -103,7 +117,7 @@ export function parseSlackEvent(body: unknown): SlackParseResult {
       channelId,
       messageTs: ts,
       threadTs,
-      text: stripMentions(rawText),
+      text,
     },
   };
 }
