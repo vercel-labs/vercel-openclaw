@@ -2,6 +2,13 @@ import type { Sandbox } from '@vercel/sandbox';
 import { GATEWAY_PORT } from './wake';
 
 /**
+ * Ceiling for one `openclaw gateway call` round trip. Generous for a loopback
+ * WebSocket call, small enough that the idle cron can still reach its force-stop
+ * path after a failed negotiation rather than being killed mid-call.
+ */
+const GATEWAY_CALL_TIMEOUT_MS = 30_000;
+
+/**
  * Suspend logic per docs/suspension-spec.md, "Contract facts, VERIFIED
  * 2026-08-10" (read from OpenClaw 2026.7.2-beta.7's shipped code).
  *
@@ -90,10 +97,17 @@ export function createSandboxGatewayCaller(
   sandbox: Sandbox,
   token: string,
   port = GATEWAY_PORT,
+  timeoutMs = GATEWAY_CALL_TIMEOUT_MS,
 ): GatewayCaller {
   return async (method, params) => {
     const result = await sandbox.runCommand({
       cmd: 'openclaw',
+      // Bounded deliberately. These are loopback WebSocket calls that normally
+      // return in well under a second, but a wedged gateway can accept the TCP
+      // connection and never answer. Unbounded, that stalls the caller until the
+      // platform kills it, which for the idle cron means burning its whole
+      // maxDuration on one call and never reaching the force-stop path.
+      signal: AbortSignal.timeout(timeoutMs),
       args: [
         'gateway',
         'call',

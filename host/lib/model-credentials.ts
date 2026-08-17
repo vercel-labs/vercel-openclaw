@@ -101,11 +101,13 @@ export function resolveModel(
 }
 
 /**
- * Config keys that point OpenClaw's `openai` provider at AI Gateway.
+ * The single config key needed to route agent turns through AI Gateway.
  *
- * `baseUrl` has to live in config rather than an env var: per the gateway
- * authentication docs, endpoint details "belong under models.providers.<id> in
- * openclaw.json or models.json, not in auth profiles" (retrieved 2026-08-14).
+ * Only the model ref. Nothing sets an endpoint or an auth header, because the
+ * `@openclaw/vercel-ai-gateway-provider` plugin owns both. An earlier version of
+ * this repointed `models.providers.openai.baseUrl` by hand; installing the
+ * official provider plugin replaced that, so any endpoint configuration here
+ * would be redundant at best and conflicting at worst.
  *
  * Applied through `openclaw config set` rather than by writing openclaw.json
  * directly, deliberately. The image ships its own config, and a whole-file
@@ -114,15 +116,12 @@ export function resolveModel(
  * without an explicit deletion: main"). Letting OpenClaw merge its own config
  * avoids owning that problem.
  *
- * Model addressing, settled live 2026-08-14 (scripts/probe-agent-turn.ts):
- * OpenClaw is configured with the prefixed `openai/gpt-5.6-sol` and forwards
- * the bare `gpt-5.6-sol` upstream, which AI Gateway resolves. The turn returned
- * `executionTrace.winnerModel: "gpt-5.6-sol"` with `result: "success"`.
+ * Model addressing: refs take the form `vercel-ai-gateway/<upstream>/<model>`
+ * and the gateway routes on that prefix. Confirmed live 2026-08-17 under the
+ * steady-state egress policy: a turn returned `"provider": "vercel-ai-gateway"`,
+ * `"model": "openai/gpt-5.6-sol"`, `"status": "ok"`.
  */
 export function modelConfigEntries(model = resolveModel()): Array<[string, string]> {
-  // The provider plugin owns the endpoint and the auth header, so the only
-  // thing left to set is which model to use. Refs are
-  // `vercel-ai-gateway/<upstream>/<model>`; the gateway routes on that prefix.
   return [['agents.defaults.model.primary', model]];
 }
 

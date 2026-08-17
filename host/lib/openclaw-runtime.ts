@@ -54,19 +54,25 @@ export function buildOpenClawRuntime(
   // hashes RUNTIME_CONFIG_VERSION and the config shape), and ones provisioned by
   // this version already have the profile on their snapshotted disk. Either way
   // the value was a recognizable placeholder with no power, so nothing that could
-  // read it lost anything. Worse, setting it makes
-  // OpenClaw treat `vercel-ai-gateway` as a *configured* plugin, so if the
-  // plugin is ever missing the startup doctor tries to resolve it from npm.
-  // Under the steady-state egress policy npm is unreachable, and that resolution
-  // runs before the logger initializes, so the gateway hangs with an empty log.
+  // read it lost anything.
+  //
+  // Setting it also actively hurt: it makes OpenClaw treat `vercel-ai-gateway` as
+  // a *configured* plugin, so if the plugin is ever missing the startup doctor
+  // tries to resolve it from npm. Under the steady-state egress policy npm is
+  // unreachable, and that resolution runs before the logger initializes, so the
+  // gateway hangs with an empty log.
   //
   // Measured 2026-08-17: env set + plugin missing + npm blocked never bound
   // (40.8s on 2026.7.1, 54.6s on beta.7, alive on `npm view`); env unset in the
   // same conditions bound in 7.42s. Removal verified over 3 production-config
   // runs: port bound, health ok, agent turn returned through vercel-ai-gateway.
   //
-  // Safe to change without re-provisioning: gatewayEnv is not an input to the
-  // runtime fingerprint below.
+  // Caution for anyone editing this object: `gatewayEnv` is NOT an input to the
+  // fingerprint below, so a change here does not by itself trigger re-seeding or
+  // re-provisioning. The re-seed argument above only holds because this change
+  // shipped alongside a RUNTIME_CONFIG_VERSION bump. An env-only change with no
+  // version bump is safe only where the profile already exists on disk; if a
+  // future value needs the sandbox reconfigured, bump the version too.
   const gatewayEnv = {
     OPENCLAW_GATEWAY_TOKEN: gatewayToken,
   };
