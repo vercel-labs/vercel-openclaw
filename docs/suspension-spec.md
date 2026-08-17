@@ -2,7 +2,7 @@
 
 How the host app manages the OpenClaw gateway's sandbox lifecycle: when it sleeps, how it
 shuts down gracefully, and what wakes it. Designed 2026-08-10 against the cooperative host
-suspension API landing in OpenClaw 2026.7.2 (upstream PR openclaw/openclaw#103618: RPC triad
+suspension API first released in the OpenClaw 2026.7.2 beta line and reaching stable in 2026.8.1 (upstream PR openclaw/openclaw#103618: RPC triad
 `gateway.suspend.prepare` / `gateway.suspend.status` / `gateway.suspend.resume`, ~2-minute
 ready lease with auto-resume on expiry).
 
@@ -66,7 +66,7 @@ Design requirement: a mid-flight agent task MUST auto-continue after an immediat
 Rationale: the idle path can never stop mid-flight work (prepare gates it), so the only
 mid-flight stop is the ceiling roll-over, where the gap between stop and resume is seconds.
 The gateway seeing a checkpoint written moments ago should pick the task back up without a
-nudge. Whether 2026.7.2 behaves this way is contract question 2.
+nudge. Whether the 2026.8.1 line behaves this way is contract question 2.
 
 **Backstop:** if the host misses everything, the platform kills the session at `expiresAt`
 (75 min). Ungraceful but disk-safe: server-side timeout still snapshots (verified live
@@ -81,7 +81,7 @@ nudge. Whether 2026.7.2 behaves this way is contract question 2.
 2. **Cron (in scope for v1):** during shutdown, after ready and before `stop()`, host asks
    the gateway for its next scheduled job time and stores `nextWakeAt`; the host scheduler
    resumes the sandbox ~1 min before. Dependency: a next-cron-time query on the admin RPC
-   (cron projection was drafted upstream in July; whether 2026.7.2 ships it is a contract
+   (cron projection was drafted upstream in July; whether the 2026.8.1 line ships it is a contract
    question). Fallback if absent: read the gateway's cron config from disk via `runCommand`
    before stopping.
 
@@ -169,9 +169,9 @@ Two full sleep/wake cycles through the production host code against
   while held, contradicting the protocol doc's claim that status/resume operate on a held
   lease.
 
-## Open contract questions (Patrick / 2026.7.2)
+## Open contract questions (Patrick / 2026.8.1)
 
-1. Is the beta.7 contract above frozen for 2026.7.2 stable?
+1. Is the beta.7 contract above frozen for 2026.8.1 stable? (2026.7.2 never shipped stable; the beta line moved to 2026.8.1.)
 2. What happens to an interrupted (force-stopped) chat run when the gateway restarts after
    resume: retried, resumed, or dropped? (Our ceiling path depends on this; a busy agent at
    the 24h ceiling always ends in a forced stop, since prepare never drains.)
@@ -190,7 +190,7 @@ Two full sleep/wake cycles through the production host code against
    WebSocket listener closes and does not reopen at lease expiry (process survives, port 3000
    stays closed). This makes same-requestId renewal, `suspend.status`, and `suspend.resume`
    unusable while a lease is held, though the protocol doc describes them as operating on the
-   held lease. Is this known, and is it fixed in 2026.7.2 stable?
+   held lease. Is this known, and is it fixed in the 2026.8.1 line?
 
 ## Explicitly deferred (not v1)
 
