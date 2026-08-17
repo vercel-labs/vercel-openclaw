@@ -9,6 +9,8 @@
  * set; without them the in-memory fallback makes the idle path a NO-OP in
  * production and logs a warning saying so.
  */
+import { RedisRestClient, resolveRedisRestConfig } from './redis-rest';
+
 export interface ActivityStore {
   /** Record a host-visible activity event for a channel. */
   set(channel: string, timestampMs: number): Promise<void>;
@@ -35,45 +37,32 @@ export class InMemoryActivityStore implements ActivityStore {
  * same env vars). One hash holds per-channel timestamps.
  */
 export class RedisActivityStore implements ActivityStore {
-  constructor(
-    private url: string,
-    private token: string,
-    private key = 'openclaw:activity',
-  ) {}
+  private readonly client: RedisRestClient;
 
-  private async command(cmd: (string | number)[]): Promise<unknown> {
-    const res = await fetch(this.url, {
-      method: 'POST',
-      headers: {
-        authorization: `Bearer ${this.token}`,
-        'content-type': 'application/json',
-      },
-      body: JSON.stringify(cmd),
-      signal: AbortSignal.timeout(5_000),
+  constructor(url: string, token: string, private key = 'openclaw:activity') {
+    this.client = new RedisRestClient({
+      url,
+      token,
+      timeoutMs: 5_000,
+      label: 'activity store',
     });
-    if (!res.ok) {
-      throw new Error(`activity store request failed: ${res.status}`);
-    }
-    const data = (await res.json()) as { result?: unknown; error?: string };
-    if (data.error) throw new Error(`activity store error: ${data.error}`);
-    return data.result;
   }
 
   async set(channel: string, timestampMs: number): Promise<void> {
-    await this.command(['HSET', this.key, channel, String(timestampMs)]);
+    await this.client.command(['HSET', this.key, channel, String(timestampMs)]);
   }
 
   async latest(): Promise<number | undefined> {
-    const values = (await this.command(['HVALS', this.key])) as string[] | null;
+    const values = (await this.client.command(['HVALS', this.key])) as string[] | null;
     if (!values || values.length === 0) return undefined;
-    return Math.max(...values.map(Number).filter((n) => Number.isFinite(n)));
+    const timestamps = values.map(Number).filter((value) => Number.isFinite(value));
+    return timestamps.length ? Math.max(...timestamps) : undefined;
   }
 }
 
 function createDefaultStore(): ActivityStore {
-  const url = process.env.KV_REST_API_URL ?? process.env.UPSTASH_REDIS_REST_URL;
-  const token = process.env.KV_REST_API_TOKEN ?? process.env.UPSTASH_REDIS_REST_TOKEN;
-  if (url && token) return new RedisActivityStore(url, token);
+  const config = resolveRedisRestConfig();
+  if (config) return new RedisActivityStore(config.url, config.token);
   console.warn(
     'activity store: no Redis configured (KV_REST_API_URL/KV_REST_API_TOKEN); ' +
       'falling back to in-memory. The idle-suspend path DOES NOT WORK across ' +

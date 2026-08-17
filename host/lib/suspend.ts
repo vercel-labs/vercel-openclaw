@@ -1,4 +1,12 @@
 import type { Sandbox } from '@vercel/sandbox';
+import { GATEWAY_PORT } from './wake';
+
+/**
+ * Ceiling for one `openclaw gateway call` round trip. Generous for a loopback
+ * WebSocket call, small enough that the idle cron can still reach its force-stop
+ * path after a failed negotiation rather than being killed mid-call.
+ */
+const GATEWAY_CALL_TIMEOUT_MS = 30_000;
 
 /**
  * Suspend logic per docs/suspension-spec.md, "Contract facts, VERIFIED
@@ -88,11 +96,18 @@ export class GatewaySuspendUnsupportedError extends Error {
 export function createSandboxGatewayCaller(
   sandbox: Sandbox,
   token: string,
-  port = 3000,
+  port = GATEWAY_PORT,
+  timeoutMs = GATEWAY_CALL_TIMEOUT_MS,
 ): GatewayCaller {
   return async (method, params) => {
     const result = await sandbox.runCommand({
       cmd: 'openclaw',
+      // Bounded deliberately. These are loopback WebSocket calls that normally
+      // return in well under a second, but a wedged gateway can accept the TCP
+      // connection and never answer. Unbounded, that stalls the caller until the
+      // platform kills it, which for the idle cron means burning its whole
+      // maxDuration on one call and never reaching the force-stop path.
+      signal: AbortSignal.timeout(timeoutMs),
       args: [
         'gateway',
         'call',
@@ -154,7 +169,11 @@ export function createSandboxGatewayCaller(
  * error with reason "gateway-suspension-conflict" (verified shape).
  */
 export function normalizePrepareResponse(raw: unknown, nowMs: number = Date.now()): PrepareResult {
-  const value = raw as Record<string, any>;
+  const value = raw as Record<string, unknown>;
+  const error =
+    value?.error && typeof value.error === 'object'
+      ? (value.error as Record<string, unknown>)
+      : undefined;
   // Validate per branch: this JSON comes from an external process, and a
   // malformed "ready" must never be allowed to stop the sandbox.
   if (value?.status === 'ready') {
@@ -179,7 +198,11 @@ export function normalizePrepareResponse(raw: unknown, nowMs: number = Date.now(
       retryAfterMs: typeof value.retryAfterMs === 'number' ? value.retryAfterMs : 1_000,
     };
   }
-  const details = value?.error?.details ?? value?.details;
+  const rawDetails = error?.details ?? value?.details;
+  const details =
+    rawDetails && typeof rawDetails === 'object'
+      ? (rawDetails as Record<string, unknown>)
+      : undefined;
   if (details?.reason === 'gateway-suspension-conflict') {
     return {
       status: 'conflict',
@@ -188,8 +211,11 @@ export function normalizePrepareResponse(raw: unknown, nowMs: number = Date.now(
   }
   // Scheduler recovery can also surface as an UNAVAILABLE error
   // (schedulerRecoveryError in the verified beta.7 handler).
-  if (details?.reason === 'scheduler-resume-failed' || typeof value?.error?.retryAfterMs === 'number') {
-    return { status: 'recovering', retryAfterMs: value?.error?.retryAfterMs ?? 1_000 };
+  if (details?.reason === 'scheduler-resume-failed' || typeof error?.retryAfterMs === 'number') {
+    return {
+      status: 'recovering',
+      retryAfterMs: typeof error?.retryAfterMs === 'number' ? error.retryAfterMs : 1_000,
+    };
   }
   throw new Error(`unrecognized gateway.suspend.prepare response: ${JSON.stringify(raw).slice(0, 300)}`);
 }

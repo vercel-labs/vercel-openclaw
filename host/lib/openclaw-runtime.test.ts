@@ -1,98 +1,70 @@
 import { describe, expect, it } from 'vitest';
-import {
-  buildOpenClawRuntime,
-  DEFAULT_AGENT_MODEL,
-  type RuntimeEnvironment,
-} from './openclaw-runtime';
-
-function environment(overrides: RuntimeEnvironment = {}): RuntimeEnvironment {
-  return {
-    SLACK_BOT_TOKEN: 'xoxb-bot-token',
-    SLACK_SIGNING_SECRET: 'slack-signing-secret',
-    VERCEL_OIDC_TOKEN: 'oidc-token-one',
-    ...overrides,
-  };
-}
+import { buildOpenClawRuntime } from './openclaw-runtime';
 
 describe('buildOpenClawRuntime', () => {
-  it('configures Slack HTTP mode with environment-backed secret references', () => {
-    const runtime = buildOpenClawRuntime(environment(), 'gateway-token');
+  it('enables the official plugins and reaches the model through the AI Gateway provider', () => {
+    // Both plugins are installed at create because the image ships neither,
+    // verified against openclaw:latest on 2026-08-14. Enabling the Slack channel
+    // is what keeps a user's own allow/deny lists and approvals working, and the
+    // provider plugin replaces an earlier hack that repointed `openai.baseUrl`.
+    const runtime = buildOpenClawRuntime({}, 'gateway-token');
 
-    expect(runtime.gatewayEnv).toMatchObject({
+    // Only the gateway token. `AI_GATEWAY_API_KEY` must stay out: it never
+    // authenticated anything (OpenClaw reports `Shell env : off`; the profile
+    // seeded by `seedProviderPlaceholder` is what works), and setting it marks
+    // `vercel-ai-gateway` as configured, so a missing plugin sends the startup
+    // doctor to npm. npm is unreachable under the steady-state egress policy and
+    // that resolution runs before the logger starts, so the gateway hangs with
+    // an empty log. Measured 2026-08-17: never bound with it set, 7.42s without.
+    expect(runtime.gatewayEnv).toEqual({
       OPENCLAW_GATEWAY_TOKEN: 'gateway-token',
-      SLACK_BOT_TOKEN: 'xoxb-bot-token',
-      SLACK_SIGNING_SECRET: 'slack-signing-secret',
-      AI_GATEWAY_API_KEY: 'oidc-token-one',
     });
+    expect(runtime.gatewayEnv).not.toHaveProperty('AI_GATEWAY_API_KEY');
     expect(runtime.configOperations).toEqual(
       expect.arrayContaining([
         { path: 'plugins.entries.slack.enabled', value: true },
-        { path: 'channels.slack.enabled', value: true },
-        { path: 'channels.slack.mode', value: 'http' },
-        { path: 'channels.slack.webhookPath', value: '/slack/events' },
-        {
-          path: 'channels.slack.replyToModeByChatType.channel',
-          value: 'all',
-        },
-        { path: 'channels.slack.slashCommand.enabled', value: true },
-        { path: 'channels.slack.slashCommand.name', value: 'openclaw' },
         { path: 'plugins.entries.vercel-ai-gateway.enabled', value: true },
         {
-          path: 'channels.slack.botToken',
-          value: { source: 'env', provider: 'default', id: 'SLACK_BOT_TOKEN' },
+          path: 'agents.defaults.model.primary',
+          value: 'vercel-ai-gateway/openai/gpt-5.6-sol',
         },
-        {
-          path: 'channels.slack.signingSecret',
-          value: { source: 'env', provider: 'default', id: 'SLACK_SIGNING_SECRET' },
-        },
-        { path: 'agents.defaults.model.primary', value: DEFAULT_AGENT_MODEL },
       ]),
     );
-    expect(JSON.stringify(runtime.configOperations)).not.toContain('xoxb-bot-token');
-    expect(JSON.stringify(runtime.configOperations)).not.toContain('slack-signing-secret');
-    expect(runtime.needsSlackPlugin).toBe(true);
-    expect(runtime.needsAiGatewayPlugin).toBe(true);
   });
 
-  it('prefers an explicit AI Gateway key over deployment OIDC', () => {
+  it('no longer overrides the built-in openai provider endpoint', () => {
+    // The provider plugin owns the endpoint, so writing baseUrl/apiKey under
+    // models.providers.openai would be a second, conflicting source of truth.
+    const paths = buildOpenClawRuntime({}, 'gateway-token').configOperations.map((op) => op.path);
+    expect(paths).not.toContain('models.providers.openai.baseUrl');
+    expect(paths).not.toContain('models.providers.openai.apiKey');
+  });
+
+  it('does not put Slack or model credentials in the sandbox process environment', () => {
     const runtime = buildOpenClawRuntime(
-      environment({ AI_GATEWAY_API_KEY: 'explicit-ai-key' }),
+      {
+        SLACK_BOT_TOKEN: 'xoxb-obsolete',
+        SLACK_SIGNING_SECRET: 'obsolete-signing-secret',
+        AI_GATEWAY_API_KEY: 'obsolete-ai-key',
+        VERCEL_OIDC_TOKEN: 'obsolete-oidc-token',
+      },
       'gateway-token',
     );
 
-    expect(runtime.gatewayEnv.AI_GATEWAY_API_KEY).toBe('explicit-ai-key');
+    const serialized = JSON.stringify(runtime);
+    expect(serialized).not.toContain('xoxb-obsolete');
+    expect(serialized).not.toContain('obsolete-signing-secret');
+    expect(serialized).not.toContain('obsolete-ai-key');
+    expect(serialized).not.toContain('obsolete-oidc-token');
   });
 
-  it('rejects partial Slack credentials instead of starting a broken adapter', () => {
-    expect(() =>
-      buildOpenClawRuntime(
-        environment({ SLACK_BOT_TOKEN: undefined }),
-        'gateway-token',
-      ),
-    ).toThrow(/SLACK_BOT_TOKEN and SLACK_SIGNING_SECRET must be set together/);
-  });
-
-  it('rotates the gateway when its short-lived deployment OIDC token rotates', () => {
-    const first = buildOpenClawRuntime(environment(), 'gateway-token');
+  it('changes the persistent fingerprint when the model configuration changes', () => {
+    const first = buildOpenClawRuntime({}, 'gateway-token');
     const second = buildOpenClawRuntime(
-      environment({ VERCEL_OIDC_TOKEN: 'oidc-token-two' }),
+      { OPENCLAW_MODEL: 'openai/anthropic/claude-sonnet-4.5' },
       'gateway-token',
     );
 
     expect(first.fingerprint).not.toBe(second.fingerprint);
-  });
-
-  it('accepts a request-scoped OIDC token from a Vercel Function', () => {
-    const runtime = buildOpenClawRuntime(
-      environment({ VERCEL_OIDC_TOKEN: undefined }),
-      'gateway-token',
-      { aiGatewayCredential: 'request-oidc-token' },
-    );
-
-    expect(runtime.gatewayEnv.AI_GATEWAY_API_KEY).toBe('request-oidc-token');
-    expect(runtime.configOperations).toContainEqual({
-      path: 'agents.defaults.model.primary',
-      value: DEFAULT_AGENT_MODEL,
-    });
   });
 });
