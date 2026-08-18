@@ -36,7 +36,8 @@ export const OPENAI_API_BASE_URL = `https://${OPENAI_API_DOMAIN}/v1`;
  * Deliberately recognizable so it is obvious in a log or a config dump that
  * nothing secret was leaked.
  */
-export const PLACEHOLDER_MODEL_KEY = 'brokered-by-vercel-sandbox-firewall';
+export const PLACEHOLDER_MODEL_KEY =
+  'sk-vercel-firewall-brokered-placeholder-not-a-real-key';
 
 /**
  * Reads a request-scoped OIDC token already authenticated by the caller. The

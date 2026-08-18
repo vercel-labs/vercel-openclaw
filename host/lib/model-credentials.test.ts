@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   AI_GATEWAY_DOMAIN,
   OPENAI_API_DOMAIN,
+  PLACEHOLDER_MODEL_KEY,
   buildNetworkPolicy,
   readOidcToken,
 } from './model-credentials';
@@ -20,6 +21,13 @@ describe('readOidcToken', () => {
   it('prefers the request-scoped Function token over the local env fallback', () => {
     process.env.VERCEL_OIDC_TOKEN = 'local-token';
     expect(readOidcToken('request-token')).toBe('request-token');
+  });
+
+  it('uses only the approved nonsecret sentinel accepted by OpenAI auth validation', () => {
+    expect(PLACEHOLDER_MODEL_KEY).toBe(
+      'sk-vercel-firewall-brokered-placeholder-not-a-real-key',
+    );
+    expect(PLACEHOLDER_MODEL_KEY).toMatch(/^sk-[A-Za-z0-9_-]{8,}$/);
   });
 
   it('allows only AI Gateway even when a legacy extra-domain variable is present', () => {

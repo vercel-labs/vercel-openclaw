@@ -8,6 +8,9 @@ import {
 
 const openAiApiKey = process.env.OPENAI_API_KEY?.trim();
 if (!openAiApiKey) throw new Error('OPENAI_API_KEY required on the host');
+if (openAiApiKey === PLACEHOLDER_MODEL_KEY) {
+  throw new Error('The host OpenAI key must differ from the sandbox placeholder');
+}
 
 const sandbox = await Sandbox.create({
   image: process.env.OPENCLAW_IMAGE,
@@ -62,7 +65,8 @@ done
       {
         modelRequestStatus: 200,
         sandboxModelCredentialsAbsent: true,
-        sandboxCredentialValue: PLACEHOLDER_MODEL_KEY,
+        sandboxCredentialIsExactSentinel: true,
+        sandboxCredentialDiffersFromHostKey: true,
       },
       null,
       2,

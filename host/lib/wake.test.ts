@@ -207,7 +207,9 @@ describe('ensureAwake', () => {
 
     const serializedCommands = JSON.stringify(harness.state.commands);
     expect(serializedCommands).toContain('paste-api-key --provider openai');
-    expect(serializedCommands).toContain('brokered-by-vercel-sandbox-firewall');
+    expect(serializedCommands).toContain(
+      'sk-vercel-firewall-brokered-placeholder-not-a-real-key',
+    );
     expect(serializedCommands).not.toContain('host-only-openai-key');
   });
 
