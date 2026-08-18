@@ -106,6 +106,11 @@ function walkFiles(root) {
   }
   for (const entry of entries) {
     const fullPath = path.join(root, entry.name);
+    // Node's compile cache contains bytecode copies of OpenClaw source,
+    // including credential-shaped validation fixtures and regex examples. It
+    // is not runtime state and produced false positives for dozens of immutable
+    // code literals. Scan every other /tmp file and all OpenClaw state instead.
+    if (fullPath === '/tmp/node-compile-cache') continue;
     if (entry.isDirectory()) {
       walkFiles(fullPath);
       continue;
@@ -210,6 +215,7 @@ console.log(
       modelPlaceholderIsExactSentinel: true,
       modelPlaceholderDiffersFromHostKey: true,
       modelPlaceholderExactMatchCount: boundary.placeholderExactMatchCount,
+      nodeCompileCacheExcludedAsCodeArtifact: true,
       genericAgentProcessCount: boundary.genericAgentProcessCount,
       config: boundary.config,
       slackPluginEnabled: Boolean(slackBlock),
