@@ -50,7 +50,13 @@ describe('buildOpenClawRuntime', () => {
       expect.arrayContaining([
         {
           path: 'models.providers.openai.models',
-          value: [{ id: 'gpt-5.4', name: 'GPT-5.4' }],
+          value: [
+            {
+              id: 'gpt-5.4',
+              name: 'GPT-5.4',
+              agentRuntime: { id: 'openclaw' },
+            },
+          ],
         },
         { path: 'agents.defaults.model.primary', value: 'openai/gpt-5.4' },
       ]),

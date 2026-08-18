@@ -163,7 +163,17 @@ export function modelConfigEntries(model = resolveModel()): Array<[string, unkno
     // its official endpoint and the firewall still owns the real credential.
     entries.push([
       'models.providers.openai.models',
-      [{ id: modelId, name: modelId.toUpperCase() }],
+      [
+        {
+          id: modelId,
+          name: modelId.toUpperCase(),
+          // Direct OpenAI API-key traffic belongs to OpenClaw's built-in model
+          // loop. Without this, canonical openai/* refs may implicitly select
+          // the optional Codex runtime and block startup when that plugin is
+          // intentionally absent from the credentialless sandbox.
+          agentRuntime: { id: 'openclaw' },
+        },
+      ],
     ]);
   }
   entries.push(['agents.defaults.model.primary', model]);
