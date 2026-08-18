@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { AI_GATEWAY_DOMAIN, buildNetworkPolicy, readOidcToken } from './model-credentials';
+import {
+  AI_GATEWAY_DOMAIN,
+  OPENAI_API_DOMAIN,
+  buildNetworkPolicy,
+  readOidcToken,
+} from './model-credentials';
 
 describe('readOidcToken', () => {
   const original = process.env.VERCEL_OIDC_TOKEN;
@@ -38,6 +43,29 @@ describe('readOidcToken', () => {
     expect(policy.allow['host.example']).toEqual([]);
   });
 
+  it('brokers a host-owned OpenAI key only for OpenAI API egress', () => {
+    const policy = buildNetworkPolicy(
+      'request-token',
+      'https://host.example/api/slack-proxy/',
+      'host-only-openai-key',
+    ) as { allow: Record<string, unknown[]> };
+
+    expect(Object.keys(policy.allow)).toEqual([
+      AI_GATEWAY_DOMAIN,
+      OPENAI_API_DOMAIN,
+      'host.example',
+    ]);
+    expect(JSON.stringify(policy.allow[OPENAI_API_DOMAIN])).toContain(
+      'Bearer host-only-openai-key',
+    );
+    expect(JSON.stringify(policy.allow[AI_GATEWAY_DOMAIN])).not.toContain(
+      'host-only-openai-key',
+    );
+    expect(JSON.stringify(policy.allow['host.example'])).not.toContain(
+      'host-only-openai-key',
+    );
+  });
+
   it('rejects a non-HTTPS native Slack host bridge', () => {
     expect(() =>
       buildNetworkPolicy('request-token', 'http://host.example/api/slack-proxy/'),
@@ -50,6 +78,16 @@ describe('readOidcToken', () => {
         'request-token',
         `https://${AI_GATEWAY_DOMAIN}/api/slack-proxy/`,
       ),
-    ).toThrow(/must not use the AI Gateway hostname/);
+    ).toThrow(/must not use a model API hostname/);
+  });
+
+  it('rejects the OpenAI hostname as the native Slack host bridge', () => {
+    expect(() =>
+      buildNetworkPolicy(
+        'request-token',
+        `https://${OPENAI_API_DOMAIN}/api/slack-proxy/`,
+        'host-only-openai-key',
+      ),
+    ).toThrow(/must not use a model API hostname/);
   });
 });

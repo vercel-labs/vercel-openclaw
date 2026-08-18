@@ -117,6 +117,8 @@ describe('ensureAwake', () => {
     process.env.OPENCLAW_GATEWAY_TOKEN = 'gateway-token';
     delete process.env.OPENCLAW_SLACK_HOST_BRIDGE_TOKEN;
     delete process.env.OPENCLAW_SLACK_HOST_BRIDGE_API_URL;
+    delete process.env.OPENAI_API_KEY;
+    delete process.env.OPENCLAW_MODEL;
   });
 
   it('stops the gateway before opening npm egress, even on a running sandbox', async () => {
@@ -188,6 +190,25 @@ describe('ensureAwake', () => {
       return (command as { args?: string[] }).args?.includes('--batch-json');
     });
     expect(configurationCommands).toHaveLength(1);
+  });
+
+  it('brokers an OpenAI key in the firewall and seeds only a placeholder in the VM', async () => {
+    process.env.OPENAI_API_KEY = 'host-only-openai-key';
+    process.env.OPENCLAW_MODEL = 'openai/gpt-5.6-sol';
+
+    await ensureAwake('openai-firewall-broker', {
+      oidcToken: 'request-token',
+      budget: { deadlineMs: Date.now() + 60_000, replyReserveMs: 15_000 },
+    });
+
+    const serializedPolicies = JSON.stringify(harness.state.policies);
+    expect(serializedPolicies).toContain('api.openai.com');
+    expect(serializedPolicies).toContain('Bearer host-only-openai-key');
+
+    const serializedCommands = JSON.stringify(harness.state.commands);
+    expect(serializedCommands).toContain('paste-api-key --provider openai');
+    expect(serializedCommands).toContain('brokered-by-vercel-sandbox-firewall');
+    expect(serializedCommands).not.toContain('host-only-openai-key');
   });
 
   it('preserves preinstalled plugin packages and a native Slack overlay', async () => {

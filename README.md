@@ -37,7 +37,7 @@ The control plane that makes an OpenClaw sandbox sleep between messages and wake
 - `app/api/cron/idle-check/route.ts` — the scheduler ([`vercel.json`](host/vercel.json), every 5 min): 60 minutes without host-visible activity triggers the suspend attempt.
 - `lib/wake.ts` — `ensureAwake()`: resume or create the sandbox, refresh the request-scoped egress policy, migrate versioned persistent config, restart the gateway when needed, and health-check it.
 - `lib/agent.ts` — `runAgentTurn()`: used only by the default host-owned mode. It runs one turn as `openclaw agent --message ... --json` inside the VM and returns the reply. Native mode never invokes this path; the Slack plugin starts the agent turn through its normal channel pipeline.
-- `lib/model-credentials.ts` — the egress policy. Model access is brokered at the firewall: OpenClaw is configured with a placeholder key and the firewall swaps in the app's Vercel OIDC token on the way to AI Gateway, so no model credential ever enters the sandbox.
+- `lib/model-credentials.ts` — the egress policy. Model access is brokered at the firewall: OpenClaw is configured with a placeholder key and the firewall swaps in either the app's Vercel OIDC token for AI Gateway or a host-owned OpenAI key for `api.openai.com`, so no model credential ever enters the sandbox.
 - `lib/suspend.ts` — the verified `gateway.suspend.*` contract (2026.7.2-beta.7): prepare as idle-fence, 2-minute lease, busy/ready/conflict/recovering handling, ceiling force-stop.
 - `lib/activity.ts` + tests — the idle clock: which events reset it, 60-minute threshold, extend-timeout rules.
 
@@ -52,6 +52,7 @@ It's a headless API-only Next.js app. Deploy with the Vercel project's **Root Di
 | `OPENCLAW_SANDBOX_NAME` | Sandbox name (default `openclaw`) |
 | `OPENCLAW_IMAGE` | Image override (default `openclaw-foundation/openclaw/openclaw:latest`) |
 | `OPENCLAW_MODEL` | Model for agent turns (default `vercel-ai-gateway/openai/gpt-5.6-sol`), addressed through the official Vercel AI Gateway plugin |
+| `OPENAI_API_KEY` | Optional host-only OpenAI key. When `OPENCLAW_MODEL` uses `openai/*`, the Sandbox firewall injects this key on egress to `api.openai.com`; the sandbox receives only the placeholder. |
 | `OPENCLAW_SLACK_HOST_BRIDGE_TOKEN` | PoC-only host assertion shared with the sandbox. Set together with the API URL to activate native mode; this is not a Slack credential |
 | `OPENCLAW_SLACK_HOST_BRIDGE_API_URL` | PoC-only HTTPS base URL for the host Slack API proxy. Its host is allowlisted without AI Gateway credential injection |
 | `CRON_SECRET` | Protects the cron route when set |

@@ -11,11 +11,11 @@ import type { NetworkPolicy } from '@vercel/sandbox';
  * never enter the sandbox scope" (vercel.com/docs/sandbox/concepts/firewall,
  * retrieved 2026-08-14).
  *
- * The credential itself is the app's own Vercel OIDC token, because AI Gateway
- * accepts one in place of an API key ("OIDC token: Use your Vercel OIDC token
- * with the Authorization: Bearer <token> header",
- * vercel.com/docs/ai-gateway/sdks-and-apis/openai-chat-completions, retrieved
- * 2026-08-14). So there is no static API key anywhere in the system.
+ * AI Gateway accepts the app's own Vercel OIDC token in place of an API key
+ * (vercel.com/docs/ai-gateway/sdks-and-apis/openai-chat-completions, retrieved
+ * 2026-08-14). A deployment that cannot use AI Gateway may instead keep an
+ * OpenAI key in the Vercel host and broker it only for api.openai.com. In both
+ * cases the real credential remains outside the sandbox.
  *
  * Function OIDC tokens are request-scoped and short-lived, so the host refreshes
  * the firewall policy before each turn instead of persisting the token anywhere
@@ -24,6 +24,8 @@ import type { NetworkPolicy } from '@vercel/sandbox';
 
 export const AI_GATEWAY_DOMAIN = 'ai-gateway.vercel.sh';
 export const AI_GATEWAY_BASE_URL = `https://${AI_GATEWAY_DOMAIN}/v1`;
+export const OPENAI_API_DOMAIN = 'api.openai.com';
+export const OPENAI_API_BASE_URL = `https://${OPENAI_API_DOMAIN}/v1`;
 
 /**
  * Value handed to OpenClaw as its provider "API key". It is never a valid
@@ -67,15 +69,14 @@ export function readOidcToken(requestToken?: string): string {
  *    policy with ranges but no domains leaves the resolver open, and data can
  *    leave over DNS lookups alone.
  *
- * The injection rule carries no `match`, so every request to the gateway gets
- * our token. That is intentional rather than lax: there is no case where an
- * un-authenticated request to AI Gateway should succeed, and AI Gateway treats
- * a supplied API key as taking precedence "even if the API key is invalid", so
- * a request that slipped past injection would fail rather than fall back.
+ * The injection rules carry no `match`, so every request to either model host
+ * gets its host-owned credential. That is intentional rather than lax: neither
+ * model host has a valid unauthenticated request path for the agent.
  */
 export function buildNetworkPolicy(
   oidcToken: string,
   hostBridgeApiUrl?: string,
+  openAiApiKey?: string,
 ): NetworkPolicy {
   const allow: Record<string, unknown[]> = {
     [AI_GATEWAY_DOMAIN]: [
@@ -84,6 +85,13 @@ export function buildNetworkPolicy(
       },
     ],
   };
+  if (openAiApiKey) {
+    allow[OPENAI_API_DOMAIN] = [
+      {
+        transform: [{ headers: { authorization: `Bearer ${openAiApiKey}` } }],
+      },
+    ];
+  }
   if (hostBridgeApiUrl) {
     const hostBridgeUrl = new URL(hostBridgeApiUrl);
     if (
@@ -95,13 +103,16 @@ export function buildNetworkPolicy(
         'OPENCLAW_SLACK_HOST_BRIDGE_API_URL must be an HTTPS URL without userinfo',
       );
     }
-    if (hostBridgeUrl.hostname === AI_GATEWAY_DOMAIN) {
+    if (
+      hostBridgeUrl.hostname === AI_GATEWAY_DOMAIN ||
+      hostBridgeUrl.hostname === OPENAI_API_DOMAIN
+    ) {
       throw new Error(
-        'OPENCLAW_SLACK_HOST_BRIDGE_API_URL must not use the AI Gateway hostname',
+        'OPENCLAW_SLACK_HOST_BRIDGE_API_URL must not use a model API hostname',
       );
     }
     // The Slack bridge receives the sandbox's narrow assertion unchanged.
-    // Model OIDC injection remains scoped exclusively to AI Gateway.
+    // Model credential injection remains scoped exclusively to model hosts.
     allow[hostBridgeUrl.hostname] = [];
   }
   return { allow } as NetworkPolicy;
@@ -182,8 +193,9 @@ const NPM_DOMAINS = ['registry.npmjs.org', '*.npmjs.org'];
 export function buildInstallNetworkPolicy(
   oidcToken: string,
   hostBridgeApiUrl?: string,
+  openAiApiKey?: string,
 ): NetworkPolicy {
-  const base = buildNetworkPolicy(oidcToken, hostBridgeApiUrl) as {
+  const base = buildNetworkPolicy(oidcToken, hostBridgeApiUrl, openAiApiKey) as {
     allow: Record<string, unknown[]>;
   };
   const allow = { ...base.allow };

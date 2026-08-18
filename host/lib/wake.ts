@@ -95,10 +95,11 @@ async function ensureAwakeUncached(
   // network policy rather than anything inside the VM. Read once per wake: the
   // token is short-lived and every session gets a fresh one.
   const oidcToken = readOidcToken(options.oidcToken);
+  const openAiApiKey = process.env.OPENAI_API_KEY?.trim() || undefined;
   const hostBridgeApiUrl = options.exposeGatewayPort
     ? process.env.OPENCLAW_SLACK_HOST_BRIDGE_API_URL
     : undefined;
-  const networkPolicy = buildNetworkPolicy(oidcToken, hostBridgeApiUrl);
+  const networkPolicy = buildNetworkPolicy(oidcToken, hostBridgeApiUrl, openAiApiKey);
   let sandbox: Sandbox | undefined;
   for (let attempt = 1; ; attempt++) {
     try {
@@ -159,6 +160,7 @@ async function ensureAwakeUncached(
     desiredMarker,
     budget,
     oidcToken,
+    openAiApiKey,
     hostBridgeApiUrl,
     Boolean(options.exposeGatewayPort),
   );
@@ -202,6 +204,7 @@ async function installPlugins(
   oidcToken: string,
   budget: ExecutionBudget,
   hostBridgeApiUrl?: string,
+  openAiApiKey?: string,
 ): Promise<void> {
   const missing: Array<(typeof PLUGIN_SPECS)[number]> = [];
   for (const spec of PLUGIN_SPECS) {
@@ -222,7 +225,7 @@ async function installPlugins(
     'open npm egress for plugin install',
     async (signal) =>
       sandbox.updateNetworkPolicy(
-        buildInstallNetworkPolicy(oidcToken, hostBridgeApiUrl),
+        buildInstallNetworkPolicy(oidcToken, hostBridgeApiUrl, openAiApiKey),
         { signal },
       ),
     { capMs: 15_000 },
@@ -249,7 +252,7 @@ async function installPlugins(
       'restore steady-state egress policy',
       async (signal) =>
         sandbox.updateNetworkPolicy(
-          buildNetworkPolicy(oidcToken, hostBridgeApiUrl),
+          buildNetworkPolicy(oidcToken, hostBridgeApiUrl, openAiApiKey),
           { signal },
         ),
       { capMs: 15_000 },
@@ -279,13 +282,14 @@ async function installPlugins(
 async function seedProviderPlaceholder(
   sandbox: Sandbox,
   budget: ExecutionBudget,
+  provider: string,
 ): Promise<void> {
   const result = await sandbox.runCommand({
     cmd: 'sh',
     args: [
       '-c',
       `printf '%s\\n' '${PLACEHOLDER_MODEL_KEY}' | ` +
-        `openclaw models auth paste-api-key --provider vercel-ai-gateway`,
+        `openclaw models auth paste-api-key --provider ${provider}`,
     ],
     ...operationAbortOptions(budget, 'register provider placeholder', { capMs: 60_000 }),
   });
@@ -356,6 +360,7 @@ async function ensureRuntimeReady(
   desiredMarker: string,
   budget: ExecutionBudget,
   oidcToken: string,
+  openAiApiKey: string | undefined,
   hostBridgeApiUrl: string | undefined,
   requireSlackRoute: boolean,
 ): Promise<boolean> {
@@ -388,9 +393,9 @@ async function ensureRuntimeReady(
     await stopGateway(sandbox, budget);
     // Inspect before installing. The native PoC overlays its tarball onto an
     // official Slack install; a blind reinstall here would silently erase it.
-    await installPlugins(sandbox, oidcToken, budget, hostBridgeApiUrl);
+    await installPlugins(sandbox, oidcToken, budget, hostBridgeApiUrl, openAiApiKey);
     if (!configurationCurrent) {
-      await seedProviderPlaceholder(sandbox, budget);
+      await seedProviderPlaceholder(sandbox, budget, runtime.modelProvider);
     }
     await startGateway(sandbox, token, {
       appendLog: true,

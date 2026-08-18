@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { modelConfigEntries, resolveModel } from './model-credentials';
 
-const RUNTIME_CONFIG_VERSION = 8;
+const RUNTIME_CONFIG_VERSION = 9;
 
 export type RuntimeEnvironment = Record<string, string | undefined>;
 
@@ -13,6 +13,7 @@ export interface ConfigOperation {
 export interface OpenClawRuntime {
   gatewayEnv: Record<string, string>;
   configOperations: ConfigOperation[];
+  modelProvider: string;
   fingerprint: string;
 }
 
@@ -37,6 +38,10 @@ export function buildOpenClawRuntime(
   gatewayToken: string,
 ): OpenClawRuntime {
   const model = resolveModel(env);
+  const modelProvider = model.split('/', 1)[0]?.trim();
+  if (!modelProvider || !/^[a-z0-9-]+$/.test(modelProvider)) {
+    throw new Error(`Unsupported model provider in ${model}`);
+  }
   const slackHostBridgeToken = env.OPENCLAW_SLACK_HOST_BRIDGE_TOKEN;
   const slackHostBridgeApiUrl = env.OPENCLAW_SLACK_HOST_BRIDGE_API_URL;
   if (Boolean(slackHostBridgeToken) !== Boolean(slackHostBridgeApiUrl)) {
@@ -124,5 +129,5 @@ export function buildOpenClawRuntime(
     )
     .digest('hex');
 
-  return { gatewayEnv, configOperations, fingerprint };
+  return { gatewayEnv, configOperations, modelProvider, fingerprint };
 }
