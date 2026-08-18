@@ -40,6 +40,27 @@ describe('buildOpenClawRuntime', () => {
     expect(paths).not.toContain('models.providers.openai.apiKey');
   });
 
+  it('declares a direct OpenAI model without putting its endpoint or key in the VM', () => {
+    const runtime = buildOpenClawRuntime(
+      { OPENCLAW_MODEL: 'openai/gpt-5.4', OPENAI_API_KEY: 'host-only-key' },
+      'gateway-token',
+    );
+
+    expect(runtime.configOperations).toEqual(
+      expect.arrayContaining([
+        {
+          path: 'models.providers.openai.models',
+          value: [{ id: 'gpt-5.4', name: 'GPT-5.4' }],
+        },
+        { path: 'agents.defaults.model.primary', value: 'openai/gpt-5.4' },
+      ]),
+    );
+    expect(JSON.stringify(runtime)).not.toContain('host-only-key');
+    const paths = runtime.configOperations.map((operation) => operation.path);
+    expect(paths).not.toContain('models.providers.openai.baseUrl');
+    expect(paths).not.toContain('models.providers.openai.apiKey');
+  });
+
   it('does not put Slack or model credentials in the sandbox process environment', () => {
     const runtime = buildOpenClawRuntime(
       {

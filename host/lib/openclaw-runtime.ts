@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { modelConfigEntries, resolveModel } from './model-credentials';
 
-const RUNTIME_CONFIG_VERSION = 9;
+const RUNTIME_CONFIG_VERSION = 10;
 
 export type RuntimeEnvironment = Record<string, string | undefined>;
 

@@ -154,8 +154,20 @@ export function resolveModel(
  * steady-state egress policy: a turn returned `"provider": "vercel-ai-gateway"`,
  * `"model": "openai/gpt-5.6-sol"`, `"status": "ok"`.
  */
-export function modelConfigEntries(model = resolveModel()): Array<[string, string]> {
-  return [['agents.defaults.model.primary', model]];
+export function modelConfigEntries(model = resolveModel()): Array<[string, unknown]> {
+  const entries: Array<[string, unknown]> = [];
+  if (model.startsWith('openai/')) {
+    const modelId = model.slice('openai/'.length);
+    // The stock image's direct OpenAI catalog is empty until a model overlay is
+    // configured. Declare only model identity; the built-in provider still owns
+    // its official endpoint and the firewall still owns the real credential.
+    entries.push([
+      'models.providers.openai.models',
+      [{ id: modelId, name: modelId.toUpperCase() }],
+    ]);
+  }
+  entries.push(['agents.defaults.model.primary', model]);
+  return entries;
 }
 
 /**
