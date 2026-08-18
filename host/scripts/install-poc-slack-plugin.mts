@@ -2,6 +2,10 @@ import { readFile } from 'node:fs/promises';
 import { basename, resolve } from 'node:path';
 import { Sandbox } from '@vercel/sandbox';
 
+// The PoC archive is built from an unreleased OpenClaw head. Seed trust with
+// the closest published official package, then overlay the reviewed bytes.
+const OFFICIAL_SLACK_TRUST_SEED = '@openclaw/slack@2026.8.1-beta.2';
+
 const archiveArg = process.argv[2];
 if (!archiveArg) {
   throw new Error('usage: install-poc-slack-plugin.mts <npm-pack.tgz>');
@@ -44,8 +48,6 @@ if (
 ) {
   throw new Error('Slack PoC archive must be an @openclaw/slack package');
 }
-const officialSlackPlugin = `@openclaw/slack@${archiveManifest.version}`;
-
 const version = await sandbox.runCommand({
   cmd: 'openclaw',
   args: ['--version'],
@@ -72,7 +74,7 @@ if (clearBridge.exitCode !== 0) {
 
 const install = await sandbox.runCommand({
   cmd: 'openclaw',
-  args: ['plugins', 'install', officialSlackPlugin, '--pin', '--force'],
+  args: ['plugins', 'install', OFFICIAL_SLACK_TRUST_SEED, '--pin', '--force'],
 });
 if (install.exitCode !== 0) {
   const stderr = await install.stderr();
@@ -87,7 +89,9 @@ const packageProbe = await sandbox.runCommand({
   ],
 });
 const packagePaths = (await packageProbe.stdout()).trim().split('\n').filter(Boolean);
-const officialVersion = archiveManifest.version;
+const officialVersion = OFFICIAL_SLACK_TRUST_SEED.slice(
+  OFFICIAL_SLACK_TRUST_SEED.lastIndexOf('@') + 1,
+);
 let packageJsonPath: string | undefined;
 for (const candidate of packagePaths) {
   const versionProbe = await sandbox.runCommand({
