@@ -4,7 +4,7 @@ import { after, NextRequest, NextResponse } from 'next/server';
 import { decideAccess } from '@/lib/access';
 import { defaultActivityStore } from '@/lib/activity-store';
 import { runAgentTurn, slackSessionKey } from '@/lib/agent';
-import { createConnectWebhookHandler } from '@/lib/connect-webhook-handler';
+import { createConnectWebhookHandler } from '../../../lib/connect-webhook-handler';
 import { claimEvent } from '@/lib/dedupe';
 import {
   createExecutionBudget,
@@ -19,17 +19,20 @@ import {
   type SlackReplyTarget,
   type SlackThreadMessage,
 } from '@/lib/slack';
-import { processVerifiedSlackWebhook } from '@/lib/slack-connect-processor';
+import { processVerifiedSlackWebhook } from '../../../lib/slack-connect-processor';
 import { ensureAwake, topUpSessionTimeout } from '@/lib/wake';
 
 /**
  * POST /api/slack
  *
  * The Connect front door. Vercel Connect owns the Slack app, verifies Slack's
- * signature at its own intake, and forwards the event here. This app owns the
- * channel: it decides whether to act, hands OpenClaw only the message text, and
- * posts the reply itself with a token minted per call. No Slack credential ever
- * enters the sandbox.
+ * signature at its own intake, and forwards the event here. The default path
+ * keeps the host-owned channel from PR #2: it applies policy, hands OpenClaw
+ * only message text, and posts the reply itself. The PoC native path activates
+ * only when the complete host bridge is configured; it forwards the exact raw
+ * Slack envelope into `/slack/events`, where OpenClaw's Slack plugin applies
+ * `channels.slack.*`, and proxies that plugin's Web API calls through Connect.
+ * Neither mode puts a Slack credential in the sandbox.
  *
  * Order matters. Verification comes first so unauthenticated traffic cannot wake
  * compute or reset the idle clock. Access and de-duplication come before the

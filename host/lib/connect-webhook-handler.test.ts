@@ -11,7 +11,9 @@ describe('createConnectWebhookHandler', () => {
       '{ "type": "event_callback", "event_id": "Ev1", "event": { "type": "app_mention" } }\n';
     const scheduled: Array<() => void | Promise<void>> = [];
     const verify = vi.fn(async () => true);
-    const processVerifiedWebhook = vi.fn(async (_message: BackgroundConnectWebhook) => {});
+    const processVerifiedWebhook = vi.fn(async (message: BackgroundConnectWebhook) => {
+      void message;
+    });
     const logger = vi.fn();
     const handler = createConnectWebhookHandler({
       verify,

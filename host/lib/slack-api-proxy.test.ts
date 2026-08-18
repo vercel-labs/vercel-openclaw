@@ -4,11 +4,14 @@ import { createSlackApiProxy, HOST_AUTH_HEADER } from './slack-api-proxy';
 describe('createSlackApiProxy', () => {
   it('replaces host authentication with a short-lived Slack token', async () => {
     const fetcher = vi.fn(
-      async (_input: string | URL | Request, _init?: RequestInit): Promise<Response> =>
-        new Response('{"ok":true}', {
+      async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+        void input;
+        void init;
+        return new Response('{"ok":true}', {
           status: 200,
           headers: { 'content-type': 'application/json', 'x-slack-req-id': 'req-1' },
-        }),
+        });
+      },
     );
     const slackToken = vi.fn(async () => 'xoxb-short-lived');
     const logger = vi.fn();
@@ -52,11 +55,14 @@ describe('createSlackApiProxy', () => {
 
   it('removes Bolt-style token overrides before forwarding to Slack', async () => {
     const fetcher = vi.fn(
-      async (_input: string | URL | Request, _init?: RequestInit): Promise<Response> =>
-        new Response('{"ok":true}', {
+      async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+        void input;
+        void init;
+        return new Response('{"ok":true}', {
           status: 200,
           headers: { 'content-type': 'application/json' },
-        }),
+        });
+      },
     );
     const proxy = createSlackApiProxy({
       bridgeToken: () => 'host-secret',
@@ -86,11 +92,14 @@ describe('createSlackApiProxy', () => {
 
   it('removes JSON token overrides while preserving method arguments', async () => {
     const fetcher = vi.fn(
-      async (_input: string | URL | Request, _init?: RequestInit): Promise<Response> =>
-        new Response('{"ok":true}', {
+      async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+        void input;
+        void init;
+        return new Response('{"ok":true}', {
           status: 200,
           headers: { 'content-type': 'application/json' },
-        }),
+        });
+      },
     );
     const proxy = createSlackApiProxy({
       bridgeToken: () => 'host-secret',
@@ -119,11 +128,14 @@ describe('createSlackApiProxy', () => {
 
   it('removes multipart token overrides while preserving method arguments', async () => {
     const fetcher = vi.fn(
-      async (_input: string | URL | Request, _init?: RequestInit): Promise<Response> =>
-        new Response('{"ok":true}', {
+      async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+        void input;
+        void init;
+        return new Response('{"ok":true}', {
           status: 200,
           headers: { 'content-type': 'application/json' },
-        }),
+        });
+      },
     );
     const proxy = createSlackApiProxy({
       bridgeToken: () => 'host-secret',

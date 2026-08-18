@@ -31,6 +31,9 @@ export async function processVerifiedSlackWebhook({
       oidcToken,
       exposeGatewayPort: true,
     });
+    if (!awake.baseUrl) {
+      throw new Error('native Slack wake did not expose the gateway port');
+    }
     baseUrl = awake.baseUrl;
     await topUpSessionTimeout(awake.sandbox);
   }

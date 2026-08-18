@@ -17,6 +17,9 @@ const mocks = vi.hoisted(() => ({
   postSlackReaction: vi.fn(async () => undefined),
   removeSlackReaction: vi.fn(async () => undefined),
   postSlackReply: vi.fn(async () => undefined),
+  processVerifiedSlackWebhook: vi.fn(async (message: unknown) => {
+    void message;
+  }),
 }));
 
 vi.mock('next/server', async (importOriginal) => {
@@ -64,6 +67,9 @@ vi.mock('@/lib/slack', () => ({
   postSlackReply: mocks.postSlackReply,
   removeSlackReaction: mocks.removeSlackReaction,
 }));
+vi.mock('../../../lib/slack-connect-processor', () => ({
+  processVerifiedSlackWebhook: mocks.processVerifiedSlackWebhook,
+}));
 vi.mock('@/lib/wake', () => ({
   ensureAwake: mocks.ensureAwake,
   topUpSessionTimeout: mocks.topUpSessionTimeout,
@@ -89,9 +95,12 @@ describe('POST /api/slack', () => {
     mocks.postSlackReaction.mockReset().mockResolvedValue(undefined);
     mocks.removeSlackReaction.mockReset().mockResolvedValue(undefined);
     mocks.postSlackReply.mockReset().mockResolvedValue(undefined);
+    mocks.processVerifiedSlackWebhook.mockReset().mockResolvedValue(undefined);
     mocks.tasks.length = 0;
     process.env.OPENCLAW_GATEWAY_TOKEN = 'gateway-token';
     process.env.SLACK_CONNECTOR = 'slack/openclaw';
+    delete process.env.OPENCLAW_SLACK_HOST_BRIDGE_TOKEN;
+    delete process.env.OPENCLAW_SLACK_HOST_BRIDGE_API_URL;
   });
 
   it('rejects an unverified delivery before access checks or wake work', async () => {
@@ -173,6 +182,42 @@ describe('POST /api/slack', () => {
       },
       { vercelToken: 'verified-runtime-oidc-token' },
     );
+  });
+
+  it('routes a verified native-mode envelope without invoking openclaw agent', async () => {
+    process.env.OPENCLAW_SLACK_HOST_BRIDGE_TOKEN = 'host-bridge-token';
+    process.env.OPENCLAW_SLACK_HOST_BRIDGE_API_URL =
+      'https://host.example/api/slack-proxy/';
+    const rawBody =
+      '{ "type": "event_callback", "event_id": "Ev-native", "event": { "type": "app_mention" } }\n';
+
+    const response = await POST(
+      new NextRequest('https://example.test/api/slack', {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer verified-runtime-oidc-token',
+          'content-type': 'application/json',
+        },
+        body: rawBody,
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(mocks.tasks).toHaveLength(1);
+    expect(mocks.accessDecision).not.toHaveBeenCalled();
+    expect(mocks.claimEvent).not.toHaveBeenCalled();
+    expect(mocks.runAgentTurn).not.toHaveBeenCalled();
+
+    await mocks.tasks[0]();
+    expect(mocks.processVerifiedSlackWebhook).toHaveBeenCalledOnce();
+    const forwarded = mocks.processVerifiedSlackWebhook.mock.calls[0]![0] as {
+      rawBody: ArrayBuffer;
+      oidcToken: string;
+      headers: Headers;
+    };
+    expect(Buffer.from(forwarded.rawBody).toString('utf8')).toBe(rawBody);
+    expect(forwarded.oidcToken).toBe('verified-runtime-oidc-token');
+    expect(forwarded.headers.has('authorization')).toBe(false);
   });
 
   it('acknowledges without waiting for the activity store', async () => {

@@ -73,19 +73,40 @@ export function readOidcToken(requestToken?: string): string {
  * a supplied API key as taking precedence "even if the API key is invalid", so
  * a request that slipped past injection would fail rather than fall back.
  */
-export function buildNetworkPolicy(oidcToken: string): NetworkPolicy {
-  return {
-    allow: {
-      [AI_GATEWAY_DOMAIN]: [
-        {
-          transform: [{ headers: { authorization: `Bearer ${oidcToken}` } }],
-        },
-      ],
-    },
+export function buildNetworkPolicy(
+  oidcToken: string,
+  hostBridgeApiUrl?: string,
+): NetworkPolicy {
+  const allow: Record<string, unknown[]> = {
+    [AI_GATEWAY_DOMAIN]: [
+      {
+        transform: [{ headers: { authorization: `Bearer ${oidcToken}` } }],
+      },
+    ],
   };
+  if (hostBridgeApiUrl) {
+    const hostBridgeUrl = new URL(hostBridgeApiUrl);
+    if (
+      hostBridgeUrl.protocol !== 'https:' ||
+      hostBridgeUrl.username ||
+      hostBridgeUrl.password
+    ) {
+      throw new Error(
+        'OPENCLAW_SLACK_HOST_BRIDGE_API_URL must be an HTTPS URL without userinfo',
+      );
+    }
+    if (hostBridgeUrl.hostname === AI_GATEWAY_DOMAIN) {
+      throw new Error(
+        'OPENCLAW_SLACK_HOST_BRIDGE_API_URL must not use the AI Gateway hostname',
+      );
+    }
+    // The Slack bridge receives the sandbox's narrow assertion unchanged.
+    // Model OIDC injection remains scoped exclusively to AI Gateway.
+    allow[hostBridgeUrl.hostname] = [];
+  }
+  return { allow } as NetworkPolicy;
 }
 
-/** Default model, addressed through the `openai` provider we repoint at AI Gateway. */
 /**
  * Model ref for the official AI Gateway provider plugin. Refs take the form
  * `vercel-ai-gateway/<upstream-provider>/<model>` and the gateway routes on that
@@ -158,8 +179,13 @@ const NPM_DOMAINS = ['registry.npmjs.org', '*.npmjs.org'];
  * reachable. Policies can be swapped on a running sandbox, which is what makes
  * this two-phase approach possible.
  */
-export function buildInstallNetworkPolicy(oidcToken: string): NetworkPolicy {
-  const base = buildNetworkPolicy(oidcToken) as { allow: Record<string, unknown[]> };
+export function buildInstallNetworkPolicy(
+  oidcToken: string,
+  hostBridgeApiUrl?: string,
+): NetworkPolicy {
+  const base = buildNetworkPolicy(oidcToken, hostBridgeApiUrl) as {
+    allow: Record<string, unknown[]>;
+  };
   const allow = { ...base.allow };
   for (const domain of NPM_DOMAINS) allow[domain] = [];
   return { allow } as NetworkPolicy;

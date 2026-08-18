@@ -1,7 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { basename, resolve } from 'node:path';
 import { Sandbox } from '@vercel/sandbox';
-import { OPENCLAW_SLACK_PLUGIN } from '../lib/openclaw-runtime';
 
 const archiveArg = process.argv[2];
 if (!archiveArg) {
@@ -20,12 +19,32 @@ const sandbox = await Sandbox.getOrCreate({
   image,
   persistent: true,
   timeout: 45 * 60 * 1000,
-  ports: [3000],
+  ports: [18789],
 });
 
 await sandbox.writeFiles([
   { path: remotePath, content: await readFile(archivePath) },
 ]);
+
+const archiveManifestProbe = await sandbox.runCommand({
+  cmd: 'tar',
+  args: ['-xOf', remotePath, 'package/package.json'],
+});
+if (archiveManifestProbe.exitCode !== 0) {
+  throw new Error('Slack PoC archive has no package/package.json');
+}
+const archiveManifest = JSON.parse(await archiveManifestProbe.stdout()) as {
+  name?: unknown;
+  version?: unknown;
+};
+if (
+  archiveManifest.name !== '@openclaw/slack' ||
+  typeof archiveManifest.version !== 'string' ||
+  !archiveManifest.version
+) {
+  throw new Error('Slack PoC archive must be an @openclaw/slack package');
+}
+const officialSlackPlugin = `@openclaw/slack@${archiveManifest.version}`;
 
 const version = await sandbox.runCommand({
   cmd: 'openclaw',
@@ -53,7 +72,7 @@ if (clearBridge.exitCode !== 0) {
 
 const install = await sandbox.runCommand({
   cmd: 'openclaw',
-  args: ['plugins', 'install', OPENCLAW_SLACK_PLUGIN, '--pin', '--force'],
+  args: ['plugins', 'install', officialSlackPlugin, '--pin', '--force'],
 });
 if (install.exitCode !== 0) {
   const stderr = await install.stderr();
@@ -68,7 +87,7 @@ const packageProbe = await sandbox.runCommand({
   ],
 });
 const packagePaths = (await packageProbe.stdout()).trim().split('\n').filter(Boolean);
-const officialVersion = OPENCLAW_SLACK_PLUGIN.slice(OPENCLAW_SLACK_PLUGIN.lastIndexOf('@') + 1);
+const officialVersion = archiveManifest.version;
 let packageJsonPath: string | undefined;
 for (const candidate of packagePaths) {
   const versionProbe = await sandbox.runCommand({

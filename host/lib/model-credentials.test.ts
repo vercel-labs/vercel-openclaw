@@ -24,4 +24,32 @@ describe('readOidcToken', () => {
     };
     expect(Object.keys(policy.allow)).toEqual([AI_GATEWAY_DOMAIN]);
   });
+
+  it('allows the native Slack host bridge without injecting model credentials there', () => {
+    const policy = buildNetworkPolicy(
+      'request-token',
+      'https://host.example/api/slack-proxy/',
+    ) as { allow: Record<string, unknown[]> };
+
+    expect(Object.keys(policy.allow)).toEqual([AI_GATEWAY_DOMAIN, 'host.example']);
+    expect(JSON.stringify(policy.allow[AI_GATEWAY_DOMAIN])).toContain(
+      'Bearer request-token',
+    );
+    expect(policy.allow['host.example']).toEqual([]);
+  });
+
+  it('rejects a non-HTTPS native Slack host bridge', () => {
+    expect(() =>
+      buildNetworkPolicy('request-token', 'http://host.example/api/slack-proxy/'),
+    ).toThrow(/must be an HTTPS URL/);
+  });
+
+  it('rejects the AI Gateway hostname as the native Slack host bridge', () => {
+    expect(() =>
+      buildNetworkPolicy(
+        'request-token',
+        `https://${AI_GATEWAY_DOMAIN}/api/slack-proxy/`,
+      ),
+    ).toThrow(/must not use the AI Gateway hostname/);
+  });
 });

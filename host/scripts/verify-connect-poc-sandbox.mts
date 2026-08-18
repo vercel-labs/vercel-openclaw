@@ -9,7 +9,7 @@ const sandbox = await Sandbox.getOrCreate({
   image,
   persistent: true,
   timeout: 45 * 60 * 1000,
-  ports: [3000],
+  ports: [18789],
 });
 
 const credentialScan = await sandbox.runCommand({
@@ -19,37 +19,59 @@ const credentialScan = await sandbox.runCommand({
     String.raw`
 set -u
 bad=0
-if env | grep -qE '^(SLACK_BOT_TOKEN|SLACK_SIGNING_SECRET|SLACK_APP_TOKEN|SLACK_USER_TOKEN)=|=xox[a-z]-[[:alnum:]-]{20,}'; then
+secret_names='SLACK_BOT_TOKEN|SLACK_SIGNING_SECRET|SLACK_APP_TOKEN|SLACK_USER_TOKEN|OPENAI_API_KEY|AI_GATEWAY_API_KEY|VERCEL_OIDC_TOKEN'
+secret_shapes='xox[A-Za-z]-[A-Za-z0-9-]{10,}|xapp-[A-Za-z0-9-]{10,}|sk-[A-Za-z0-9_-]{20,}|vck_[A-Za-z0-9_-]{20,}'
+if env | grep -qE "^($secret_names)=|=($secret_shapes)"; then
   echo 'FAIL command environment'
   bad=1
 fi
 for d in /proc/[0-9]*; do
   [ -r "$d/environ" ] || continue
+  if tr '\0' '\n' < "$d/environ" | grep -qE "^($secret_names)=|=($secret_shapes)"; then
+    echo "FAIL process-env pid=\${d##*/}"
+    bad=1
+  fi
   comm=$(cat "$d/comm" 2>/dev/null || true)
   case "$comm" in
-    node|openclaw|sh)
-      if tr '\0' '\n' < "$d/environ" | grep -qE '^(SLACK_BOT_TOKEN|SLACK_SIGNING_SECRET|SLACK_APP_TOKEN|SLACK_USER_TOKEN)=|=xox[a-z]-[[:alnum:]-]{20,}'; then
-        echo "FAIL process-env pid=\${d##*/}"
+    bash) ;;
+    *)
+      if tr '\0' '\n' < "$d/cmdline" | grep -qE "($secret_shapes)|($secret_names)="; then
+        echo "FAIL process-argv pid=\${d##*/}"
         bad=1
       fi
-      if tr '\0' '\n' < "$d/cmdline" | grep -qE 'xox[a-z]-[[:alnum:]-]{20,}|SLACK_(BOT_TOKEN|SIGNING_SECRET|APP_TOKEN|USER_TOKEN)='; then
-        echo "FAIL process-argv pid=\${d##*/}"
+      argv=$(tr '\0' ' ' < "$d/cmdline")
+      if printf '%s' "$argv" | grep -qE '(^|[ /])openclaw(\.mjs)?([[:space:]]+|$).*([[:space:]]+)agent([[:space:]]+|$)'; then
+        echo "FAIL generic-agent-process pid=\${d##*/}"
         bad=1
       fi
     ;;
   esac
 done
 while IFS= read -r -d '' f; do
-  if grep -aqE 'xox[a-z]-[[:alnum:]-]{20,}' "$f"; then
-    echo "FAIL token-shaped file: $f"
+  if grep -aqE "($secret_shapes)|(^|[^A-Za-z0-9_])($secret_names)=" "$f"; then
+    echo "FAIL credential-shaped file: $f"
     bad=1
   fi
-done < <(find /home/node/.openclaw /tmp -xdev -type f -size -20M -print0 2>/dev/null)
+done < <(find /home/node/.openclaw /tmp -xdev -type f -size -100M -print0 2>/dev/null)
 node <<'NODE' || bad=1
 const fs = require('fs');
 const cfg = JSON.parse(fs.readFileSync('/home/node/.openclaw/openclaw.json', 'utf8'));
 const hits = [];
-const token = /xox[a-z]-[A-Za-z0-9-]{20,}/;
+const placeholder = 'brokered-by-vercel-sandbox-firewall';
+const token = /(?:xox[A-Za-z]-[A-Za-z0-9-]{10,}|xapp-[A-Za-z0-9-]{10,}|sk-[A-Za-z0-9_-]{20,}|vck_[A-Za-z0-9_-]{20,})/;
+const forbiddenKeys = new Set([
+  'SLACK_BOT_TOKEN',
+  'SLACK_SIGNING_SECRET',
+  'SLACK_APP_TOKEN',
+  'SLACK_USER_TOKEN',
+  'OPENAI_API_KEY',
+  'AI_GATEWAY_API_KEY',
+  'VERCEL_OIDC_TOKEN',
+  'botToken',
+  'appToken',
+  'signingSecret',
+  'userToken',
+]);
 function walk(value, path = []) {
   if (typeof value === 'string') {
     if (token.test(value)) hits.push(path.join('.'));
@@ -58,15 +80,18 @@ function walk(value, path = []) {
   if (!value || typeof value !== 'object') return;
   for (const [key, child] of Object.entries(value)) {
     const next = [...path, key];
-    if (['botToken', 'appToken', 'signingSecret', 'userToken'].includes(key) && child != null && child !== '') {
+    if (forbiddenKeys.has(key) && child != null && child !== '') {
+      hits.push(next.join('.'));
+    }
+    if (key === 'apiKey' && child != null && child !== '' && child !== placeholder) {
       hits.push(next.join('.'));
     }
     walk(child, next);
   }
 }
-walk(cfg.channels?.slack, ['channels', 'slack']);
+walk(cfg);
 if (hits.length) {
-  for (const hit of hits) console.log('FAIL config path: ' + hit);
+  for (const hit of new Set(hits)) console.log('FAIL config path: ' + hit);
   process.exit(1);
 }
 NODE
@@ -79,7 +104,7 @@ const scanOutput = [await credentialScan.stdout(), await credentialScan.stderr()
   .join('\n')
   .trim();
 if (credentialScan.exitCode !== 0) {
-  throw new Error(`Slack credential scan failed${scanOutput ? `:\n${scanOutput}` : ''}`);
+  throw new Error(`Credential boundary scan failed${scanOutput ? `:\n${scanOutput}` : ''}`);
 }
 
 const configProbe = await sandbox.runCommand({
@@ -92,11 +117,11 @@ const cfg = JSON.parse(fs.readFileSync('/home/node/.openclaw/openclaw.json', 'ut
 const slack = cfg.channels?.slack ?? {};
 const ref = slack.hostBridge?.authToken;
 console.log(JSON.stringify({
-  groupPolicy: slack.groupPolicy ?? null,
-  requireMention: slack.requireMention ?? null,
-  replyToMode: slack.replyToMode ?? null,
-  streamingMode: slack.streaming?.mode ?? null,
-  hostBridgeApiUrl: slack.hostBridge?.apiUrl ?? null,
+  configuredPolicyFieldCount: ['groupPolicy', 'requireMention', 'replyToMode']
+    .filter((key) => slack[key] !== undefined).length,
+  streamingDisabled: slack.streaming?.mode === 'off',
+  hostBridgeApiUrlConfigured:
+    typeof slack.hostBridge?.apiUrl === 'string' && slack.hostBridge.apiUrl.length > 0,
   hostBridgeAuthIsEnvSecretRef:
     ref?.source === 'env' &&
     ref?.provider === 'default' &&
@@ -119,14 +144,21 @@ if (pluginProbe.exitCode !== 0) {
 const slackBlock = (await pluginProbe.stdout()).match(
   /Slack \(slack\) enabled\n(?: {2}.*\n)+/,
 )?.[0];
+const pluginPaths = slackBlock
+  ?.split('\n')
+  .map((line) => line.match(/\/(?:home|app)\/[^\s]+/)?.[0])
+  .filter((value): value is string => Boolean(value)) ?? [];
 
 console.log(
   JSON.stringify(
     {
-      sandboxName,
       slackCredentialsAbsent: true,
+      modelCredentialsAbsent: true,
+      genericAgentProcessCount: 0,
       config: JSON.parse((await configProbe.stdout()).trim()),
-      slackPlugin: slackBlock?.trim().split('\n') ?? [],
+      slackPluginEnabled: Boolean(slackBlock),
+      slackPluginPathCount: pluginPaths.length,
+      slackPluginPaths: pluginPaths,
     },
     null,
     2,

@@ -52,11 +52,14 @@ const RUNTIME_LOCK_WAIT_MS = 30_000;
 
 export interface AwakeGateway {
   sandbox: Sandbox;
+  /** Present only when the caller requested the native inbound HTTP route. */
+  baseUrl?: string;
 }
 
 export interface WakeOptions {
   oidcToken?: string;
   budget?: ExecutionBudget;
+  exposeGatewayPort?: boolean;
 }
 
 // Dampens concurrent webhook bursts: one wake per sandbox name per instance,
@@ -92,7 +95,10 @@ async function ensureAwakeUncached(
   // network policy rather than anything inside the VM. Read once per wake: the
   // token is short-lived and every session gets a fresh one.
   const oidcToken = readOidcToken(options.oidcToken);
-  const networkPolicy = buildNetworkPolicy(oidcToken);
+  const hostBridgeApiUrl = options.exposeGatewayPort
+    ? process.env.OPENCLAW_SLACK_HOST_BRIDGE_API_URL
+    : undefined;
+  const networkPolicy = buildNetworkPolicy(oidcToken, hostBridgeApiUrl);
   let sandbox: Sandbox | undefined;
   for (let attempt = 1; ; attempt++) {
     try {
@@ -106,6 +112,7 @@ async function ensureAwakeUncached(
             persistent: true,
             timeout: SESSION_TIMEOUT_MS,
             networkPolicy,
+            ...(options.exposeGatewayPort ? { ports: [GATEWAY_PORT] } : {}),
             signal,
           }),
       );
@@ -152,6 +159,8 @@ async function ensureAwakeUncached(
     desiredMarker,
     budget,
     oidcToken,
+    hostBridgeApiUrl,
+    Boolean(options.exposeGatewayPort),
   );
 
   // getOrCreate retrieves without resuming; updateNetworkPolicy above is the
@@ -163,7 +172,12 @@ async function ensureAwakeUncached(
     budget,
     () => runtimeStarted,
   );
-  return { sandbox };
+  return {
+    sandbox,
+    ...(options.exposeGatewayPort
+      ? { baseUrl: sandbox.domain(GATEWAY_PORT) }
+      : {}),
+  };
 }
 
 /**
@@ -187,17 +201,35 @@ async function installPlugins(
   sandbox: Sandbox,
   oidcToken: string,
   budget: ExecutionBudget,
+  hostBridgeApiUrl?: string,
 ): Promise<void> {
+  const missing: Array<(typeof PLUGIN_SPECS)[number]> = [];
+  for (const spec of PLUGIN_SPECS) {
+    const installed = await sandbox.runCommand({
+      cmd: 'sh',
+      args: [
+        '-c',
+        `find /home/node/.openclaw/npm/projects -path '*/node_modules/${spec}/package.json' -print -quit 2>/dev/null | grep -q .`,
+      ],
+      ...operationAbortOptions(budget, `inspect ${spec}`, { capMs: 10_000 }),
+    });
+    if (installed.exitCode !== 0) missing.push(spec);
+  }
+  if (missing.length === 0) return;
+
   await withExecutionBudget(
     budget,
     'open npm egress for plugin install',
     async (signal) =>
-      sandbox.updateNetworkPolicy(buildInstallNetworkPolicy(oidcToken), { signal }),
+      sandbox.updateNetworkPolicy(
+        buildInstallNetworkPolicy(oidcToken, hostBridgeApiUrl),
+        { signal },
+      ),
     { capMs: 15_000 },
   );
 
   try {
-    for (const spec of PLUGIN_SPECS) {
+    for (const spec of missing) {
       const result = await sandbox.runCommand({
         cmd: 'openclaw',
         args: ['plugins', 'install', spec],
@@ -215,7 +247,11 @@ async function installPlugins(
     await withExecutionBudget(
       budget,
       'restore steady-state egress policy',
-      async (signal) => sandbox.updateNetworkPolicy(buildNetworkPolicy(oidcToken), { signal }),
+      async (signal) =>
+        sandbox.updateNetworkPolicy(
+          buildNetworkPolicy(oidcToken, hostBridgeApiUrl),
+          { signal },
+        ),
       { capMs: 15_000 },
     );
   }
@@ -320,8 +356,10 @@ async function ensureRuntimeReady(
   desiredMarker: string,
   budget: ExecutionBudget,
   oidcToken: string,
+  hostBridgeApiUrl: string | undefined,
+  requireSlackRoute: boolean,
 ): Promise<boolean> {
-  if (await isRuntimeReady(sandbox, desiredMarker, budget)) {
+  if (await isRuntimeReady(sandbox, desiredMarker, budget, requireSlackRoute)) {
     return false;
   }
 
@@ -329,7 +367,7 @@ async function ensureRuntimeReady(
   try {
     // Another function instance may have completed startup while this one
     // waited. Re-check under the cross-instance sandbox lock.
-    if (await isRuntimeReady(sandbox, desiredMarker, budget)) {
+    if (await isRuntimeReady(sandbox, desiredMarker, budget, requireSlackRoute)) {
       return false;
     }
 
@@ -348,10 +386,10 @@ async function ensureRuntimeReady(
     // "no agent code ever runs with the registry reachable"
     // (lib/model-credentials.ts).
     await stopGateway(sandbox, budget);
-    // Same condition as the config write: a fresh sandbox, or one whose runtime
-    // fingerprint changed. Both are exactly when plugins may be missing.
+    // Inspect before installing. The native PoC overlays its tarball onto an
+    // official Slack install; a blind reinstall here would silently erase it.
+    await installPlugins(sandbox, oidcToken, budget, hostBridgeApiUrl);
     if (!configurationCurrent) {
-      await installPlugins(sandbox, oidcToken, budget);
       await seedProviderPlaceholder(sandbox, budget);
     }
     await startGateway(sandbox, token, {
@@ -361,6 +399,7 @@ async function ensureRuntimeReady(
       configure: !configurationCurrent,
     });
     await waitForGatewayHealth(name, sandbox, token, budget, () => true);
+    if (requireSlackRoute) await waitForSlackRoute(sandbox, budget);
     if (!configurationCurrent) {
       await writeRuntimeFingerprint(sandbox, desiredMarker, budget);
     }
@@ -375,9 +414,11 @@ async function isRuntimeReady(
   sandbox: Sandbox,
   desiredMarker: string,
   budget: ExecutionBudget,
+  requireSlackRoute: boolean,
 ): Promise<boolean> {
   if ((await readRuntimeFingerprint(sandbox, budget)) !== desiredMarker) return false;
-  return probeGatewayPort(sandbox, budget);
+  if (!(await probeGatewayPort(sandbox, budget))) return false;
+  return requireSlackRoute ? probeSlackRoute(sandbox, budget) : true;
 }
 
 async function acquireRuntimeLock(
@@ -479,6 +520,61 @@ async function probeGatewayPort(
     ...operationAbortOptions(budget, 'gateway port probe', { capMs: 5_000 }),
   });
   return result.exitCode === 0;
+}
+
+async function probeSlackRoute(
+  sandbox: Sandbox,
+  budget: ExecutionBudget,
+): Promise<boolean> {
+  const result = await sandbox.runCommand({
+    cmd: 'curl',
+    args: [
+      '-sS',
+      '-o',
+      '/tmp/slack-route-probe',
+      '-w',
+      '%{http_code}',
+      '-X',
+      'POST',
+      `http://127.0.0.1:${GATEWAY_PORT}/slack/events`,
+      '-H',
+      'content-type: application/json',
+      '--data',
+      '{}',
+    ],
+    ...operationAbortOptions(budget, 'Slack route probe', { capMs: 5_000 }),
+  });
+  const status = (
+    await withExecutionBudget(
+      budget,
+      'Slack route probe output',
+      async (signal) => result.stdout({ signal }),
+      { capMs: 5_000 },
+    )
+  ).trim();
+  return result.exitCode === 0 && status !== '' && status !== '000' && status !== '404';
+}
+
+async function waitForSlackRoute(
+  sandbox: Sandbox,
+  budget: ExecutionBudget,
+): Promise<void> {
+  const result = await sandbox.runCommand({
+    cmd: 'bash',
+    args: [
+      '-c',
+      `for i in $(seq 1 100); do
+        status=$(curl -sS -o /tmp/slack-route-probe -w '%{http_code}' -X POST http://127.0.0.1:${GATEWAY_PORT}/slack/events -H 'content-type: application/json' --data '{}' 2>/dev/null || true)
+        case "$status" in ''|000|404) ;; *) exit 0 ;; esac
+        sleep 0.3
+      done
+      exit 1`,
+    ],
+    ...operationAbortOptions(budget, 'Slack route readiness', { capMs: 30_000 }),
+  });
+  if (result.exitCode !== 0) {
+    throw new Error('Slack route did not mount after gateway startup');
+  }
 }
 
 async function stopGateway(sandbox: Sandbox, budget: ExecutionBudget): Promise<void> {
@@ -680,6 +776,34 @@ async function waitForPortBind(
     }),
   });
   return result.exitCode === 0;
+}
+
+/** Forwards the exact verified envelope into a native channel HTTP handler. */
+export async function forwardPayload(
+  baseUrl: string,
+  path: string,
+  options: {
+    rawBody: ArrayBuffer | string;
+    headers: Headers;
+    forwardHeaders: string[];
+    channel: string;
+    receivedAt?: number;
+  },
+): Promise<Response> {
+  const headers = new Headers();
+  for (const name of options.forwardHeaders) {
+    const value = options.headers.get(name);
+    if (value !== null) headers.set(name, value);
+  }
+  headers.set('x-openclaw-channel', options.channel);
+  headers.set('x-received-at', String(options.receivedAt ?? Date.now()));
+
+  return fetch(new URL(path, baseUrl), {
+    method: 'POST',
+    headers,
+    body: options.rawBody,
+    signal: AbortSignal.timeout(10_000),
+  });
 }
 
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
