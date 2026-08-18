@@ -1,5 +1,5 @@
 import { Sandbox } from '@vercel/sandbox';
-import { PLACEHOLDER_MODEL_KEY } from '../lib/model-credentials';
+import { PLACEHOLDER_MODEL_KEY } from '../lib/model-credentials.ts';
 
 const hostOpenAiApiKey = process.env.OPENAI_API_KEY?.trim();
 if (!hostOpenAiApiKey) throw new Error('OPENAI_API_KEY required on the host');

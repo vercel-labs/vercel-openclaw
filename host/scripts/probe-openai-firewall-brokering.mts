@@ -4,7 +4,7 @@ import {
   PLACEHOLDER_MODEL_KEY,
   buildNetworkPolicy,
   readOidcToken,
-} from '../lib/model-credentials';
+} from '../lib/model-credentials.ts';
 
 const openAiApiKey = process.env.OPENAI_API_KEY?.trim();
 if (!openAiApiKey) throw new Error('OPENAI_API_KEY required on the host');
