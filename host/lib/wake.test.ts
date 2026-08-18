@@ -7,6 +7,7 @@ const harness = vi.hoisted(() => {
     gatewayRunning: false,
     policies: [] as NetworkPolicy[],
     commands: [] as Array<{ command: unknown; args?: string[] }>,
+    installedPlugins: new Set<string>(),
     // Single ordered log across both policy changes and commands. `policies` and
     // `commands` cannot be interleaved, and the npm-window invariant is purely
     // about their relative order.
@@ -19,9 +20,7 @@ const harness = vi.hoisted(() => {
   });
   const sandbox = {
     status: 'running',
-    domain: vi.fn(() => {
-      throw new Error('No route for port 18789');
-    }),
+    domain: vi.fn((port: number) => `https://sandbox-${port}.example`),
     updateNetworkPolicy: vi.fn(async (policy: NetworkPolicy) => {
       state.policies.push(policy);
       state.events.push(
@@ -39,8 +38,20 @@ const harness = vi.hoisted(() => {
             ? [spec.cmd, ...(spec.args ?? [])].join(' ')
             : [String(spec), ...(args ?? [])].join(' ');
         if (line.includes('pkill')) state.events.push('cmd:stop-gateway');
-        else if (line.includes('plugins install')) state.events.push('cmd:plugins-install');
+        else if (line.includes('plugins install')) {
+          state.events.push('cmd:plugins-install');
+          const spec = line.split(' ').at(-1);
+          if (spec) state.installedPlugins.add(spec);
+        }
         else if (line.includes('openclaw gateway run')) state.events.push('cmd:start-gateway');
+        if (line.includes('node_modules/@openclaw/slack/package.json')) {
+          return result(state.installedPlugins.has('@openclaw/slack') ? 0 : 1);
+        }
+        if (line.includes('node_modules/@openclaw/vercel-ai-gateway-provider/package.json')) {
+          return result(
+            state.installedPlugins.has('@openclaw/vercel-ai-gateway-provider') ? 0 : 1,
+          );
+        }
       }
       if (command === 'sh' && args?.[1]?.includes('cat /tmp/vercel-openclaw-runtime')) {
         return result(0, state.marker);
@@ -60,6 +71,9 @@ const harness = vi.hoisted(() => {
         }
         if (spec.cmd === 'bash' && spec.args?.[1]?.includes('exec 3<>')) {
           return result(state.gatewayRunning ? 0 : 1);
+        }
+        if (spec.cmd === 'curl' && spec.args?.includes('/slack/events')) {
+          return result(state.gatewayRunning ? 0 : 1, state.gatewayRunning ? '401' : '000');
         }
         if (spec.cmd === 'bash' && spec.args?.[1]?.includes('mkdir /tmp/vercel-openclaw-runtime.lock')) {
           return result();
@@ -98,8 +112,13 @@ describe('ensureAwake', () => {
     harness.state.policies.length = 0;
     harness.state.commands.length = 0;
     harness.state.events.length = 0;
+    harness.state.installedPlugins.clear();
     vi.clearAllMocks();
     process.env.OPENCLAW_GATEWAY_TOKEN = 'gateway-token';
+    delete process.env.OPENCLAW_SLACK_HOST_BRIDGE_TOKEN;
+    delete process.env.OPENCLAW_SLACK_HOST_BRIDGE_API_URL;
+    delete process.env.OPENAI_API_KEY;
+    delete process.env.OPENCLAW_MODEL;
   });
 
   it('stops the gateway before opening npm egress, even on a running sandbox', async () => {
@@ -171,6 +190,52 @@ describe('ensureAwake', () => {
       return (command as { args?: string[] }).args?.includes('--batch-json');
     });
     expect(configurationCommands).toHaveLength(1);
+  });
+
+  it('brokers an OpenAI key in the firewall and seeds only a placeholder in the VM', async () => {
+    process.env.OPENAI_API_KEY = 'host-only-openai-key';
+    process.env.OPENCLAW_MODEL = 'openai/gpt-5.6-sol';
+
+    await ensureAwake('openai-firewall-broker', {
+      oidcToken: 'request-token',
+      budget: { deadlineMs: Date.now() + 60_000, replyReserveMs: 15_000 },
+    });
+
+    const serializedPolicies = JSON.stringify(harness.state.policies);
+    expect(serializedPolicies).toContain('api.openai.com');
+    expect(serializedPolicies).toContain('Bearer host-only-openai-key');
+
+    const serializedCommands = JSON.stringify(harness.state.commands);
+    expect(serializedCommands).toContain('paste-api-key --provider openai');
+    expect(serializedCommands).toContain(
+      'sk-vercel-firewall-brokered-placeholder-not-a-real-key',
+    );
+    expect(serializedCommands).not.toContain('host-only-openai-key');
+  });
+
+  it('preserves preinstalled plugin packages and a native Slack overlay', async () => {
+    harness.state.installedPlugins.add('@openclaw/vercel-ai-gateway-provider');
+    harness.state.installedPlugins.add('@openclaw/slack');
+    process.env.OPENCLAW_SLACK_HOST_BRIDGE_TOKEN = 'host-bridge-token';
+    process.env.OPENCLAW_SLACK_HOST_BRIDGE_API_URL =
+      'https://host.example/api/slack-proxy/';
+
+    const awake = await ensureAwake('native-overlay', {
+      oidcToken: 'request-token',
+      exposeGatewayPort: true,
+      budget: { deadlineMs: Date.now() + 60_000, replyReserveMs: 15_000 },
+    });
+
+    expect(awake.baseUrl).toBe('https://sandbox-18789.example');
+    expect(harness.getOrCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ ports: [18789] }),
+    );
+    expect(harness.state.events).not.toContain('cmd:plugins-install');
+    expect(harness.state.events).not.toContain('policy:npm-open');
+    expect(JSON.stringify(harness.state.policies.at(-1))).toContain('host.example');
+    expect(JSON.stringify(harness.state.policies.at(-1))).toContain(
+      'Bearer request-token',
+    );
   });
 
   it('bounds every wake SDK operation by the shared budget', async () => {

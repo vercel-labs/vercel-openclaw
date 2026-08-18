@@ -1,0 +1,15 @@
+# PROTOTYPE ONLY. Do not use this image outside the Connect Slack PoC.
+# Build context must include openclaw-connect-poc.tgz from the companion branch.
+FROM node:24-bookworm-slim
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends bash ca-certificates curl git procps tini \
+  && rm -rf /var/lib/apt/lists/*
+COPY openclaw-connect-poc.tgz /tmp/openclaw-connect-poc.tgz
+RUN npm install --global /tmp/openclaw-connect-poc.tgz \
+  && rm /tmp/openclaw-connect-poc.tgz \
+  && npm cache clean --force \
+  && openclaw --version
+USER node
+WORKDIR /home/node
+EXPOSE 3000

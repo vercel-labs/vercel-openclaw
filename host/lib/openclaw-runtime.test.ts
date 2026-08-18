@@ -40,12 +40,40 @@ describe('buildOpenClawRuntime', () => {
     expect(paths).not.toContain('models.providers.openai.apiKey');
   });
 
+  it('declares a direct OpenAI model without putting its endpoint or key in the VM', () => {
+    const runtime = buildOpenClawRuntime(
+      { OPENCLAW_MODEL: 'openai/gpt-5.4', OPENAI_API_KEY: 'host-only-key' },
+      'gateway-token',
+    );
+
+    expect(runtime.configOperations).toEqual(
+      expect.arrayContaining([
+        {
+          path: 'models.providers.openai.models',
+          value: [
+            {
+              id: 'gpt-5.4',
+              name: 'GPT-5.4',
+              agentRuntime: { id: 'openclaw' },
+            },
+          ],
+        },
+        { path: 'agents.defaults.model.primary', value: 'openai/gpt-5.4' },
+      ]),
+    );
+    expect(JSON.stringify(runtime)).not.toContain('host-only-key');
+    const paths = runtime.configOperations.map((operation) => operation.path);
+    expect(paths).not.toContain('models.providers.openai.baseUrl');
+    expect(paths).not.toContain('models.providers.openai.apiKey');
+  });
+
   it('does not put Slack or model credentials in the sandbox process environment', () => {
     const runtime = buildOpenClawRuntime(
       {
         SLACK_BOT_TOKEN: 'xoxb-obsolete',
         SLACK_SIGNING_SECRET: 'obsolete-signing-secret',
         AI_GATEWAY_API_KEY: 'obsolete-ai-key',
+        OPENAI_API_KEY: 'obsolete-openai-key',
         VERCEL_OIDC_TOKEN: 'obsolete-oidc-token',
       },
       'gateway-token',
@@ -55,7 +83,80 @@ describe('buildOpenClawRuntime', () => {
     expect(serialized).not.toContain('xoxb-obsolete');
     expect(serialized).not.toContain('obsolete-signing-secret');
     expect(serialized).not.toContain('obsolete-ai-key');
+    expect(serialized).not.toContain('obsolete-openai-key');
     expect(serialized).not.toContain('obsolete-oidc-token');
+  });
+
+  it('configures native Slack through the host bridge without changing channel policy', () => {
+    const runtime = buildOpenClawRuntime(
+      {
+        OPENCLAW_SLACK_HOST_BRIDGE_TOKEN: 'host-bridge-token',
+        OPENCLAW_SLACK_HOST_BRIDGE_API_URL: 'https://host.example/api/slack-proxy/',
+        AI_GATEWAY_API_KEY: 'must-not-enter-the-vm',
+        OPENAI_API_KEY: 'must-also-stay-out',
+        VERCEL_OIDC_TOKEN: 'firewall-only-oidc',
+      },
+      'gateway-token',
+    );
+
+    expect(runtime.gatewayEnv).toEqual({
+      OPENCLAW_GATEWAY_TOKEN: 'gateway-token',
+      OPENCLAW_SLACK_HOST_BRIDGE_TOKEN: 'host-bridge-token',
+    });
+    expect(runtime.configOperations).toEqual(
+      expect.arrayContaining([
+        { path: 'channels.slack.enabled', value: true },
+        { path: 'channels.slack.mode', value: 'http' },
+        { path: 'channels.slack.streaming.mode', value: 'off' },
+        {
+          path: 'channels.slack.hostBridge.apiUrl',
+          value: 'https://host.example/api/slack-proxy/',
+        },
+        {
+          path: 'channels.slack.hostBridge.authToken',
+          value: {
+            source: 'env',
+            provider: 'default',
+            id: 'OPENCLAW_SLACK_HOST_BRIDGE_TOKEN',
+          },
+        },
+        { path: 'channels.slack.webhookPath', value: '/slack/events' },
+      ]),
+    );
+    const paths = runtime.configOperations.map((operation) => operation.path);
+    expect(paths).not.toContain('channels.slack.allowFrom');
+    expect(paths).not.toContain('channels.slack.dmPolicy');
+    expect(paths).not.toContain('channels.slack.groupPolicy');
+    expect(JSON.stringify(runtime)).not.toContain('must-not-enter-the-vm');
+    expect(JSON.stringify(runtime)).not.toContain('must-also-stay-out');
+    expect(JSON.stringify(runtime)).not.toContain('firewall-only-oidc');
+  });
+
+  it('rejects a partial native Slack bridge configuration', () => {
+    expect(() =>
+      buildOpenClawRuntime(
+        { OPENCLAW_SLACK_HOST_BRIDGE_TOKEN: 'host-bridge-token' },
+        'gateway-token',
+      ),
+    ).toThrow(
+      /OPENCLAW_SLACK_HOST_BRIDGE_TOKEN and OPENCLAW_SLACK_HOST_BRIDGE_API_URL/,
+    );
+  });
+
+  it('changes the persistent fingerprint when the host assertion rotates', () => {
+    const environment = {
+      OPENCLAW_SLACK_HOST_BRIDGE_API_URL: 'https://host.example/api/slack-proxy/',
+    };
+    const first = buildOpenClawRuntime(
+      { ...environment, OPENCLAW_SLACK_HOST_BRIDGE_TOKEN: 'first' },
+      'gateway-token',
+    );
+    const second = buildOpenClawRuntime(
+      { ...environment, OPENCLAW_SLACK_HOST_BRIDGE_TOKEN: 'second' },
+      'gateway-token',
+    );
+
+    expect(first.fingerprint).not.toBe(second.fingerprint);
   });
 
   it('changes the persistent fingerprint when the model configuration changes', () => {

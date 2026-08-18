@@ -11,11 +11,11 @@ import type { NetworkPolicy } from '@vercel/sandbox';
  * never enter the sandbox scope" (vercel.com/docs/sandbox/concepts/firewall,
  * retrieved 2026-08-14).
  *
- * The credential itself is the app's own Vercel OIDC token, because AI Gateway
- * accepts one in place of an API key ("OIDC token: Use your Vercel OIDC token
- * with the Authorization: Bearer <token> header",
- * vercel.com/docs/ai-gateway/sdks-and-apis/openai-chat-completions, retrieved
- * 2026-08-14). So there is no static API key anywhere in the system.
+ * AI Gateway accepts the app's own Vercel OIDC token in place of an API key
+ * (vercel.com/docs/ai-gateway/sdks-and-apis/openai-chat-completions, retrieved
+ * 2026-08-14). A deployment that cannot use AI Gateway may instead keep an
+ * OpenAI key in the Vercel host and broker it only for api.openai.com. In both
+ * cases the real credential remains outside the sandbox.
  *
  * Function OIDC tokens are request-scoped and short-lived, so the host refreshes
  * the firewall policy before each turn instead of persisting the token anywhere
@@ -24,6 +24,8 @@ import type { NetworkPolicy } from '@vercel/sandbox';
 
 export const AI_GATEWAY_DOMAIN = 'ai-gateway.vercel.sh';
 export const AI_GATEWAY_BASE_URL = `https://${AI_GATEWAY_DOMAIN}/v1`;
+export const OPENAI_API_DOMAIN = 'api.openai.com';
+export const OPENAI_API_BASE_URL = `https://${OPENAI_API_DOMAIN}/v1`;
 
 /**
  * Value handed to OpenClaw as its provider "API key". It is never a valid
@@ -34,7 +36,8 @@ export const AI_GATEWAY_BASE_URL = `https://${AI_GATEWAY_DOMAIN}/v1`;
  * Deliberately recognizable so it is obvious in a log or a config dump that
  * nothing secret was leaked.
  */
-export const PLACEHOLDER_MODEL_KEY = 'brokered-by-vercel-sandbox-firewall';
+export const PLACEHOLDER_MODEL_KEY =
+  'sk-vercel-firewall-brokered-placeholder-not-a-real-key';
 
 /**
  * Reads a request-scoped OIDC token already authenticated by the caller. The
@@ -67,25 +70,55 @@ export function readOidcToken(requestToken?: string): string {
  *    policy with ranges but no domains leaves the resolver open, and data can
  *    leave over DNS lookups alone.
  *
- * The injection rule carries no `match`, so every request to the gateway gets
- * our token. That is intentional rather than lax: there is no case where an
- * un-authenticated request to AI Gateway should succeed, and AI Gateway treats
- * a supplied API key as taking precedence "even if the API key is invalid", so
- * a request that slipped past injection would fail rather than fall back.
+ * The injection rules carry no `match`, so every request to either model host
+ * gets its host-owned credential. That is intentional rather than lax: neither
+ * model host has a valid unauthenticated request path for the agent.
  */
-export function buildNetworkPolicy(oidcToken: string): NetworkPolicy {
-  return {
-    allow: {
-      [AI_GATEWAY_DOMAIN]: [
-        {
-          transform: [{ headers: { authorization: `Bearer ${oidcToken}` } }],
-        },
-      ],
-    },
+export function buildNetworkPolicy(
+  oidcToken: string,
+  hostBridgeApiUrl?: string,
+  openAiApiKey?: string,
+): NetworkPolicy {
+  const allow: Record<string, unknown[]> = {
+    [AI_GATEWAY_DOMAIN]: [
+      {
+        transform: [{ headers: { authorization: `Bearer ${oidcToken}` } }],
+      },
+    ],
   };
+  if (openAiApiKey) {
+    allow[OPENAI_API_DOMAIN] = [
+      {
+        transform: [{ headers: { authorization: `Bearer ${openAiApiKey}` } }],
+      },
+    ];
+  }
+  if (hostBridgeApiUrl) {
+    const hostBridgeUrl = new URL(hostBridgeApiUrl);
+    if (
+      hostBridgeUrl.protocol !== 'https:' ||
+      hostBridgeUrl.username ||
+      hostBridgeUrl.password
+    ) {
+      throw new Error(
+        'OPENCLAW_SLACK_HOST_BRIDGE_API_URL must be an HTTPS URL without userinfo',
+      );
+    }
+    if (
+      hostBridgeUrl.hostname === AI_GATEWAY_DOMAIN ||
+      hostBridgeUrl.hostname === OPENAI_API_DOMAIN
+    ) {
+      throw new Error(
+        'OPENCLAW_SLACK_HOST_BRIDGE_API_URL must not use a model API hostname',
+      );
+    }
+    // The Slack bridge receives the sandbox's narrow assertion unchanged.
+    // Model credential injection remains scoped exclusively to model hosts.
+    allow[hostBridgeUrl.hostname] = [];
+  }
+  return { allow } as NetworkPolicy;
 }
 
-/** Default model, addressed through the `openai` provider we repoint at AI Gateway. */
 /**
  * Model ref for the official AI Gateway provider plugin. Refs take the form
  * `vercel-ai-gateway/<upstream-provider>/<model>` and the gateway routes on that
@@ -121,8 +154,30 @@ export function resolveModel(
  * steady-state egress policy: a turn returned `"provider": "vercel-ai-gateway"`,
  * `"model": "openai/gpt-5.6-sol"`, `"status": "ok"`.
  */
-export function modelConfigEntries(model = resolveModel()): Array<[string, string]> {
-  return [['agents.defaults.model.primary', model]];
+export function modelConfigEntries(model = resolveModel()): Array<[string, unknown]> {
+  const entries: Array<[string, unknown]> = [];
+  if (model.startsWith('openai/')) {
+    const modelId = model.slice('openai/'.length);
+    // The stock image's direct OpenAI catalog is empty until a model overlay is
+    // configured. Declare only model identity; the built-in provider still owns
+    // its official endpoint and the firewall still owns the real credential.
+    entries.push([
+      'models.providers.openai.models',
+      [
+        {
+          id: modelId,
+          name: modelId.toUpperCase(),
+          // Direct OpenAI API-key traffic belongs to OpenClaw's built-in model
+          // loop. Without this, canonical openai/* refs may implicitly select
+          // the optional Codex runtime and block startup when that plugin is
+          // intentionally absent from the credentialless sandbox.
+          agentRuntime: { id: 'openclaw' },
+        },
+      ],
+    ]);
+  }
+  entries.push(['agents.defaults.model.primary', model]);
+  return entries;
 }
 
 /**
@@ -158,8 +213,14 @@ const NPM_DOMAINS = ['registry.npmjs.org', '*.npmjs.org'];
  * reachable. Policies can be swapped on a running sandbox, which is what makes
  * this two-phase approach possible.
  */
-export function buildInstallNetworkPolicy(oidcToken: string): NetworkPolicy {
-  const base = buildNetworkPolicy(oidcToken) as { allow: Record<string, unknown[]> };
+export function buildInstallNetworkPolicy(
+  oidcToken: string,
+  hostBridgeApiUrl?: string,
+  openAiApiKey?: string,
+): NetworkPolicy {
+  const base = buildNetworkPolicy(oidcToken, hostBridgeApiUrl, openAiApiKey) as {
+    allow: Record<string, unknown[]>;
+  };
   const allow = { ...base.allow };
   for (const domain of NPM_DOMAINS) allow[domain] = [];
   return { allow } as NetworkPolicy;
