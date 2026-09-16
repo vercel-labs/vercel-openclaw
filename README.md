@@ -19,6 +19,8 @@ Connect forwards the full Slack payload and supplies the Slack app token. The ho
 
 Completing a reply leaves both VMs running. The idle clock resets on accepted work and model/tool activity; an active turn blocks idle sleep. Health checks do not reset it. After 45 idle minutes, a resident timer calls the Vercel app, which obtains fresh credentials, rechecks activity under the same admission lock, reclaims VM2, uses OpenClaw's suspension handshake and stops/snapshots VM1. The next mention restores disk and starts fresh processes and a fresh clock. There is no third always-running VM or Workflow dependency.
 
+A failed turn fences the resident and requests that same cleanup on the next timer poll, without waiting 45 minutes. Active work or an unconfirmed cleanup step still blocks sleep; the resident retries cleanup while rejecting new turns. This does not replay the failed event or recover a resident that disappeared before its service started.
+
 OpenClaw's pinned adapter still creates an isolated Codex app-server client for each paired-node turn and closes it afterward. This revision retains the VMs, gateway and worker enrollment; it does not override the harness's per-turn process ownership.
 
 [Hobby's 45-minute limit](https://vercel.com/docs/sandbox/pricing) applies to total session duration. A separate deadline check begins graceful shutdown before that limit, even if the idle interval has not elapsed. Pro/Enterprise can use a longer session limit to allow the full 45-minute idle interval after active work. The default five-minute cron was removed because [Hobby cron only runs daily](https://vercel.com/docs/cron-jobs/usage-and-pricing); the historical legacy path requires its own scheduler configuration.

@@ -115,13 +115,14 @@ export async function serveResident({ base, token, input, execute, reclaim, rpc,
           catch (error) { failed = true; throw error; }
           finally { clock.end(); }
         } else {
-          const reason = body.rollover === true && !clock.canStartTurn() ? 'deadline' : clock.reason();
+          // Failed turns stay fenced, but must request cleanup without waiting for idle expiry.
+          const reason = failed ? 'failure' : body.rollover === true && !clock.canStartTurn() ? 'deadline' : clock.reason();
           if (!reason) return reply(200, { action: 'none', ...binding });
           const work = await rpc('gateway.restart.preflight');
           assert(typeof work.safe === 'boolean', 'Unknown activity state');
           if (!work.safe) { clock.touch(); return reply(200, { action: 'busy', ...binding }); }
           await reclaim();
-          const suspension = await prepareHostSleep({ rpc, requestId: `idle-${binding.platformSessionId}`, drain: reason === 'deadline' });
+          const suspension = await prepareHostSleep({ rpc, requestId: `idle-${binding.platformSessionId}`, drain: reason !== 'idle' });
           await stopGateway();
           assert(gatewayHasExited(), 'Gateway exit is unconfirmed');
           unlinkSync(`${base}/host-credentials.json`);
@@ -143,7 +144,7 @@ export async function serveResident({ base, token, input, execute, reclaim, rpc,
     if (callbackPending || busy) return;
     try {
       observeActivity();
-      if (!clock.reason() && !sleeping) return;
+      if (!failed && !clock.reason() && !sleeping) return;
       callbackPending = true;
       assert(callbackCredential, 'Project OIDC required for the protected sleep callback');
       const result = await fetcher(input.sleepUrl, { method: 'POST', headers: { authorization: `Bearer ${input.sleepCapability}`, 'x-vercel-trusted-oidc-idp-token': callbackCredential, 'content-type': 'application/json' }, body: JSON.stringify({ ...binding }), redirect: 'error', signal: AbortSignal.timeout(170_000) });

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtempSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { localRequest, serveResident } from '../runtime/resident.mjs';
@@ -116,4 +116,85 @@ test('resident cancels at the host deadline rather than its independent 235-seco
     await assert.rejects(localRequest(base, 'test', '/turn', { ...binding, credential: 'fresh', executionDeadlineMs: Date.now() + 30 }, 2000), /500/);
     assert.equal(cancelled, true);
   } finally { shutdown.abort(); await serving; }
+});
+
+test('failed turn requests authenticated cleanup immediately and remains fenced', { timeout: 5000 }, async () => {
+  const base = mkdtempSync(join(tmpdir(), 'oc-failed-'));
+  const shutdown = new AbortController();
+  const binding = { runtimeDigest: 'digest', platformSessionId: 'session' };
+  let ready!: () => void, callback!: () => void, stopped = false, executions = 0;
+  const started = new Promise<void>(resolve => { ready = resolve; });
+  const called = new Promise<void>(resolve => { callback = resolve; });
+  const serving = serveResident({ base, token: 'test', input: { ...binding, hardDeadlineMs: 86400000, sleepUrl: 'https://example.org/api/codex/sleep', sleepCapability: 'cap' }, now: () => 0, signal: shutdown.signal, pollMs: 10,
+    onReady: () => ready(), execute: async () => { executions++; throw new Error('Turn failed'); },
+    reclaim: async () => {}, stopGateway: async () => { stopped = true; }, gatewayHasExited: () => stopped,
+    rpc: async (method: string, params: any) => {
+      if (method === 'gateway.restart.preflight') return { safe: true };
+      assert.equal(method, 'gateway.suspend.prepare');
+      assert.equal(params.drain, true);
+      return { status: 'ready', suspensionId: 'fence', expiresAtMs: Date.now() + 120000, activeCount: 0, blockers: [] };
+    },
+    fetcher: async (url: string, options: any) => {
+      assert.equal(url, 'https://example.org/api/codex/sleep');
+      assert.equal(options.headers.authorization, 'Bearer cap');
+      assert.equal(options.headers['x-vercel-trusted-oidc-idp-token'], 'fresh');
+      assert.deepEqual(JSON.parse(options.body), binding);
+      callback(); return { ok: true };
+    },
+  });
+  try {
+    await started;
+    const call = (path: string) => localRequest(base, 'test', path, { ...binding, credential: 'fresh', executionDeadlineMs: 200000 });
+    await assert.rejects(call('/turn'), /500/);
+    await called;
+    await assert.rejects(call('/turn'), /409/);
+    assert.equal(executions, 1);
+    const receipt: any = await call('/sleep');
+    assert.equal(receipt.reason, 'failure');
+    assert.equal(receipt.residentFenced, true);
+    assert.equal(receipt.workerStopped, true);
+    assert.equal(receipt.gatewayStopped, true);
+    assert(!existsSync(join(base, 'host-credentials.json')));
+    assert.deepEqual(await call('/sleep'), receipt);
+    await assert.rejects(call('/turn'), /409/);
+  } finally { shutdown.abort(); await serving; rmSync(base, { recursive: true, force: true }); }
+});
+
+test('failed resident retries cleanup without bypassing activity or shutdown fences', { timeout: 5000 }, async t => {
+  for (const failure of ['preflight', 'reclaim', 'suspend', 'exit']) await t.test(failure, async () => {
+    const base = mkdtempSync(join(tmpdir(), 'oc-cleanup-'));
+    const shutdown = new AbortController();
+    const binding = { runtimeDigest: 'digest', platformSessionId: 'session' };
+    let ready!: () => void, blocked = true;
+    const steps: string[] = [];
+    const started = new Promise<void>(resolve => { ready = resolve; });
+    const serving = serveResident({ base, token: 'test', input: { ...binding, hardDeadlineMs: 86400000, sleepUrl: 'https://example.org/api/codex/sleep', sleepCapability: 'cap' }, now: () => 0, signal: shutdown.signal, pollMs: 60000,
+      onReady: () => ready(), execute: async () => { throw new Error('Turn failed'); },
+      reclaim: async () => { steps.push('reclaim'); if (blocked && failure === 'reclaim') throw new Error('Reclaim failed'); },
+      stopGateway: async () => { steps.push('stop'); }, gatewayHasExited: () => !(blocked && failure === 'exit'),
+      rpc: async (method: string) => {
+        if (method === 'gateway.restart.preflight') { steps.push('preflight'); return { safe: !(blocked && failure === 'preflight') }; }
+        steps.push('suspend');
+        if (blocked && failure === 'suspend') throw new Error('Suspension failed');
+        return { status: 'ready', suspensionId: 'fence', expiresAtMs: Date.now() + 120000, activeCount: 0, blockers: [] };
+      },
+    });
+    try {
+      await started;
+      const call = (path: string) => localRequest(base, 'test', path, { ...binding, credential: 'fresh', executionDeadlineMs: 200000 });
+      await assert.rejects(call('/turn'), /500/);
+      if (failure === 'preflight') assert.equal((await call('/sleep') as any).action, 'busy');
+      else await assert.rejects(call('/sleep'), /500/);
+      const lastStep = { preflight: 'preflight', reclaim: 'reclaim', suspend: 'suspend', exit: 'stop' }[failure];
+      assert.equal(steps.at(-1), lastStep);
+      const status: any = await call('/status');
+      assert.equal(status.failed, true);
+      assert.equal(status.sleeping, false);
+      assert(existsSync(join(base, 'host-credentials.json')));
+      await assert.rejects(call('/turn'), /409/);
+      blocked = false; steps.length = 0;
+      assert.equal((await call('/sleep') as any).reason, 'failure');
+      assert.deepEqual(steps, ['preflight', 'reclaim', 'suspend', 'stop']);
+    } finally { shutdown.abort(); await serving; rmSync(base, { recursive: true, force: true }); }
+  });
 });
