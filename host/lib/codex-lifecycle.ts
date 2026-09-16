@@ -9,6 +9,8 @@ const RESUME_TIMEOUT_MS = 60_000;
 const STOP_TIMEOUT_MS = 45_000;
 const TURN_ADMISSION_RESERVE_MS = 235_000 + 3 * 60_000;
 const TURN_CLEANUP_RESERVE_MS = 80_000;
+// Preserve sleeping state indefinitely while deleting checkpoints beyond the last two.
+const SNAPSHOT_RETENTION = { snapshotExpiration: 0, keepLastSnapshots: { count: 2, expiration: 0, deleteEvicted: true } };
 
 export function codexRuntimeWindow(timeoutMs: number, now = Date.now()) {
   if (timeoutMs <= TURN_CLEANUP_RESERVE_MS) throw new Error('Insufficient time for a turn and cleanup');
@@ -118,7 +120,7 @@ export async function runCodexLifecycle(options: {
   }
   const cold = sandbox.status === 'stopped';
   const previousSession = sandbox.currentSession().sessionId;
-  await phase('policy', () => sandbox.update({ networkPolicy: codexHostPolicy(modelKey!, options.nativeSlack?.token) }, { signal: signal(10_000) }));
+  await phase('policy', () => sandbox.update({ ...SNAPSHOT_RETENTION, networkPolicy: codexHostPolicy(modelKey!, options.nativeSlack?.token) }, { signal: signal(10_000) }));
   const startupStep = async <T>(name: 'resume' | 'readiness', operation: () => Promise<T>): Promise<T> => {
     for (let attempt = 0; ; attempt++) {
       try { return await phase(name, operation); }
@@ -185,6 +187,7 @@ export async function runCodexLifecycle(options: {
       if (!stopped.currentSnapshotId) throw new Error('VM1 snapshot is not confirmed');
       const snapshot = await Snapshot.get({ ...credentials, snapshotId: stopped.currentSnapshotId, signal: signal(10_000, false) });
       if (snapshot.status !== 'created' || snapshot.sourceSessionId !== sandbox.currentSession().sessionId) throw new Error('VM1 snapshot is not confirmed');
+      if (snapshot.expiresAt !== undefined) throw new Error('VM1 snapshot retention is not confirmed');
       vm1SnapshotId = snapshot.snapshotId;
       return true;
     }),
@@ -213,10 +216,12 @@ export async function stopCodexSession(options: { name: string; platformSessionI
   if (receipt.action !== 'sleep' || receipt.gatewayStopped !== true || receipt.residentFenced !== true || receipt.workerStopped !== true || receipt.suspension?.status !== 'ready' || !receipt.suspension.suspensionId) throw new Error('Invalid suspension fence');
   const current = await get();
   if (current.status !== 'running' || current.currentSession().sessionId !== options.platformSessionId) throw new Error('Session changed before stop');
+  await current.update(SNAPSHOT_RETENTION, { signal: AbortSignal.timeout(10_000) });
   await current.stop({ signal: AbortSignal.timeout(STOP_TIMEOUT_MS) });
   const stopped = await get();
   if (stopped.status !== 'stopped' || stopped.currentSession().sessionId !== options.platformSessionId || !stopped.currentSnapshotId) throw new Error('VM1 stop is not confirmed');
   const snapshot = await Snapshot.get({ ...credentials, snapshotId: stopped.currentSnapshotId, signal: AbortSignal.timeout(10_000) });
   if (snapshot.status !== 'created' || snapshot.sourceSessionId !== options.platformSessionId) throw new Error('VM1 snapshot is not confirmed');
+  if (snapshot.expiresAt !== undefined) throw new Error('VM1 snapshot retention is not confirmed');
   return { action: 'sleep', reason: receipt.reason, platformSessionId: options.platformSessionId, snapshotId: snapshot.snapshotId };
 }

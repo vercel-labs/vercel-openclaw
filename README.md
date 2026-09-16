@@ -59,7 +59,7 @@ September 10, 2026 observations took approximately **60–98 seconds** from ment
 - Sessions and worktrees follow Slack threads. The memory plugin is disabled; shared cross-thread memory is not implemented here.
 - Browser control, scheduled wake and most gateway dynamic tools are disabled. DMs, slash commands, attachment-only turns and stop buttons are unverified.
 - Connect token acquisition works in the tested flow. OAuth expiry/refresh across sessions and adversarial isolation are not verified.
-- VM1 snapshots expire after seven days and retain the latest two. Running processes are not checkpointed. Turns and VM sessions are timeboxed.
+- New VM1 checkpoints retain the latest two without time-based expiry; the pinned worker image also has no expiry. Old worker-image pins need an explicit upgrade; see [existing installations](host/CODEX-POC.md#existing-installations). Running processes are not checkpointed. Turns and VM sessions are timeboxed.
 
 ## Repository map
 

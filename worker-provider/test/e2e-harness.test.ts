@@ -3,13 +3,21 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { assertCancellationAck, assertNativeReceipt, observablePolicy, Receipt, redact, REQUIRED, rpcResult, settings, stopOwned, testOperatorPairing, until } from './e2e/support.mjs';
+import { assertCancellationAck, assertNativeReceipt, assertRetainedSnapshot, observablePolicy, Receipt, redact, REQUIRED, rpcResult, settings, stopOwned, testOperatorPairing, until } from './e2e/support.mjs';
 import { completion, startModelFixture } from './e2e/model-fixture.mjs';
 import { gatewayConfig } from './e2e/gateway-config.mjs';
 import { startIngress } from './e2e/gateway-services.mjs';
 import { createServer, type IncomingHttpHeaders } from 'node:http';
 import { connect } from 'node:net';
 import { verifyLockedDependencyAges } from './e2e/dependency-policy.mjs';
+
+test('snapshot preparation requires a ready non-expiring checkpoint from the exact session', () => {
+  const snapshot = { snapshotId: 'snap_test', status: 'created', sourceSessionId: 'session' };
+  assertRetainedSnapshot(snapshot, 'session');
+  for (const patch of [{ snapshotId: '' }, { status: 'deleted' }, { status: 'failed' }, { sourceSessionId: 'other' }, { expiresAt: new Date(Date.now() + 7 * 86400000) }]) {
+    assert.throws(() => assertRetainedSnapshot({ ...snapshot, ...patch }, 'session'));
+  }
+});
 
 test('a receipt cannot pass without the live admitted-worker RPC proof', () => {
   const dir = mkdtempSync(join(tmpdir(), 'ocw-rpc-proof-'));

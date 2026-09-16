@@ -13,6 +13,12 @@ export const OWNER = 'openclaw-native-e2e-v1';
 export const REQUIRED = ['public-auth', 'native-enrollment', 'worker-execution', 'workspace-reconciliation', 'guardrails', 'admitted-worker-rpc', 'worker-loss', 'redispatch', 'cancellation', 'native-reclaim', 'cleanup'];
 export const hash = value => createHash('sha256').update(value).digest('hex');
 
+export function assertRetainedSnapshot(snapshot, sourceSessionId) {
+  assert(snapshot.snapshotId && snapshot.status === 'created', 'Snapshot is not ready');
+  assert(sourceSessionId && snapshot.sourceSessionId === sourceSessionId, 'Snapshot source session differs');
+  assert.equal(snapshot.expiresAt, undefined, 'Snapshot must not expire');
+}
+
 export function settings(env, mode = 'fixture', now = Date.now()) {
   assert(['fixture', 'model'].includes(mode), 'Unknown E2E mode');
   assert.equal(env.OPENCLAW_E2E_RUN, '1', 'Set OPENCLAW_E2E_RUN=1 to opt into paid disposable tests');

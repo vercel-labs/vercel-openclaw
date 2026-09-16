@@ -6,7 +6,7 @@ The host forwards the full Slack event to OpenClaw. Both apply explicit channel/
 
 After a reply, eyes/status clear and both VMs stay running. Same-thread messages reuse the gateway and worker; a new thread reclaims the old worker first. A private resident service holds the active-work guard and resets the idle clock on work. At 45 minutes idle it calls `/api/codex/sleep`. The Function verifies a session-bound capability, takes the same Redis lock as incoming messages, obtains fresh OIDC and asks the resident to recheck activity and prepare sleep. Only a ready OpenClaw suspension and confirmed current-session snapshot count as successful sleep. The next message restores disk, starts new processes and resets the clock.
 
-This lifecycle revision is locally tested, not yet verified in a new deployed Slack run. Rebuild VM1 with the updated provider and runtime; an old runtime digest cannot run the new host protocol.
+This lifecycle revision is locally tested, not yet verified in a new deployed Slack run. Prepare a fresh VM1 for a new disposable test installation; an old runtime digest cannot run a changed host protocol. Do not replace an existing VM1 containing user state: read [existing installations](#existing-installations) first.
 
 ## Prerequisites
 
@@ -55,6 +55,14 @@ node scripts/prepare-host.mjs
 ```
 
 Expected marker: `CODEX_HOST_PREPARED`. Preserve the receipt's `name` and `runtimeDigest`. It registers the official Slack plugin, prepares the guarded tool catalog and leaves VM1 stopped, without a model turn or Slack message. The host refuses to silently replace missing saved state.
+
+The preparation scripts independently verify that the worker base and initial VM1 checkpoint are ready, belong to the expected source session, and have no expiration. VM1 keeps its latest two snapshots and deletes older checkpoints. The pinned worker base is retained until explicitly deleted: keep it while any installation still references its ID, then remove it during that installation's decommissioning. Non-expiring snapshots continue to incur storage charges; deleting a sandbox does not delete its snapshots. See [Vercel's snapshot retention contract](https://vercel.com/docs/sandbox/concepts/snapshots#snapshot-retention).
+
+### Existing installations
+
+Deploying the updated host sets retention on the existing, ownership-checked VM1 before work and before sleep. New checkpoints must pass an independent no-expiry check before sleep is reported successful. This does not prove that an older snapshot's expiration changed retroactively, and it does not update the immutable worker snapshot ID stored in VM1's runtime manifest.
+
+The pinned SDK has no API for changing an existing snapshot's expiration. An old seven-day worker base therefore needs a new non-expiring base and a coordinated update of VM1's manifest, runtime digest, ownership tag and host configuration. This repository does not yet automate that state-preserving migration. For disposable test state, prepare a fresh isolated installation. For state that must survive, pause admission and plan the migration before the old snapshots expire; do not rerun `prepare-host.mjs` as a replacement for the original VM1. Preserve the existing workspace, OpenClaw state and allocation journal, and verify the replacement checkpoints and a resumed turn before retiring the old resources. Missing or expired state must stop the migration, never trigger a clean rebuild under the same name.
 
 The one-time builder stops before VM1 preparation. During work there is VM1 plus one VM2, with no third always-running VM. Both have the prepared session limit. Hobby defaults to 45 minutes total. Shutdown begins three minutes before that ceiling; a new turn requires an additional 235-second execution budget and otherwise rolls over first. Activity cannot extend the platform limit. Use a longer Pro/Enterprise session for the full 45-minute idle test below. OpenClaw's paired-node adapter owns a separate Codex client per turn; this revision does not change that upstream behavior.
 
@@ -160,7 +168,7 @@ September 10 native tests demonstrated Connect delivery, VM2 command execution, 
 
 The [root README](../README.md#limits) lists product limits. Same-thread recall may use Slack history; it does not prove disk-only model memory. Cross-thread memory is disabled. No durable post-ack queue, crash recovery, scheduled wake or OAuth-expiry test is included. VM1 remains trusted with broad outbound access. This is not an adversarial security certification.
 
-VM sessions default to 45 minutes total; Pro/Enterprise preparation can select up to 24 hours. Snapshots expire after seven days and retain two. Host turns have a 235-second execution cap, shortened by the remaining Function budget to reserve cleanup time. Connect supplies event forwarding and tokens; the host owns process restart, reconciliation and sleep.
+VM sessions default to 45 minutes total; Pro/Enterprise preparation can select up to 24 hours. New VM1 checkpoints retain the latest two without time-based expiry, and newly prepared worker bases do not expire. Existing worker pins require the upgrade described above. Host turns have a 235-second execution cap, shortened by the remaining Function budget to reserve cleanup time. Connect supplies event forwarding and tokens; the host owns process restart, reconciliation and sleep.
 
 ### Existing dependency audit findings
 

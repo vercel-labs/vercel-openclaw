@@ -2,12 +2,12 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { Sandbox } from '@vercel/sandbox';
+import { Sandbox, Snapshot } from '@vercel/sandbox';
 import { assertNpmPolicySupport, npmPolicyArgs } from '../assets/bootstrap.mjs';
 import { registryNetworkRules } from '../dist/profile.js';
 import { loadInstallation } from '../test/codex-e2e/installation.mjs';
 import { registryAuthorization } from '../test/e2e/npm-auth.mjs';
-import { hash, ROOT, Receipt, settings, redact } from '../test/e2e/support.mjs';
+import { assertRetainedSnapshot, hash, ROOT, Receipt, settings, redact } from '../test/e2e/support.mjs';
 
 const image = 'openclaw-foundation/openclaw/openclaw@sha256:30134c3d1427a06e86060257ae1a7a31e71dd5925459d84dd746d1da25a84a6d';
 const base = '/tmp/openclaw-codex-e2e';
@@ -50,7 +50,10 @@ try {
   const runtime = JSON.parse((await verified.stdout()).split('\n').find(line => line.startsWith('{')));
   assert.equal(runtime.status, 'IMAGE_RUNTIME_VERIFIED');
   receipt.check('runtime-verified', runtime);
-  const { snapshotId } = await box.snapshot({ expiration: 7 * 24 * 60 * 60_000 });
+  // Every future worker boots from this pinned ID, even after a long idle period.
+  const sourceSessionId = box.currentSession().sessionId;
+  const { snapshotId } = await box.snapshot({ expiration: 0 });
+  assertRetainedSnapshot(await Snapshot.get({ ...config.credentials, snapshotId }), sourceSessionId);
   Object.assign(receipt.data, { snapshotId, packageSha256: archive.sha256, installation: installation.receipt });
   receipt.check('snapshot', { snapshotId });
   await box.stop();

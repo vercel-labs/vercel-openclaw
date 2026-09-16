@@ -110,6 +110,13 @@ describe('Codex host startup', () => {
     sdk.snapshot.mockResolvedValueOnce({ status: 'created', sourceSessionId: 'old-session' });
     await expect(runCodexLifecycle(options)).rejects.toThrow(/confirm/);
   });
+  it('updates the existing VM retention before executing a turn and rejects an expiring checkpoint', async () => {
+    sdk.snapshot.mockResolvedValueOnce({ snapshotId: 'snapshot', status: 'created', sourceSessionId: 'new-session', expiresAt: new Date(Date.now() + 7 * 86400000) });
+    await expect(runCodexLifecycle(options)).rejects.toThrow(/confirm/);
+    const update = running.update as ReturnType<typeof vi.fn>;
+    expect(update).toHaveBeenCalledWith(expect.objectContaining({ snapshotExpiration: 0, keepLastSnapshots: { count: 2, expiration: 0, deleteEvicted: true } }), expect.anything());
+    expect(update.mock.invocationCallOrder[0]).toBeLessThan(command.mock.invocationCallOrder[0]);
+  });
   it('does not replay or normal-stop an ambiguously submitted runtime', async () => {
     command.mockResolvedValueOnce({ exitCode: 0, stdout: async () => '' }).mockRejectedValueOnce(new DOMException('secret', 'TimeoutError'));
     await expect(runCodexLifecycle(options)).rejects.toThrow(/runtime/);
@@ -140,6 +147,16 @@ describe('Codex host startup', () => {
     expect((await stopCodexSession({ name: 'owned', platformSessionId: 'old-session', oidcToken: 'fresh' })).action).toBe('stale');
     expect(command).not.toHaveBeenCalled();
     expect(stop).not.toHaveBeenCalled();
+  });
+  it('confirms retention on a sleep checkpoint and never claims success for an expiring one', async () => {
+    const sleep = { action: 'sleep', platformSessionId: 'new-session', runtimeDigest: digest, gatewayStopped: true, residentFenced: true, workerStopped: true, suspension: { status: 'ready', suspensionId: 'lease' } };
+    command.mockResolvedValue({ exitCode: 0, stdout: async () => `OPENCLAW_HOST_RESULT=${JSON.stringify(sleep)}` });
+    sdk.get.mockReset().mockResolvedValueOnce(running).mockResolvedValueOnce(running).mockResolvedValueOnce({ ...running, status: 'stopped' });
+    sdk.snapshot.mockResolvedValueOnce({ snapshotId: 'snapshot', status: 'created', sourceSessionId: 'new-session', expiresAt: new Date(Date.now() + 7 * 86400000) });
+    await expect(stopCodexSession({ name: 'owned', platformSessionId: 'new-session', oidcToken: 'fresh' })).rejects.toThrow('retention');
+    const update = running.update as ReturnType<typeof vi.fn>;
+    expect(update).toHaveBeenCalledWith({ snapshotExpiration: 0, keepLastSnapshots: { count: 2, expiration: 0, deleteEvicted: true } }, expect.anything());
+    expect(update.mock.invocationCallOrder[0]).toBeLessThan(stop.mock.invocationCallOrder[0]);
   });
   it('does not accept expired gateway leases without the permanent resident fence', async () => {
     sdk.get.mockResolvedValue(running);
