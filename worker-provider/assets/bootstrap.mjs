@@ -27,7 +27,7 @@ export function seedWorkerConfig(state, mode, config) {
 
 export function verifyPrebuiltRuntime(bootstrap, runtime) {
   const image = JSON.parse(readFileSync(join(runtime, 'worker-image.json'), 'utf8'));
-  const archive = readFileSync(join(runtime, 'node-runtime.tgz'));
+  const archive = readFileSync(join(runtime, 'node_modules/openclaw/node-runtime.tgz'));
   const build = JSON.parse(readFileSync(join(runtime, 'node_modules/openclaw/dist/build-info.json'), 'utf8'));
   if (['sha256', 'bytes', 'openclawVersion'].some(key => image[key] !== bootstrap[key]) ||
       !isDeepStrictEqual(image.enabledPluginIds, bootstrap.enabledPluginIds) ||

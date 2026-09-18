@@ -24,7 +24,7 @@ const { createNodeBootstrapArtifactProvider } = await import(pathToFileURL(join(
 const producer = createNodeBootstrapArtifactProvider({ packageRoot, runningBuildId: build.buildId, plugins: [{ id: 'codex', root: join(dist, 'extensions/codex') }] });
 try {
   const artifact = await producer.prepare();
-  copyFileSync(artifact.tarballPath, join(runtime, 'node-runtime.tgz'));
+  copyFileSync(artifact.tarballPath, join(packageRoot, 'node-runtime.tgz'));
   const manifest = { sha256: artifact.tarballSha256, bytes: artifact.tarballBytes, openclawVersion: artifact.openclawVersion, buildId: artifact.buildId, enabledPluginIds: artifact.enabledPluginIds };
   const stage = mkdtempSync(join(runtime, 'worker-config-'));
   try {

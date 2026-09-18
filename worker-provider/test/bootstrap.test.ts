@@ -45,7 +45,7 @@ test('prebuilt runtime binds enrollment to exact baked artifact and running buil
   const archive = Buffer.from('synthetic native node artifact');
   const descriptor = { sha256: createHash('sha256').update(archive).digest('hex'), bytes: archive.length, openclawVersion: '2026.9.2', enabledPluginIds: ['codex'] };
   mkdirSync(join(runtime, 'node_modules/openclaw/dist'), { recursive: true });
-  writeFileSync(join(runtime, 'node-runtime.tgz'), archive);
+  writeFileSync(join(runtime, 'node_modules/openclaw/node-runtime.tgz'), archive);
   writeFileSync(join(runtime, 'worker-image.json'), JSON.stringify({ ...descriptor, buildId: 'build-test' }));
   const buildPath = join(runtime, 'node_modules/openclaw/dist/build-info.json');
   writeFileSync(buildPath, JSON.stringify({ buildId: 'build-test', version: descriptor.openclawVersion }));
@@ -53,9 +53,9 @@ test('prebuilt runtime binds enrollment to exact baked artifact and running buil
   for (const patch of [{ sha256: '0'.repeat(64) }, { bytes: 1 }, { openclawVersion: 'other' }, { enabledPluginIds: ['unknown'] }]) {
     assert.throws(() => verifyPrebuiltRuntime({ ...descriptor, ...patch }, runtime), /image/i);
   }
-  writeFileSync(join(runtime, 'node-runtime.tgz'), 'changed archive');
+  writeFileSync(join(runtime, 'node_modules/openclaw/node-runtime.tgz'), 'changed archive');
   assert.throws(() => verifyPrebuiltRuntime(descriptor, runtime), /image/i);
-  writeFileSync(join(runtime, 'node-runtime.tgz'), archive);
+  writeFileSync(join(runtime, 'node_modules/openclaw/node-runtime.tgz'), archive);
   writeFileSync(buildPath, JSON.stringify({ buildId: 'different-build', version: descriptor.openclawVersion }));
   assert.throws(() => verifyPrebuiltRuntime(descriptor, runtime), /image/i);
 });
