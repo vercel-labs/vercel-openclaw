@@ -1,0 +1,2097 @@
+diff --git a/extensions/codex/harness.test.ts b/extensions/codex/harness.test.ts
+index 02e9cb9a..4f30a68b 100644
+--- a/extensions/codex/harness.test.ts
++++ b/extensions/codex/harness.test.ts
+@@ -49,7 +49,7 @@ describe("Codex agent harness supports()", () => {
+   });
+ 
+   it("publishes provider ids for lightweight auto selection", () => {
+-    expect(harness.autoSelection?.providerIds).toEqual(["codex", "openai"]);
++    expect(harness.autoSelection?.providerIds).toEqual(["codex", "openai", "vercel-ai-gateway"]);
+     expect(harness.cloudPlacement).toEqual({
+       mode: "remote-exec",
+       devicePlacement: {
+@@ -239,6 +239,104 @@ describe("Codex agent harness supports()", () => {
+     expect(!result.supported ? result.reason : undefined).toContain("not declared");
+   });
+ 
++  it.each([
++    {
++      label: "initial route selection before auth preparation",
++      preparedAuth: undefined,
++      supported: true,
++    },
++    {
++      label: "prepared direct key",
++      preparedAuth: { source: "direct", mode: "api-key", requirement: "api-key" } as const,
++      supported: true,
++    },
++    {
++      label: "prepared profile key",
++      preparedAuth: { source: "profile", mode: "api_key", requirement: "api-key" } as const,
++      supported: true,
++    },
++    {
++      label: "missing prepared key",
++      preparedAuth: { source: "none", requirement: "api-key" } as const,
++      supported: false,
++    },
++    {
++      label: "native harness credential",
++      preparedAuth: { source: "harness", requirement: "api-key" } as const,
++      supported: false,
++    },
++    {
++      label: "unresolved harness auth",
++      preparedAuth: { source: "harness" } as const,
++      supported: false,
++    },
++    {
++      label: "missing auth requirement",
++      preparedAuth: { source: "direct", mode: "api-key" } as const,
++      supported: false,
++    },
++    {
++      label: "subscription profile",
++      preparedAuth: { source: "profile", mode: "oauth", requirement: "subscription" } as const,
++      supported: false,
++    },
++    {
++      label: "wrong prepared key mode",
++      preparedAuth: { source: "direct", mode: "oauth", requirement: "api-key" } as const,
++      supported: false,
++    },
++  ])("Vercel supports $label: $supported", ({ preparedAuth, supported }) => {
++    const result = harness.supports({
++      provider: "vercel-ai-gateway",
++      requestedRuntime: "codex",
++      modelProvider: {
++        api: "openai-responses",
++        baseUrl: "https://ai-gateway.vercel.sh/codex/v1",
++        requestTransportOverrides: "none",
++        runtimePolicy: { compatibleIds: ["openclaw", "codex"] },
++        preparedAuth,
++      },
++    });
++    expect(result.supported).toBe(supported);
++    if (!supported) {
++      expect(!result.supported ? result.reason : undefined).toContain("prepared");
++    }
++  });
++
++  it.each([
++    {
++      label: "missing route policy",
++      runtimePolicy: undefined,
++      requestTransportOverrides: "none" as const,
++    },
++    {
++      label: "incompatible route",
++      runtimePolicy: { compatibleIds: ["openclaw"] },
++      requestTransportOverrides: "none" as const,
++    },
++    {
++      label: "authored transport overrides",
++      runtimePolicy: { compatibleIds: ["openclaw", "codex"] },
++      requestTransportOverrides: "present" as const,
++    },
++  ])(
++    "rejects Vercel $label before auth preparation",
++    ({ runtimePolicy, requestTransportOverrides }) => {
++      expect(
++        harness.supports({
++          provider: "vercel-ai-gateway",
++          requestedRuntime: "codex",
++          modelProvider: {
++            api: "openai-responses",
++            baseUrl: "https://ai-gateway.vercel.sh/codex/v1",
++            runtimePolicy,
++            requestTransportOverrides,
++          },
++        }).supported,
++      ).toBe(false);
++    },
++  );
++
+   it.each(["gpt-future", "test-next-model"])(
+     "lets explicitly selected Codex discover %s with its own account",
+     (modelId) => {
+diff --git a/extensions/codex/harness.ts b/extensions/codex/harness.ts
+index c1d81d85..59742f05 100644
+--- a/extensions/codex/harness.ts
++++ b/extensions/codex/harness.ts
+@@ -20,7 +20,7 @@ import type { CodexSessionCatalogControlFactory } from "./src/session-catalog-ty
+ 
+ // `codex` is legacy input only until Part 2 doctor migration rewrites stored refs.
+ // New runtime identity uses the `openai` provider.
+-const DEFAULT_CODEX_HARNESS_PROVIDER_IDS = new Set(["codex", "openai"]);
++const DEFAULT_CODEX_HARNESS_PROVIDER_IDS = new Set(["codex", "openai", "vercel-ai-gateway"]);
+ const SHARED_CODEX_APP_SERVER_CLIENT_DISPOSER = Symbol.for("openclaw.codexAppServerClientDisposer");
+ // Audited against @openai/codex 0.150.1 (rust-v0.150.1). These exact denies
+ // either have no Codex-native equivalent or are enforced by the harness. Keep
+@@ -215,6 +215,15 @@ export function createCodexAppServerAgentHarness(
+       }
+       const preparedAuth = ctx.modelProvider?.preparedAuth;
+       const runtimePolicy = ctx.modelProvider?.runtimePolicy;
++      if (
++        provider === "vercel-ai-gateway" &&
++        (!runtimePolicy || (preparedAuth !== undefined && preparedAuth.requirement !== "api-key"))
++      ) {
++        return {
++          supported: false,
++          reason: "Vercel Codex requires an explicitly prepared API-key route",
++        };
++      }
+       // Codex owns discovery and auth for new first-party models. Only trust that
+       // native account when no authored transport or host credential is involved.
+       const nativeAccountOwnsUnobservedModel =
+diff --git a/extensions/codex/src/app-server/app-server-policy.test.ts b/extensions/codex/src/app-server/app-server-policy.test.ts
+index 44524eec..5e655ad5 100644
+--- a/extensions/codex/src/app-server/app-server-policy.test.ts
++++ b/extensions/codex/src/app-server/app-server-policy.test.ts
+@@ -8,6 +8,168 @@ import { assertCodexModelBackedReviewerEffectiveConfig } from "./config-reviewer
+ import { resolveCodexAppServerRuntimeOptions } from "./config.js";
+ 
+ describe("Codex app-server policy", () => {
++  const vercelProvider = {
++    name: "Vercel AI Gateway",
++    base_url: "https://ai-gateway.vercel.sh/codex/v1",
++    env_key: "AI_GATEWAY_API_KEY",
++    wire_api: "responses",
++  };
++
++  it.each([
++    { label: "HTTP", patch: { base_url: "http://ai-gateway.vercel.sh/codex/v1" } },
++    {
++      label: "hostname suffix",
++      patch: { base_url: "https://ai-gateway.vercel.sh.example.invalid/codex/v1" },
++    },
++    { label: "other endpoint", patch: { base_url: "https://ai-gateway.vercel.sh/v1" } },
++    { label: "URL credentials", patch: { base_url: "https://user@ai-gateway.vercel.sh/codex/v1" } },
++    { label: "different key", patch: { env_key: "OPENAI_API_KEY" } },
++    { label: "different protocol", patch: { wire_api: "chat" } },
++    { label: "OpenAI login", patch: { requires_openai_auth: true } },
++    { label: "auth command", patch: { auth: { command: "untrusted" } } },
++    { label: "literal bearer", patch: { experimental_bearer_token: "fixture-token" } },
++    { label: "headers", patch: { http_headers: { authorization: "fixture" } } },
++    { label: "environment headers", patch: { env_http_headers: { authorization: "OTHER_KEY" } } },
++    { label: "query overrides", patch: { query_params: { key: "fixture" } } },
++    { label: "unknown transport", patch: { future_transport: "unknown" } },
++  ])("rejects Vercel $label at both reviewer boundaries", async ({ patch }) => {
++    const provider = { ...vercelProvider, ...patch };
++    const nativeConfig = { model_provider: "vercel", model_providers: { vercel: provider } };
++    const { stringify } = await import("smol-toml");
++    const appServer = resolveCodexAppServerRuntimeOptions({
++      env: {},
++      requirementsToml: null,
++      execMode: "auto",
++      modelProvider: "openai",
++    });
++    expect(
++      resolveCodexAppServerForModelProvider({
++        appServer,
++        provider: "vercel-ai-gateway",
++        model: "vendor/test-model",
++        env: {},
++        codexConfigToml: stringify(nativeConfig),
++      }).approvalsReviewer,
++    ).toBe("user");
++    await expect(
++      assertCodexModelBackedReviewerEffectiveConfig({
++        client: { request: vi.fn(async () => ({ config: nativeConfig, origins: {} })) } as never,
++        approvalsReviewer: "auto_review",
++        modelProvider: "vercel-ai-gateway",
++        cwd: "/workspace",
++      }),
++    ).rejects.toThrow("trusted Vercel endpoint");
++  });
++
++  it("rejects switching between trusted providers without a matching prepared route", async () => {
++    for (const [expected, actual] of [
++      ["openai", "vercel"],
++      ["vercel-ai-gateway", "openai"],
++    ]) {
++      await expect(
++        assertCodexModelBackedReviewerEffectiveConfig({
++          client: {
++            request: vi.fn(async () => ({
++              config: {
++                model_provider: actual,
++                model_providers: { vercel: vercelProvider },
++              },
++              origins: {},
++            })),
++          } as never,
++          approvalsReviewer: "auto_review",
++          modelProvider: expected,
++          cwd: "/workspace",
++        }),
++      ).rejects.toThrow(/trusted .* endpoint/);
++    }
++  });
++
++  it("keeps automatic review on an explicitly configured Vercel route", async () => {
++    await withTempDir("codex-vercel-review-", async (tempDir) => {
++      const catalogPath = path.join(await fs.realpath(tempDir), "models.json");
++      await fs.writeFile(
++        catalogPath,
++        JSON.stringify({
++          models: [
++            { slug: "vendor/test-model", auto_review_model_override: "vendor/test-reviewer" },
++            { slug: "vendor/test-reviewer" },
++          ],
++        }),
++      );
++      const appServer = resolveCodexAppServerRuntimeOptions({
++        env: {},
++        requirementsToml: null,
++        execMode: "auto",
++        modelProvider: "vercel-ai-gateway",
++        model: "vendor/test-model",
++        codexConfigToml: null,
++        pluginConfig: {
++          appServer: {
++            args: [
++              "-c",
++              'model_provider="vercel"',
++              "-c",
++              'model_providers.vercel={name="Vercel AI Gateway",base_url="https://ai-gateway.vercel.sh/codex/v1",env_key="AI_GATEWAY_API_KEY",wire_api="responses"}',
++              "-c",
++              `model_catalog_json=${JSON.stringify(catalogPath)}`,
++              "app-server",
++            ],
++          },
++        },
++      });
++      expect(appServer.approvalsReviewer).toBe("auto_review");
++      expect(
++        resolveCodexAppServerForModelProvider({
++          appServer,
++          provider: "vercel-ai-gateway",
++          model: "vendor/test-model",
++          env: {},
++          codexConfigToml: null,
++        }).approvalsReviewer,
++      ).toBe("auto_review");
++      await expect(
++        assertCodexModelBackedReviewerEffectiveConfig({
++          client: {
++            request: vi.fn(async () => ({
++              config: { model_provider: "vercel", model_providers: { vercel: vercelProvider } },
++              origins: {},
++            })),
++          } as never,
++          approvalsReviewer: "auto_review",
++          modelProvider: "vercel-ai-gateway",
++          cwd: "/workspace",
++        }),
++      ).resolves.toMatchObject({ config: { model_provider: "vercel" } });
++      for (const model of ["vendor/not-listed", "test-model"]) {
++        expect(
++          resolveCodexAppServerForModelProvider({
++            appServer,
++            provider: "vercel-ai-gateway",
++            model,
++            env: {},
++            codexConfigToml: null,
++          }).approvalsReviewer,
++        ).toBe("user");
++      }
++      await fs.writeFile(
++        catalogPath,
++        JSON.stringify({
++          models: [{ slug: "vendor/test-model", auto_review_model_override: "vendor/not-listed" }],
++        }),
++      );
++      expect(
++        resolveCodexAppServerForModelProvider({
++          appServer,
++          provider: "vercel-ai-gateway",
++          model: "vendor/test-model",
++          env: {},
++          codexConfigToml: null,
++        }).approvalsReviewer,
++      ).toBe("user");
++    });
++  });
++
+   it("revalidates effective Guardian config at each boundary and skips human reviewers", async () => {
+     const request = vi.fn(async () => ({ config: { model_provider: "openai" }, origins: {} }));
+     const client = { request };
+diff --git a/extensions/codex/src/app-server/auth-bridge.test.ts b/extensions/codex/src/app-server/auth-bridge.test.ts
+index e7ecc1bc..a95763d7 100644
+--- a/extensions/codex/src/app-server/auth-bridge.test.ts
++++ b/extensions/codex/src/app-server/auth-bridge.test.ts
+@@ -1085,6 +1085,22 @@ describe("bridgeCodexAppServerStartOptions", () => {
+     });
+   });
+ 
++  it("keeps prepared Vercel auth distinct from an OpenAI login", async () => {
++    const handoff = await resolveCodexAppServerPreparedAuthHandoff({
++      provider: "vercel-ai-gateway",
++      authRequirement: "api-key",
++      resolvedApiKey: "fixture-vercel-key",
++      authProfileStore: { version: 1, profiles: {} },
++      homeScope: "agent",
++      subscriptionProfileRequiredError: "unused",
++      subscriptionProfileUnusableError: "unused",
++    });
++    expect(handoff).toEqual({
++      nativeAuthProfile: false,
++      preparedAuth: { kind: "api-key", apiKey: "fixture-vercel-key", nativeProvider: "vercel" },
++    });
++  });
++
+   it("materializes one prepared subscription profile snapshot", async () => {
+     const access = chatgptAccessToken("prepared-account");
+     const authProfileStore: AuthProfileStore = {
+diff --git a/extensions/codex/src/app-server/auth-bridge.ts b/extensions/codex/src/app-server/auth-bridge.ts
+index 66a8cae7..0d583e86 100644
+--- a/extensions/codex/src/app-server/auth-bridge.ts
++++ b/extensions/codex/src/app-server/auth-bridge.ts
+@@ -42,6 +42,7 @@ import {
+   ensureCodexComputerUseServiceApp,
+   resolveCodexComputerUseServiceAppSourcePath,
+ } from "./computer-use-service.js";
++import { readCodexEffectiveConfig } from "./config-layer-policy.js";
+ import {
+   resolveCodexComputerUseConfig,
+   type CodexAppServerHomeScope,
+@@ -60,6 +61,13 @@ import {
+ } from "./protocol.js";
+ import { isCodexAppServerNativeAuthProfile } from "./session-binding.js";
+ import { resolveCodexAppServerSpawnEnv } from "./transport-stdio.js";
++import {
++  CODEX_VERCEL_API_KEY_ENV,
++  codexVercelEnvironmentIsDirect,
++  isTrustedCodexVercelConfig,
++  readCodexVercelCatalog,
++  type CodexVercelCatalog,
++} from "./vercel-provider.js";
+ 
+ const CODEX_APP_SERVER_AUTH_PROVIDER = "openai";
+ const CODEX_APP_SERVER_EXTERNAL_CLI_PROVIDER_IDS = [CODEX_APP_SERVER_AUTH_PROVIDER];
+@@ -101,6 +109,22 @@ export async function bridgeCodexAppServerStartOptions(params: {
+   config?: AuthProfileOrderConfig;
+   pluginConfig?: unknown;
+ }): Promise<CodexAppServerStartOptions> {
++  const vercelAuth =
++    params.preparedAuth?.kind === "api-key" && params.preparedAuth.nativeProvider === "vercel";
++  if (
++    vercelAuth &&
++    (params.startOptions.transport !== "stdio" ||
++      params.startOptions.homeScope !== "agent" ||
++      params.startOptions.commandSource !== "resolved-managed" ||
++      params.startOptions.url ||
++      params.startOptions.authToken ||
++      Object.keys(params.startOptions.headers).length > 0 ||
++      !codexVercelEnvironmentIsDirect(resolveCodexAppServerSpawnEnv(params.startOptions)))
++  ) {
++    throw new Error(
++      "Prepared Vercel auth requires a direct managed stdio process with an agent-scoped home.",
++    );
++  }
+   if (params.startOptions.transport !== "stdio") {
+     return params.startOptions;
+   }
+@@ -109,10 +133,20 @@ export async function bridgeCodexAppServerStartOptions(params: {
+ 
+   if (params.preparedAuth) {
+     const scopedStartOptions = await scopeStartOptions();
+-    return withClearedEnvironmentVariables(
++    const clearedStartOptions = withClearedEnvironmentVariables(
+       scopedStartOptions,
+       CODEX_APP_SERVER_PREPARED_AUTH_ENV_VARS,
+     );
++    if (vercelAuth && params.preparedAuth.kind === "api-key") {
++      return {
++        ...clearedStartOptions,
++        env: { ...clearedStartOptions.env, [CODEX_VERCEL_API_KEY_ENV]: params.preparedAuth.apiKey },
++        clearEnv: clearedStartOptions.clearEnv?.filter(
++          (key) => key.trim().toUpperCase() !== CODEX_VERCEL_API_KEY_ENV,
++        ),
++      };
++    }
++    return clearedStartOptions;
+   }
+   if (params.authProfileId === null) {
+     return scopeStartOptions();
+@@ -256,7 +290,7 @@ type CodexAppServerPreparedAuthProfileSnapshot = {
+ };
+ 
+ export type CodexAppServerPreparedAuth =
+-  | { kind: "api-key"; apiKey: string }
++  | { kind: "api-key"; apiKey: string; nativeProvider?: "vercel" }
+   | {
+       kind: "profile";
+       profileId: string;
+@@ -328,6 +362,7 @@ export async function resolveCodexAppServerPreparedAuthProfileSnapshot(params: {
+ 
+ /** Maps one prepared route to one mutually exclusive app-server auth handoff. */
+ export async function resolveCodexAppServerPreparedAuthHandoff(params: {
++  provider?: string;
+   authRequirement?: CodexAppServerAuthRequirement;
+   resolvedApiKey?: string;
+   authProfileId?: string;
+@@ -346,6 +381,12 @@ export async function resolveCodexAppServerPreparedAuthHandoff(params: {
+   // token logins, so a prepared OpenClaw handoff here would rewrite the account that
+   // Codex CLI and Desktop share. Native homes are verified, never logged into.
+   const usesNativeHome = params.homeScope === "user";
++  const isVercel = params.provider?.trim().toLowerCase() === "vercel-ai-gateway";
++  if (isVercel && (usesNativeHome || params.authRequirement !== "api-key")) {
++    throw createCodexAppServerAuthError(
++      "Vercel Codex requires a prepared API-key route and an agent-scoped home.",
++    );
++  }
+   if (params.requirePreparedAuth && usesNativeHome) {
+     throw createCodexAppServerAuthError(
+       'Codex remote-exec cloud placement requires prepared OpenAI auth. Configure an OpenAI API-key, OAuth, or token profile and use appServer.homeScope="agent"; ambient credentials and native Codex auth are not allowed.',
+@@ -361,7 +402,11 @@ export async function resolveCodexAppServerPreparedAuthHandoff(params: {
+     }
+     return {
+       nativeAuthProfile: false,
+-      preparedAuth: { kind: "api-key" as const, apiKey },
++      preparedAuth: {
++        kind: "api-key" as const,
++        apiKey,
++        ...(isVercel ? { nativeProvider: "vercel" as const } : {}),
++      },
+     };
+   }
+ 
+@@ -797,15 +842,38 @@ export async function applyCodexAppServerAuthProfile(params: {
+   startOptions?: CodexAppServerStartOptions;
+   config?: AuthProfileOrderConfig;
+   assertCurrent?: () => void;
+-}): Promise<void> {
++}): Promise<CodexVercelCatalog | undefined> {
+   params.assertCurrent?.();
++  if (params.preparedAuth?.kind === "api-key" && params.preparedAuth.nativeProvider === "vercel") {
++    const startOptions = params.startOptions;
++    if (
++      startOptions?.transport !== "stdio" ||
++      startOptions.homeScope !== "agent" ||
++      startOptions.env?.[CODEX_VERCEL_API_KEY_ENV] !== params.preparedAuth.apiKey
++    ) {
++      throw createCodexAppServerAuthError(
++        "Vercel Codex requires its prepared key in the scoped process environment.",
++      );
++    }
++    const response = await readCodexEffectiveConfig(
++      params.client,
++      startOptions.cwd ?? params.agentDir,
++    );
++    params.assertCurrent?.();
++    if (!isTrustedCodexVercelConfig(response.config)) {
++      throw createCodexAppServerAuthError(
++        "Vercel Codex requires the explicit trusted Vercel provider configuration.",
++      );
++    }
++    return readCodexVercelCatalog(response.config);
++  }
+   if (!params.preparedAuth && params.authProfileId === null) {
+     await assertNativeCodexAccountMatchesRoute(
+       params.client,
+       params.authRequirement,
+       params.assertCurrent,
+     );
+-    return;
++    return undefined;
+   }
+   let loginParams =
+     params.preparedAuth?.kind === "profile"
+@@ -842,6 +910,7 @@ export async function applyCodexAppServerAuthProfile(params: {
+       assertCurrent: params.assertCurrent,
+     });
+   }
++  return undefined;
+ }
+ 
+ /**
+diff --git a/extensions/codex/src/app-server/bounded-turn.test.ts b/extensions/codex/src/app-server/bounded-turn.test.ts
+index b110b766..e11d693e 100644
+--- a/extensions/codex/src/app-server/bounded-turn.test.ts
++++ b/extensions/codex/src/app-server/bounded-turn.test.ts
+@@ -613,6 +613,8 @@ describe("runBoundedCodexAppServerTurn settled finalization isolation", () => {
+               "app-server",
+               '--config=openai_base_url="http://127.0.0.1:9/last"',
+               '-c=model_catalog_json="/tmp/synthetic-models.json"',
++              '-cmodel_provider="vercel"',
++              '-cmodel_providers.vercel={name="Vercel AI Gateway",base_url="https://ai-gateway.vercel.sh/codex/v1",env_key="AI_GATEWAY_API_KEY",wire_api="responses"}',
+               "-csandbox_workspace_write.exclude_slash_tmp=false",
+               "--config",
+               "features.hooks=true",
+@@ -636,6 +638,10 @@ describe("runBoundedCodexAppServerTurn settled finalization isolation", () => {
+       'openai_base_url="http://127.0.0.1:9/last"',
+       "-c",
+       'model_catalog_json="/tmp/synthetic-models.json"',
++      "-c",
++      'model_provider="vercel"',
++      "-c",
++      'model_providers.vercel={name="Vercel AI Gateway",base_url="https://ai-gateway.vercel.sh/codex/v1",env_key="AI_GATEWAY_API_KEY",wire_api="responses"}',
+       "--listen",
+       "stdio://",
+     ]);
+diff --git a/extensions/codex/src/app-server/bounded-turn.ts b/extensions/codex/src/app-server/bounded-turn.ts
+index 07d2c752..a5cbe64c 100644
+--- a/extensions/codex/src/app-server/bounded-turn.ts
++++ b/extensions/codex/src/app-server/bounded-turn.ts
+@@ -416,7 +416,10 @@ function buildPrivateCodexAppServerStartOptions(
+   const providerArgs = readCodexAppServerConfigOptions(start.args).flatMap(({ name, value }) =>
+     (name === "-c" || name === "--config") &&
+     value &&
+-    /^\s*(?:openai_base_url|model_catalog_json)\s*=/u.test(value)
++    (/^\s*(?:openai_base_url|model_catalog_json|model_providers\.vercel(?:\.[a-z_]+)?)\s*=/u.test(
++      value,
++    ) ||
++      /^\s*model_provider\s*=\s*["']vercel["']\s*$/u.test(value))
+       ? ["-c", value]
+       : [],
+   );
+diff --git a/extensions/codex/src/app-server/canonical-fork-preparation.ts b/extensions/codex/src/app-server/canonical-fork-preparation.ts
+index ae98f243..c00c8fe8 100644
+--- a/extensions/codex/src/app-server/canonical-fork-preparation.ts
++++ b/extensions/codex/src/app-server/canonical-fork-preparation.ts
+@@ -221,6 +221,7 @@ export async function prepareCanonicalCodexFork(params: {
+   await assertCodexModelBackedReviewerEffectiveConfig({
+     client: context.client,
+     approvalsReviewer: appServer.approvalsReviewer,
++    modelProvider: params.modelProvider,
+     cwd,
+   });
+   assertCurrent();
+diff --git a/extensions/codex/src/app-server/client.ts b/extensions/codex/src/app-server/client.ts
+index 8422583d..f37e0136 100644
+--- a/extensions/codex/src/app-server/client.ts
++++ b/extensions/codex/src/app-server/client.ts
+@@ -224,12 +224,15 @@ export class CodexAppServerClient {
+   private closeError: Error | undefined;
+   private serverVersion: string | undefined;
+   private runtimeIdentity: CodexAppServerRuntimeIdentity | undefined;
++  private guardTurnStart = false;
+   private threadSessionRequestGuard:
+     | ((options: {
+         signal?: AbortSignal;
+         timeoutMs?: number;
+         timeoutMessage: string;
+         abortMessage: string;
++        method: string;
++        requestParams: unknown;
+       }) => Promise<() => void>)
+     | undefined;
+   private stderrTail = "";
+@@ -390,10 +393,14 @@ export class CodexAppServerClient {
+           timeoutMs?: number;
+           timeoutMessage: string;
+           abortMessage: string;
++          method: string;
++          requestParams: unknown;
+         }) => Promise<() => void>)
+       | undefined,
++    guardTurnStart = false,
+   ): void {
+     this.threadSessionRequestGuard = guard;
++    this.guardTurnStart = guardTurnStart;
+   }
+ 
+   /** Returns the local transport PID for scoped child-process cleanup, when available. */
+@@ -426,7 +433,10 @@ export class CodexAppServerClient {
+       );
+     }
+     const guard =
+-      method === "thread/start" || method === "thread/resume" || method === "thread/fork"
++      method === "thread/start" ||
++      method === "thread/resume" ||
++      method === "thread/fork" ||
++      (this.guardTurnStart && method === "turn/start")
+         ? this.threadSessionRequestGuard
+         : undefined;
+     if (guard) {
+@@ -453,6 +463,8 @@ export class CodexAppServerClient {
+             timeoutMs: options.timeoutMs,
+             timeoutMessage,
+             abortMessage,
++            method,
++            requestParams: params,
+           });
+         } catch (error) {
+           if (error instanceof Error && error.message === timeoutMessage) {
+diff --git a/extensions/codex/src/app-server/config-reviewer.ts b/extensions/codex/src/app-server/config-reviewer.ts
+index 19dc120b..1c84db8b 100644
+--- a/extensions/codex/src/app-server/config-reviewer.ts
++++ b/extensions/codex/src/app-server/config-reviewer.ts
+@@ -22,6 +22,12 @@ import {
+ import { readNonEmptyString, readRecord } from "./config-utils.js";
+ import { readCodexAppServerConfigOptions } from "./launch-args.js";
+ import type { CodexConfigReadResponse } from "./protocol-control-plane.js";
++import {
++  codexVercelEnvironmentIsDirect,
++  isTrustedCodexVercelConfig,
++  readCodexVercelCatalog,
++  codexVercelCatalogIncludesModel,
++} from "./vercel-provider.js";
+ 
+ const CODEX_CONFIG_TOML_FILENAME = "config.toml";
+ 
+@@ -29,6 +35,7 @@ const CODEX_CONFIG_TOML_FILENAME = "config.toml";
+ export async function assertCodexModelBackedReviewerEffectiveConfig(params: {
+   client: CodexConfigReadClient;
+   approvalsReviewer: string;
++  modelProvider?: string;
+   cwd: string;
+   signal?: AbortSignal;
+ }): Promise<CodexConfigReadResponse | undefined> {
+@@ -40,6 +47,14 @@ export async function assertCodexModelBackedReviewerEffectiveConfig(params: {
+   }
+   const response = await readCodexEffectiveConfig(params.client, params.cwd, params.signal);
+   const effectiveConfig = response.config;
++  if (params.modelProvider === "vercel-ai-gateway" || params.modelProvider === "vercel") {
++    if (!isTrustedCodexVercelConfig(effectiveConfig)) {
++      throw new Error(
++        "Codex model-backed approval reviewer requires the running server to use the trusted Vercel endpoint",
++      );
++    }
++    return response;
++  }
+   const modelProvider = effectiveConfig.model_provider;
+   const providers = effectiveConfig.model_providers;
+   const providerRecords = providers == null ? undefined : readRecord(providers);
+@@ -72,6 +87,9 @@ export function canUseCodexModelBackedApprovalsReviewerForModel(
+ ): boolean {
+   const explicitProvider = params.modelProvider?.trim().toLowerCase();
+   const inferredProvider = inferProviderFromModelRef(params.model);
++  if (explicitProvider === "vercel-ai-gateway") {
++    return Boolean(params.model?.includes("/")) && isTrustedCodexModelBackedVercelProvider(params);
++  }
+   if (explicitProvider && explicitProvider !== "codex" && explicitProvider !== "openai") {
+     return false;
+   }
+@@ -81,6 +99,54 @@ export function canUseCodexModelBackedApprovalsReviewerForModel(
+   );
+ }
+ 
++function isTrustedCodexModelBackedVercelProvider(params: CodexModelBackedReviewerContext): boolean {
++  if (params.homeScope === "user" || !codexVercelEnvironmentIsDirect(params.env ?? {})) {
++    return false;
++  }
++  const configToml = readCodexAppServerConfigToml(params);
++  const overrides = readNativeCodexReviewerConfigOverrides(params);
++  if (configToml === false || overrides === false) {
++    return false;
++  }
++  const effective: Record<string, unknown> = {};
++  const provider: Record<string, unknown> = {};
++  try {
++    for (const source of [...(configToml ? [configToml] : []), ...overrides]) {
++      const config = parseToml(source, { integersAsBigInt: true });
++      if (config.model_provider != null) {
++        if (config.model_provider !== "vercel") {
++          return false;
++        }
++        effective.model_provider = config.model_provider;
++      }
++      if (config.openai_base_url != null || config.chatgpt_base_url != null) {
++        return false;
++      }
++      if (config.model_catalog_json != null) {
++        effective.model_catalog_json = config.model_catalog_json;
++      }
++      if (config.model_providers != null) {
++        const providers = readRecord(config.model_providers);
++        if (!providers || (providers.vercel != null && !readRecord(providers.vercel))) {
++          return false;
++        }
++        Object.assign(provider, readRecord(providers.vercel));
++      }
++    }
++  } catch {
++    return false;
++  }
++  effective.model_providers = { vercel: provider };
++  try {
++    return (
++      isTrustedCodexVercelConfig(effective) &&
++      codexVercelCatalogIncludesModel(readCodexVercelCatalog(effective), params.model)
++    );
++  } catch {
++    return false;
++  }
++}
++
+ function isTrustedCodexModelBackedOpenAIProvider(params: {
+   config?: ProviderAuthAliasConfig;
+   env?: NodeJS.ProcessEnv;
+diff --git a/extensions/codex/src/app-server/config-runtime.ts b/extensions/codex/src/app-server/config-runtime.ts
+index 9a7561ad..50e8c488 100644
+--- a/extensions/codex/src/app-server/config-runtime.ts
++++ b/extensions/codex/src/app-server/config-runtime.ts
+@@ -165,6 +165,7 @@ export function resolveCodexAppServerRuntimeOptions(
+     agentDir: params.agentDir,
+     codexConfigToml: params.codexConfigToml,
+     homeScope,
++    codexArgs: args,
+   });
+   const explicitModelBackedReviewer =
+     explicitApprovalsReviewer === "auto_review" ||
+diff --git a/extensions/codex/src/app-server/isolated-completion.ts b/extensions/codex/src/app-server/isolated-completion.ts
+index e5eb74a4..1789df22 100644
+--- a/extensions/codex/src/app-server/isolated-completion.ts
++++ b/extensions/codex/src/app-server/isolated-completion.ts
+@@ -25,6 +25,7 @@ export async function runCodexIsolatedCompletion(
+   const pluginConfig = readCodexPluginConfig(options.pluginConfig);
+   const authRequirement = authorization.plan.modelRoute?.authRequirement;
+   const authHandoff = await resolveCodexAppServerPreparedAuthHandoff({
++    provider: params.provider,
+     authRequirement,
+     authProfileId: authorization.plan.forwardedAuthProfileId,
+     authProfileStore: authorization.authProfileStore,
+diff --git a/extensions/codex/src/app-server/run-attempt-connection.ts b/extensions/codex/src/app-server/run-attempt-connection.ts
+index 55a94c20..398541af 100644
+--- a/extensions/codex/src/app-server/run-attempt-connection.ts
++++ b/extensions/codex/src/app-server/run-attempt-connection.ts
+@@ -280,6 +280,7 @@ export async function prepareCodexAttemptConnection({ params, options }: CodexRu
+   const authHandoff = usesSupervisionConnection
+     ? { authProfileId: undefined, nativeAuthProfile: true, preparedAuth: undefined }
+     : await resolveCodexAppServerPreparedAuthHandoff({
++        provider: params.provider,
+         authRequirement: preparedAuthRoute?.authRequirement,
+         resolvedApiKey: params.resolvedApiKey,
+         authProfileId: resolvedStartupAuthProfileId,
+diff --git a/extensions/codex/src/app-server/settled-turn-finalizer.ts b/extensions/codex/src/app-server/settled-turn-finalizer.ts
+index 9a3a7353..439d1bab 100644
+--- a/extensions/codex/src/app-server/settled-turn-finalizer.ts
++++ b/extensions/codex/src/app-server/settled-turn-finalizer.ts
+@@ -46,6 +46,7 @@ export async function runCodexSettledTurnFinalization(
+   const authProfileId =
+     selection.authProfileId ?? hostAuthPlan?.forwardedAuthProfileId ?? attempt.authProfileId;
+   const authHandoff = await resolveCodexAppServerPreparedAuthHandoff({
++    provider: attempt.provider,
+     authRequirement,
+     resolvedApiKey: attempt.resolvedApiKey,
+     authProfileId,
+diff --git a/extensions/codex/src/app-server/shared-client.test.ts b/extensions/codex/src/app-server/shared-client.test.ts
+index a5701bd4..ca861929 100644
+--- a/extensions/codex/src/app-server/shared-client.test.ts
++++ b/extensions/codex/src/app-server/shared-client.test.ts
+@@ -17,6 +17,7 @@ import { withCodexAppServerJsonClient } from "./request.js";
+ import { createCodexTestBindingStore } from "./session-binding.test-helpers.js";
+ import { createClientHarness } from "./test-support.js";
+ import { CodexAdoptedThreadActiveError } from "./thread-lifecycle-errors.js";
++import { readCodexVercelCatalog, type CodexVercelCatalog } from "./vercel-provider.js";
+ import { CODEX_APP_SERVER_VERSION, MIN_SUPPORTED_CODEX_APP_SERVER_VERSION } from "./version.js";
+ 
+ const mocks = vi.hoisted(() => ({
+@@ -35,7 +36,7 @@ const mocks = vi.hoisted(() => ({
+       agentDir?: string;
+       authProfileId?: string;
+       config?: unknown;
+-    }): Promise<void> => undefined,
++    }): Promise<CodexVercelCatalog | undefined> => undefined,
+   ),
+   resolveCodexAppServerAuthProfileIdForAgent: vi.fn(
+     (params?: { authProfileId?: string }) => params?.authProfileId,
+@@ -233,8 +234,8 @@ function clientStartCall(startSpy: unknown) {
+ 
+ function deferNextAuthProfileApplication(): () => void {
+   let release: () => void = () => {};
+-  const gate = new Promise<void>((resolve) => {
+-    release = () => resolve();
++  const gate = new Promise<undefined>((resolve) => {
++    release = () => resolve(undefined);
+   });
+   mocks.applyCodexAppServerAuthProfile.mockReturnValueOnce(gate);
+   return release;
+@@ -1772,30 +1773,174 @@ describe("shared Codex app-server client", () => {
+     },
+   );
+ 
+-  it("starts a prepared API-key client without profile or ambient-store resolution", async () => {
+-    const harness = createClientHarness();
+-    vi.spyOn(CodexAppServerClient, "start").mockResolvedValue(harness.client);
++  it.each([
++    "redirect",
++    "catalog-change",
++    "unknown-model",
++    "collaboration-model",
++    "provider-override",
++  ] as const)(
++    "blocks Vercel %s on a reused human-reviewed client before native execution",
++    async (fault) => {
++      await withTempDir("codex-vercel-request-", async (tempDir) => {
++        const agentDir = await fs.realpath(tempDir);
++        const catalogPath = path.join(agentDir, "models.json");
++        await fs.writeFile(
++          catalogPath,
++          JSON.stringify({ models: [{ slug: "vendor/test-model" }] }),
++        );
++        const nativeConfig = {
++          model: "vendor/test-model",
++          model_catalog_json: catalogPath,
++          model_provider: "vercel",
++          model_providers: {
++            vercel: {
++              name: "Vercel AI Gateway",
++              base_url: "https://ai-gateway.vercel.sh/codex/v1",
++              env_key: "AI_GATEWAY_API_KEY",
++              wire_api: "responses",
++            },
++          },
++        };
++        mocks.applyCodexAppServerAuthProfile.mockResolvedValueOnce(
++          readCodexVercelCatalog(nativeConfig),
++        );
++        const nativeRequests: string[] = [];
++        const configCwds: string[] = [];
++        const harness = createClientHarness({
++          onWrite(line, send) {
++            const request = JSON.parse(line) as {
++              id?: number;
++              method: string;
++              params?: { cwd?: string };
++            };
++            if (request.id === undefined) {
++              return;
++            }
++            if (request.method === "initialize") {
++              send({
++                id: request.id,
++                result: { userAgent: `codex-cli/${CODEX_APP_SERVER_VERSION}` },
++              });
++            } else if (request.method === "config/read") {
++              configCwds.push(request.params?.cwd ?? "");
++              send({ id: request.id, result: { config: nativeConfig, origins: {} } });
++            } else if (request.method === "thread/read") {
++              send({
++                id: request.id,
++                result: { thread: { cwd: path.join(agentDir, "workspace") } },
++              });
++            } else {
++              nativeRequests.push(request.method);
++              send({ id: request.id, result: {} });
++            }
++          },
++        });
++        vi.spyOn(CodexAppServerClient, "start").mockResolvedValue(harness.client);
++        const options = {
++          startOptions: {
++            transport: "stdio" as const,
++            homeScope: "agent" as const,
++            command: "codex",
++            commandSource: "resolved-managed" as const,
++            args: ["app-server"],
++            headers: {},
++          },
++          agentDir,
++          preparedAuth: {
++            kind: "api-key" as const,
++            apiKey: "fixture-key",
++            nativeProvider: "vercel" as const,
++          },
++          timeoutMs: 1_000,
++        };
++        try {
++          const client = await getSharedCodexAppServerClient(options);
++          await client.request(
++            "thread/start",
++            { model: "vendor/test-model", approvalsReviewer: "user" },
++            { timeoutMs: 1_000 },
++          );
++          expect(await getSharedCodexAppServerClient(options)).toBe(client);
++          await client.request(
++            "turn/start",
++            { threadId: "thread-1", input: [] },
++            { timeoutMs: 1_000 },
++          );
++          expect(configCwds.at(-1)).toBe(path.join(agentDir, "workspace"));
++          if (fault === "redirect") {
++            nativeConfig.model_providers.vercel.base_url = "https://elsewhere.example.invalid";
++          } else if (fault === "catalog-change") {
++            await fs.appendFile(catalogPath, "\n");
++          }
++          const request = {
++            threadId: "thread-1",
++            input: [],
++            model: "vendor/test-model",
++            approvalsReviewer: "user",
++            ...(fault === "unknown-model" ? { model: "vendor/not-listed" } : {}),
++            ...(fault === "collaboration-model"
++              ? { collaborationMode: { settings: { model: "vendor/not-listed" } } }
++              : {}),
++            ...(fault === "provider-override"
++              ? {
++                  config: {
++                    "model_providers.vercel.base_url": "https://elsewhere.example.invalid",
++                  },
++                }
++              : {}),
++          };
++          for (const method of ["thread/start", "thread/resume", "thread/fork", "turn/start"]) {
++            await expect(client.request(method, request, { timeoutMs: 1_000 })).rejects.toThrow(
++              /Vercel Codex/,
++            );
++          }
++          expect(nativeRequests).toEqual(["thread/start", "turn/start"]);
++        } finally {
++          await harness.client.closeAndWait();
++        }
++      });
++    },
++  );
+ 
+-    const clientPromise = getSharedCodexAppServerClient({
+-      timeoutMs: 1000,
+-      preparedAuth: { kind: "api-key", apiKey: "platform-key" },
+-    });
+-    await sendInitializeResult(harness, "openclaw/0.149.0 (macOS; test)");
++  it.each([undefined, "vercel"] as const)(
++    "starts a prepared %s API-key client without profile or ambient-store resolution",
++    async (nativeProvider) => {
++      const harness = createClientHarness();
++      vi.spyOn(CodexAppServerClient, "start").mockResolvedValue(harness.client);
+ 
+-    await expect(clientPromise).resolves.toBe(harness.client);
+-    expect(mocks.resolveCodexAppServerAuthProfileStore).not.toHaveBeenCalled();
+-    expect(mocks.resolveCodexAppServerAuthProfileIdForAgent).not.toHaveBeenCalled();
+-    expect(bridgeStartOptionsCall().authProfileId).toBeNull();
+-    expect(bridgeStartOptionsCall().preparedAuth).toEqual({
+-      kind: "api-key",
+-      apiKey: "platform-key",
+-    });
+-    expect(applyAuthProfileCall()).toMatchObject({
+-      authProfileId: null,
+-      preparedAuth: { kind: "api-key", apiKey: "platform-key" },
+-    });
+-    expect(mocks.resolveCodexAppServerPreparedApiKeyCacheKey).toHaveBeenCalledWith("platform-key");
+-  });
++      const clientPromise = getSharedCodexAppServerClient({
++        timeoutMs: 1000,
++        preparedAuth: {
++          kind: "api-key",
++          apiKey: "platform-key",
++          ...(nativeProvider ? { nativeProvider } : {}),
++        },
++      });
++      await sendInitializeResult(harness, "openclaw/0.149.0 (macOS; test)");
++
++      await expect(clientPromise).resolves.toBe(harness.client);
++      expect(mocks.resolveCodexAppServerAuthProfileStore).not.toHaveBeenCalled();
++      expect(mocks.resolveCodexAppServerAuthProfileIdForAgent).not.toHaveBeenCalled();
++      expect(bridgeStartOptionsCall().authProfileId).toBeNull();
++      expect(bridgeStartOptionsCall().preparedAuth).toEqual({
++        kind: "api-key",
++        apiKey: "platform-key",
++        ...(nativeProvider ? { nativeProvider } : {}),
++      });
++      expect(applyAuthProfileCall()).toMatchObject({
++        authProfileId: null,
++        preparedAuth: {
++          kind: "api-key",
++          apiKey: "platform-key",
++          ...(nativeProvider ? { nativeProvider } : {}),
++        },
++      });
++      expect(mocks.resolveCodexAppServerPreparedApiKeyCacheKey).toHaveBeenCalledWith(
++        "platform-key",
++      );
++    },
++  );
+ 
+   it.each(["api-key", "subscription"] as const)(
+     "reuses a turn's %s physical client for a control resume",
+@@ -1866,51 +2011,70 @@ describe("shared Codex app-server client", () => {
+     expect(startSpy).not.toHaveBeenCalled();
+   });
+ 
+-  it("rotates prepared API keys onto distinct shared clients", async () => {
+-    const firstHarness = createClientHarness();
+-    const secondHarness = createClientHarness();
+-    const startSpy = vi
+-      .spyOn(CodexAppServerClient, "start")
+-      .mockResolvedValueOnce(firstHarness.client)
+-      .mockResolvedValueOnce(secondHarness.client);
+-    const cacheKeys: string[] = [];
+-    mocks.resolveCodexAppServerPreparedApiKeyCacheKey.mockImplementation((apiKey: string) => {
+-      const cacheKey =
+-        apiKey === "first-platform-key" ? "api_key:sha256:first" : "api_key:sha256:second";
+-      cacheKeys.push(cacheKey);
+-      return cacheKey;
+-    });
++  it.each([undefined, "vercel"] as const)(
++    "rotates prepared %s API keys onto distinct shared clients",
++    async (nativeProvider) => {
++      const firstHarness = createClientHarness();
++      const secondHarness = createClientHarness();
++      const startSpy = vi
++        .spyOn(CodexAppServerClient, "start")
++        .mockResolvedValueOnce(firstHarness.client)
++        .mockResolvedValueOnce(secondHarness.client);
++      const cacheKeys: string[] = [];
++      mocks.resolveCodexAppServerPreparedApiKeyCacheKey.mockImplementation((apiKey: string) => {
++        const cacheKey =
++          apiKey === "first-platform-key" ? "api_key:sha256:first" : "api_key:sha256:second";
++        cacheKeys.push(cacheKey);
++        return cacheKey;
++      });
+ 
+-    const firstPromise = getSharedCodexAppServerClient({
+-      timeoutMs: 1000,
+-      preparedAuth: { kind: "api-key", apiKey: "first-platform-key" },
+-    });
+-    await sendInitializeResult(firstHarness, "openclaw/0.149.0 (macOS; test)");
+-    await expect(firstPromise).resolves.toBe(firstHarness.client);
++      const firstPromise = getSharedCodexAppServerClient({
++        timeoutMs: 1000,
++        preparedAuth: {
++          kind: "api-key",
++          apiKey: "first-platform-key",
++          ...(nativeProvider ? { nativeProvider } : {}),
++        },
++      });
++      await sendInitializeResult(firstHarness, "openclaw/0.149.0 (macOS; test)");
++      await expect(firstPromise).resolves.toBe(firstHarness.client);
+ 
+-    const secondPromise = getSharedCodexAppServerClient({
+-      timeoutMs: 1000,
+-      preparedAuth: { kind: "api-key", apiKey: "second-platform-key" },
+-    });
+-    await sendInitializeResult(secondHarness, "openclaw/0.149.0 (macOS; test)");
+-    expect(startSpy).toHaveBeenCalledTimes(2);
+-    await expect(secondPromise).resolves.toBe(secondHarness.client);
++      const secondPromise = getSharedCodexAppServerClient({
++        timeoutMs: 1000,
++        preparedAuth: {
++          kind: "api-key",
++          apiKey: "second-platform-key",
++          ...(nativeProvider ? { nativeProvider } : {}),
++        },
++      });
++      await sendInitializeResult(secondHarness, "openclaw/0.149.0 (macOS; test)");
++      expect(startSpy).toHaveBeenCalledTimes(2);
++      await expect(secondPromise).resolves.toBe(secondHarness.client);
+ 
+-    expect(cacheKeys).toEqual(["api_key:sha256:first", "api_key:sha256:second"]);
+-    expect(cacheKeys.join("\n")).not.toContain("platform-key");
+-    expect(mocks.applyCodexAppServerAuthProfile).toHaveBeenNthCalledWith(
+-      1,
+-      expect.objectContaining({
+-        preparedAuth: { kind: "api-key", apiKey: "first-platform-key" },
+-      }),
+-    );
+-    expect(mocks.applyCodexAppServerAuthProfile).toHaveBeenNthCalledWith(
+-      2,
+-      expect.objectContaining({
+-        preparedAuth: { kind: "api-key", apiKey: "second-platform-key" },
+-      }),
+-    );
+-  });
++      expect(cacheKeys).toEqual(["api_key:sha256:first", "api_key:sha256:second"]);
++      expect(cacheKeys.join("\n")).not.toContain("platform-key");
++      expect(mocks.applyCodexAppServerAuthProfile).toHaveBeenNthCalledWith(
++        1,
++        expect.objectContaining({
++          preparedAuth: {
++            kind: "api-key",
++            apiKey: "first-platform-key",
++            ...(nativeProvider ? { nativeProvider } : {}),
++          },
++        }),
++      );
++      expect(mocks.applyCodexAppServerAuthProfile).toHaveBeenNthCalledWith(
++        2,
++        expect.objectContaining({
++          preparedAuth: {
++            kind: "api-key",
++            apiKey: "second-platform-key",
++            ...(nativeProvider ? { nativeProvider } : {}),
++          },
++        }),
++      );
++    },
++  );
+ 
+   it("registers persisted profile refresh for isolated app-server startup", async () => {
+     const harness = createClientHarness();
+diff --git a/extensions/codex/src/app-server/shared-client.ts b/extensions/codex/src/app-server/shared-client.ts
+index 31358e3c..e180891e 100644
+--- a/extensions/codex/src/app-server/shared-client.ts
++++ b/extensions/codex/src/app-server/shared-client.ts
+@@ -49,6 +49,7 @@ import {
+ import { acquireCodexNativeConfigFence } from "./native-config-fence.js";
+ import { CodexAdoptedThreadActiveError } from "./thread-lifecycle-errors.js";
+ import { withTimeout } from "./timeout.js";
++import { assertCodexVercelRequest } from "./vercel-provider.js";
+ 
+ export type { CodexAppServerPreparedAuth } from "./auth-bridge.js";
+ 
+@@ -485,7 +486,7 @@ async function resolveCodexAppServerClientStartContext(
+   }
+   const resolvedPreparedAuth: CodexAppServerResolvedPreparedAuth | undefined =
+     preparedAuth?.kind === "api-key"
+-      ? { kind: "api-key", apiKey: preparedApiKey as string }
++      ? { ...preparedAuth, apiKey: preparedApiKey as string }
+       : preparedAuthProfileSnapshot && authProfileId && authProfileStore
+         ? {
+             kind: "profile",
+@@ -1186,7 +1187,7 @@ async function startInitializedCodexAppServerClient(
+       });
+ 
+       assertStartupCurrent();
+-      await waitForStartup(() =>
++      const preparedVercelCatalog = await waitForStartup(() =>
+         applyCodexAppServerAuthProfile({
+           client,
+           agentDir: params.agentDir,
+@@ -1206,15 +1207,34 @@ async function startInitializedCodexAppServerClient(
+       const fenceKey = resolveCodexNativeConfigFenceKey({ client });
+       if (fenceKey) {
+         client.setThreadSessionRequestGuard(async (options) => {
+-          const release = await acquireCodexNativeConfigFence(fenceKey, options);
++          const signal =
++            preparedVercelCatalog && options.timeoutMs !== undefined
++              ? AbortSignal.any([
++                  ...(options.signal ? [options.signal] : []),
++                  AbortSignal.timeout(Math.max(1, options.timeoutMs)),
++                ])
++              : options.signal;
++          const release = await acquireCodexNativeConfigFence(fenceKey, { ...options, signal });
+           try {
+             assertCodexAppServerClientStartSelectionCurrent({ client });
++            if (preparedVercelCatalog) {
++              await assertCodexVercelRequest({
++                client,
++                catalog: preparedVercelCatalog,
++                method: options.method,
++                requestParams: options.requestParams,
++                defaultCwd: startOptions.cwd ?? params.agentDir,
++                signal,
++              });
++            }
+             return release;
+           } catch (error) {
+             release();
+             throw error;
+           }
+-        });
++        }, preparedVercelCatalog !== undefined);
++      } else if (preparedVercelCatalog) {
++        throw new Error("Vercel Codex requires a config-fenced managed process.");
+       }
+       ready = true;
+       return client;
+diff --git a/extensions/codex/src/app-server/side-question.ts b/extensions/codex/src/app-server/side-question.ts
+index 3c00aaa5..6922005b 100644
+--- a/extensions/codex/src/app-server/side-question.ts
++++ b/extensions/codex/src/app-server/side-question.ts
+@@ -255,6 +255,7 @@ export async function runCodexAppServerSideQuestion(
+   const authHandoff = usesSupervisionConnection
+     ? { authProfileId: undefined, nativeAuthProfile: true, preparedAuth: undefined }
+     : await resolveCodexAppServerPreparedAuthHandoff({
++        provider: params.provider,
+         authRequirement: preparedRuntimeAuth.plan.modelRoute?.authRequirement,
+         resolvedApiKey: preparedRuntimeAuth.resolvedApiKey,
+         authProfileId: preparedRuntimeAuth.plan.forwardedAuthProfileId,
+@@ -316,8 +317,10 @@ export async function runCodexAppServerSideQuestion(
+     modelProvider: reviewerPolicyContext.modelProvider,
+     model: reviewerPolicyContext.model,
+     config: params.cfg,
+-    env: process.env,
++    env: { ...process.env, ...connection.appServer.start.env },
+     agentDir: params.agentDir,
++    codexArgs: connection.appServer.start.args,
++    homeScope: connection.appServer.start.homeScope,
+   };
+   const appServer = resolveCodexAppServerForModelProvider({
+     appServer: applyCodexSessionPermissionPolicy({
+diff --git a/extensions/codex/src/app-server/thread-lifecycle-preflight.ts b/extensions/codex/src/app-server/thread-lifecycle-preflight.ts
+index 980effb6..fa8902ca 100644
+--- a/extensions/codex/src/app-server/thread-lifecycle-preflight.ts
++++ b/extensions/codex/src/app-server/thread-lifecycle-preflight.ts
+@@ -57,6 +57,7 @@ export async function prepareCodexThreadLifecyclePreflight(params: CodexStartOrR
+   let effectiveConfig = await assertCodexModelBackedReviewerEffectiveConfig({
+     client: params.client,
+     approvalsReviewer: params.appServer.approvalsReviewer,
++    modelProvider: params.params.provider,
+     cwd: params.cwd,
+     signal: params.signal,
+   });
+diff --git a/extensions/codex/src/app-server/thread-lifecycle.test.ts b/extensions/codex/src/app-server/thread-lifecycle.test.ts
+index 4c809bb1..91f19693 100644
+--- a/extensions/codex/src/app-server/thread-lifecycle.test.ts
++++ b/extensions/codex/src/app-server/thread-lifecycle.test.ts
+@@ -2727,6 +2727,15 @@ describe("Codex app-server model provider selection", () => {
+     });
+   });
+ 
++  it("keeps the Gateway model id intact when selecting native Vercel", () => {
++    expect(
++      resolveCodexAppServerThreadModelSelection({
++        provider: "vercel-ai-gateway",
++        model: "vendor/test-model",
++      }),
++    ).toEqual({ model: "vendor/test-model", modelProvider: "vercel" });
++  });
++
+   it("prefers provider-qualified models over bound providers for thread capability selection", () => {
+     expect(
+       resolveCodexAppServerThreadModelSelection({
+diff --git a/extensions/codex/src/app-server/thread-model-selection.ts b/extensions/codex/src/app-server/thread-model-selection.ts
+index 00c5ab6c..4e50346f 100644
+--- a/extensions/codex/src/app-server/thread-model-selection.ts
++++ b/extensions/codex/src/app-server/thread-model-selection.ts
+@@ -120,6 +120,9 @@ export function resolveCodexAppServerModelProvider(params: {
+     // native provider/auth selection instead of forcing the legacy OpenAI path.
+     return undefined;
+   }
++  if (normalizedLower === "vercel-ai-gateway") {
++    return "vercel";
++  }
+   if (isCodexAppServerNativeAuthProfile(params) && normalizedLower === "openai") {
+     // When OpenClaw is forwarding ChatGPT/Codex OAuth, `openai` is Codex's
+     // native provider id, not a public OpenAI API-key choice. Omit the override
+diff --git a/extensions/codex/src/app-server/vercel-auth.test.ts b/extensions/codex/src/app-server/vercel-auth.test.ts
+new file mode 100644
+index 00000000..417f5699
+--- /dev/null
++++ b/extensions/codex/src/app-server/vercel-auth.test.ts
+@@ -0,0 +1,181 @@
++import fs from "node:fs/promises";
++import { withTempDir } from "openclaw/plugin-sdk/test-env";
++import { describe, expect, it } from "vitest";
++import {
++  applyCodexAppServerAuthProfile,
++  bridgeCodexAppServerStartOptions,
++  resolveCodexAppServerPreparedAuthHandoff,
++} from "./auth-bridge.js";
++import type { CodexAppServerStartOptions } from "./config.js";
++import { createClientHarness } from "./test-support.js";
++import { resolveCodexAppServerSpawnEnv } from "./transport-stdio.js";
++
++const preparedAuth = {
++  kind: "api-key",
++  apiKey: "fixture-vercel-key",
++  nativeProvider: "vercel",
++} as const;
++const startOptions: CodexAppServerStartOptions = {
++  transport: "stdio",
++  homeScope: "agent",
++  commandSource: "resolved-managed",
++  command: "codex",
++  args: ["app-server"],
++  headers: {},
++};
++const config = {
++  model_provider: "vercel",
++  model_providers: {
++    vercel: {
++      name: "Vercel AI Gateway",
++      base_url: "https://ai-gateway.vercel.sh/codex/v1",
++      env_key: "AI_GATEWAY_API_KEY",
++      wire_api: "responses",
++    },
++  },
++};
++
++describe("prepared Vercel Codex credentials", () => {
++  it("injects only the scoped key and verifies the provider without an OpenAI login", async () => {
++    await withTempDir("codex-vercel-auth-", async (tempDir) => {
++      const agentDir = await fs.realpath(tempDir);
++      const catalogPath = `${agentDir}/models.json`;
++      await fs.writeFile(catalogPath, JSON.stringify({ models: [{ slug: "vendor/test-model" }] }));
++      const nativeConfig = {
++        ...config,
++        chatgpt_base_url: "https://chatgpt.com/backend-api/",
++        model_catalog_json: catalogPath,
++      };
++      const bridged = await bridgeCodexAppServerStartOptions({
++        startOptions: {
++          ...startOptions,
++          env: {
++            AI_GATEWAY_API_KEY: "ambient-gateway",
++            OPENAI_API_KEY: "ambient-openai",
++            CODEX_API_KEY: "ambient-codex",
++            CODEX_ACCESS_TOKEN: "ambient-token",
++          },
++        },
++        agentDir,
++        preparedAuth,
++      });
++      const env = resolveCodexAppServerSpawnEnv(bridged, {});
++      expect(env.AI_GATEWAY_API_KEY).toBe(preparedAuth.apiKey);
++      for (const name of ["OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN"]) {
++        expect(env[name]).toBeUndefined();
++      }
++      expect(env.CODEX_HOME).toBe(`${agentDir}/codex-home`);
++      expect(bridged.args).toContain('cli_auth_credentials_store="ephemeral"');
++      const methods: string[] = [];
++      const harness = createClientHarness({
++        onWrite(line, send) {
++          const request = JSON.parse(line) as { id: number; method: string };
++          methods.push(request.method);
++          send({ id: request.id, result: { config: nativeConfig, origins: {} } });
++        },
++      });
++      try {
++        await applyCodexAppServerAuthProfile({
++          client: harness.client,
++          agentDir,
++          preparedAuth,
++          startOptions: bridged,
++        });
++        expect(methods).toEqual(["config/read"]);
++        await expect(fs.stat(`${agentDir}/codex-home/auth.json`)).rejects.toMatchObject({
++          code: "ENOENT",
++        });
++      } finally {
++        harness.client.close();
++      }
++    });
++  });
++
++  it.each([
++    {
++      label: "unprepared route",
++      homeScope: "agent" as const,
++      authRequirement: undefined,
++      resolvedApiKey: "fixture-key",
++    },
++    {
++      label: "native home",
++      homeScope: "user" as const,
++      authRequirement: "api-key" as const,
++      resolvedApiKey: "fixture-key",
++    },
++    {
++      label: "subscription",
++      homeScope: "agent" as const,
++      authRequirement: "subscription" as const,
++      resolvedApiKey: "fixture-key",
++    },
++    {
++      label: "missing key",
++      homeScope: "agent" as const,
++      authRequirement: "api-key" as const,
++      resolvedApiKey: " ",
++    },
++  ])(
++    "rejects $label without native auth fallback",
++    async ({ homeScope, authRequirement, resolvedApiKey }) => {
++      await expect(
++        resolveCodexAppServerPreparedAuthHandoff({
++          provider: "vercel-ai-gateway",
++          homeScope,
++          authRequirement,
++          resolvedApiKey,
++          authProfileStore: { version: 1, profiles: {} },
++          subscriptionProfileRequiredError: "unused",
++          subscriptionProfileUnusableError: "unused",
++        }),
++      ).rejects.toThrow();
++    },
++  );
++
++  it.each([
++    { label: "remote transport", patch: { transport: "websocket" as const } },
++    { label: "native home", patch: { homeScope: "user" as const } },
++    { label: "custom command", patch: { commandSource: "config" as const } },
++    { label: "HTTP proxy", patch: { env: { HTTPS_PROXY: "https://proxy.example.invalid" } } },
++  ])("rejects $label before handing off the key", async ({ patch }) => {
++    await expect(
++      bridgeCodexAppServerStartOptions({
++        startOptions: { ...startOptions, ...patch },
++        agentDir: "/unused",
++        preparedAuth,
++      }),
++    ).rejects.toThrow("direct managed stdio");
++  });
++
++  it.each([
++    { model_provider: "openai" },
++    { ...config, chatgpt_base_url: "https://relay.example.invalid/" },
++    { ...config, openai_base_url: "https://api.openai.com/v1" },
++  ])(
++    "rejects effective provider or endpoint overrides without logging in: %j",
++    async (effective) => {
++      const methods: string[] = [];
++      const harness = createClientHarness({
++        onWrite(line, send) {
++          const request = JSON.parse(line) as { id: number; method: string };
++          methods.push(request.method);
++          send({ id: request.id, result: { config: effective, origins: {} } });
++        },
++      });
++      try {
++        await expect(
++          applyCodexAppServerAuthProfile({
++            client: harness.client,
++            agentDir: "/workspace",
++            preparedAuth,
++            startOptions: { ...startOptions, env: { AI_GATEWAY_API_KEY: preparedAuth.apiKey } },
++          }),
++        ).rejects.toThrow("trusted Vercel provider");
++        expect(methods).toEqual(["config/read"]);
++      } finally {
++        harness.client.close();
++      }
++    },
++  );
++});
+diff --git a/extensions/codex/src/app-server/vercel-provider.ts b/extensions/codex/src/app-server/vercel-provider.ts
+new file mode 100644
+index 00000000..be1b9465
+--- /dev/null
++++ b/extensions/codex/src/app-server/vercel-provider.ts
+@@ -0,0 +1,176 @@
++import { createHash } from "node:crypto";
++import { readFileSync, statSync } from "node:fs";
++import path from "node:path";
++import type { CodexConfigReadClient } from "./config-layer-policy.js";
++import { readCodexEffectiveConfig } from "./config-layer-policy.js";
++import { readRecord } from "./config-utils.js";
++
++export const CODEX_VERCEL_API_KEY_ENV = "AI_GATEWAY_API_KEY";
++const VERCEL_CODEX_BASE_URL = "https://ai-gateway.vercel.sh/codex/v1";
++const VERCEL_PROVIDER_FIELDS = new Set([
++  "name",
++  "base_url",
++  "env_key",
++  "env_key_instructions",
++  "wire_api",
++  "requires_openai_auth",
++  "supports_websockets",
++  "supports_standalone_web_search",
++  "request_max_retries",
++  "stream_max_retries",
++  "stream_idle_timeout_ms",
++  "websocket_connect_timeout_ms",
++]);
++
++/** One explicit native transport contract, shared by credential and reviewer admission. */
++export function isTrustedCodexVercelConfig(config: Record<string, unknown>): boolean {
++  const provider = readRecord(readRecord(config.model_providers)?.vercel);
++  return (
++    config.model_provider === "vercel" &&
++    provider !== undefined &&
++    (provider.base_url === VERCEL_CODEX_BASE_URL ||
++      provider.base_url === `${VERCEL_CODEX_BASE_URL}/`) &&
++    provider.env_key === CODEX_VERCEL_API_KEY_ENV &&
++    provider.wire_api === "responses" &&
++    ["requires_openai_auth", "supports_websockets", "supports_standalone_web_search"].every(
++      (key) => provider[key] == null || provider[key] === false,
++    ) &&
++    Object.entries(provider).every(
++      ([key, value]) => value == null || VERCEL_PROVIDER_FIELDS.has(key),
++    ) &&
++    config.openai_base_url == null &&
++    // Native config/read materializes this default even for custom providers.
++    (config.chatgpt_base_url == null ||
++      config.chatgpt_base_url === "https://chatgpt.com/backend-api/")
++  );
++}
++
++export function codexVercelEnvironmentIsDirect(env: NodeJS.ProcessEnv): boolean {
++  const overrides = new Set([
++    "HTTP_PROXY",
++    "HTTPS_PROXY",
++    "ALL_PROXY",
++    "OPENAI_BASE_URL",
++    "OPENAI_API_BASE",
++  ]);
++  return !Object.entries(env).some(
++    ([key, value]) => overrides.has(key.toUpperCase()) && value?.trim(),
++  );
++}
++
++export type CodexVercelCatalog = {
++  path: string;
++  sha256: string;
++  models: Map<string, string | undefined>;
++};
++
++export function readCodexVercelCatalog(config: Record<string, unknown>): CodexVercelCatalog {
++  const catalogPath = config.model_catalog_json;
++  if (typeof catalogPath !== "string" || !path.isAbsolute(catalogPath)) {
++    throw new Error("Vercel Codex requires an explicit native model catalog.");
++  }
++  const stat = statSync(catalogPath);
++  if (!stat.isFile() || stat.size > 32 * 1024 * 1024) {
++    throw new Error("Vercel Codex model catalog is not a bounded regular file.");
++  }
++  const bytes = readFileSync(catalogPath);
++  const entries: unknown = JSON.parse(bytes.toString("utf8")).models;
++  if (!Array.isArray(entries) || !entries.length) {
++    throw new Error("Vercel Codex model catalog is empty or invalid.");
++  }
++  const models = new Map<string, string | undefined>();
++  for (const entry of entries) {
++    const model = readRecord(entry);
++    const slug = model?.slug;
++    const reviewer = model?.auto_review_model_override;
++    if (
++      typeof slug !== "string" ||
++      !slug ||
++      models.has(slug) ||
++      (reviewer != null && (typeof reviewer !== "string" || !reviewer))
++    ) {
++      throw new Error("Vercel Codex model catalog contains invalid model or reviewer metadata.");
++    }
++    models.set(slug, typeof reviewer === "string" ? reviewer : undefined);
++  }
++  return { path: catalogPath, sha256: createHash("sha256").update(bytes).digest("hex"), models };
++}
++
++export function codexVercelCatalogIncludesModel(
++  catalog: CodexVercelCatalog,
++  model: unknown,
++): boolean {
++  if (typeof model !== "string" || !catalog.models.has(model)) {
++    return false;
++  }
++  const reviewer = catalog.models.get(model);
++  return reviewer === undefined || catalog.models.has(reviewer);
++}
++
++/** Every native config reload is admitted against the process's original catalog. */
++export async function assertCodexVercelRequest(params: {
++  client: CodexConfigReadClient & {
++    request(method: string, params: unknown, options?: { signal?: AbortSignal }): Promise<unknown>;
++  };
++  catalog: CodexVercelCatalog;
++  method: string;
++  requestParams: unknown;
++  defaultCwd: string;
++  signal?: AbortSignal;
++}): Promise<void> {
++  const request = readRecord(params.requestParams);
++  if (!request || (request.modelProvider != null && request.modelProvider !== "vercel")) {
++    throw new Error("Vercel Codex request cannot change native providers.");
++  }
++  const overrides = readRecord(request.config);
++  if (
++    overrides &&
++    Object.keys(overrides).some((key) =>
++      /^(?:model|model_provider|model_providers|model_catalog_json|openai_base_url|chatgpt_base_url)(?:\.|$)/u.test(
++        key,
++      ),
++    )
++  ) {
++    throw new Error("Vercel Codex request cannot override its prepared provider or catalog.");
++  }
++  let cwd = typeof request.cwd === "string" ? request.cwd : undefined;
++  if (!cwd && typeof request.threadId === "string") {
++    const response = readRecord(
++      await params.client.request(
++        "thread/read",
++        { threadId: request.threadId, includeTurns: false },
++        { signal: params.signal },
++      ),
++    );
++    const thread = readRecord(response?.thread);
++    if (typeof thread?.cwd !== "string") {
++      throw new Error("Vercel Codex cannot verify the native thread workspace.");
++    }
++    cwd = thread.cwd;
++  }
++  const effective = await readCodexEffectiveConfig(
++    params.client,
++    cwd ?? params.defaultCwd,
++    params.signal,
++  );
++  if (!isTrustedCodexVercelConfig(effective.config)) {
++    throw new Error("Vercel Codex request requires the trusted Vercel provider.");
++  }
++  const catalog = readCodexVercelCatalog(effective.config);
++  if (catalog.path !== params.catalog.path || catalog.sha256 !== params.catalog.sha256) {
++    throw new Error("Vercel Codex native catalog changed; start a new prepared process.");
++  }
++  const collaboration = readRecord(readRecord(request.collaborationMode)?.settings);
++  const model =
++    collaboration?.model ??
++    request.model ??
++    (params.method === "thread/start" ? effective.config.model : undefined);
++  if (model === undefined && params.method === "turn/start") {
++    return;
++  }
++  if (!codexVercelCatalogIncludesModel(catalog, model)) {
++    throw new Error(
++      "Vercel Codex requires a catalog-listed model and reviewer before native execution.",
++    );
++  }
++}
+diff --git a/extensions/codex/src/command-rpc.ts b/extensions/codex/src/command-rpc.ts
+index 7f5dd07c..0b457c69 100644
+--- a/extensions/codex/src/command-rpc.ts
++++ b/extensions/codex/src/command-rpc.ts
+@@ -143,6 +143,7 @@ async function prepareControlAuth(
+       })
+     : undefined;
+   const handoff = await resolveCodexAppServerPreparedAuthHandoff({
++    provider: route?.provider ?? model.provider,
+     authRequirement: route?.authRequirement,
+     resolvedApiKey: resolvedAuth?.apiKey,
+     authProfileId: route
+diff --git a/extensions/vercel-ai-gateway/provider-policy-api.test.ts b/extensions/vercel-ai-gateway/provider-policy-api.test.ts
+new file mode 100644
+index 00000000..b6e513c9
+--- /dev/null
++++ b/extensions/vercel-ai-gateway/provider-policy-api.test.ts
+@@ -0,0 +1,68 @@
++import { describe, expect, it } from "vitest";
++import { resolveModelRoutes } from "./provider-policy-api.js";
++
++const provider = "vercel-ai-gateway";
++const baseUrl = "https://ai-gateway.vercel.sh/codex/v1";
++
++describe("Vercel Codex route compatibility", () => {
++  it("keeps the existing embedded route as the default", () => {
++    expect(resolveModelRoutes({ provider })).toBeNull();
++  });
++
++  it("declares Codex only for the explicit Responses endpoint", () => {
++    expect(
++      resolveModelRoutes({
++        provider,
++        modelId: "vendor/test-model",
++        configuredProvider: { api: "openai-responses", baseUrl },
++      }),
++    ).toMatchObject({
++      kind: "routes",
++      routes: [
++        {
++          api: "openai-responses",
++          baseUrl,
++          authRequirement: "api-key",
++          requestTransportOverrides: "none",
++          runtimePolicy: { compatibleIds: ["openclaw", "codex"] },
++        },
++      ],
++      defaultRuntimeId: "openclaw",
++    });
++  });
++
++  it.each([
++    "http://ai-gateway.vercel.sh/codex/v1",
++    "https://ai-gateway.vercel.sh.evil.example/codex/v1",
++    "https://secret@ai-gateway.vercel.sh/codex/v1",
++    "https://ai-gateway.vercel.sh:8443/codex/v1",
++    `${baseUrl}?token=secret`,
++    `${baseUrl}#fragment`,
++    "https://ai-gateway.vercel.sh/v1",
++  ])("does not declare native compatibility for %s", (endpoint) => {
++    const result = resolveModelRoutes({
++      provider,
++      configuredProvider: { api: "openai-responses", baseUrl: endpoint },
++    });
++    expect(
++      result?.kind === "routes" ? result.routes[0].runtimePolicy?.compatibleIds : [],
++    ).not.toContain("codex");
++  });
++
++  it("does not erase a model-specific endpoint or transport override", () => {
++    for (const extra of [
++      { configuredModel: { baseUrl: "https://other.example/v1" } },
++      { configuredModel: { api: "anthropic-messages" as const } },
++      { requestTransportOverrides: "present" as const },
++    ]) {
++      const result = resolveModelRoutes({
++        provider,
++        configuredProvider: { api: "openai-responses", baseUrl },
++        ...extra,
++      });
++      expect(
++        result?.kind === "routes" ? result.routes[0].runtimePolicy?.compatibleIds : [],
++      ).not.toContain("codex");
++    }
++  });
++});
+diff --git a/extensions/vercel-ai-gateway/provider-policy-api.ts b/extensions/vercel-ai-gateway/provider-policy-api.ts
+new file mode 100644
+index 00000000..79da8051
+--- /dev/null
++++ b/extensions/vercel-ai-gateway/provider-policy-api.ts
+@@ -0,0 +1,40 @@
++import type {
++  ProviderModelRouteResolution,
++  ProviderResolveModelRoutesContext,
++} from "openclaw/plugin-sdk/provider-model-types";
++
++const CODEX_BASE_URL = "https://ai-gateway.vercel.sh/codex/v1";
++
++export function resolveModelRoutes(
++  context: ProviderResolveModelRoutesContext,
++): ProviderModelRouteResolution | null {
++  if (context.provider.trim().toLowerCase() !== "vercel-ai-gateway") {
++    return null;
++  }
++  const api = context.configuredModel?.api ?? context.configuredProvider?.api;
++  const baseUrl = context.configuredModel?.baseUrl ?? context.configuredProvider?.baseUrl;
++  // Native transport is an explicit opt-in; the existing Messages route stays unchanged.
++  if (api !== "openai-responses" || typeof baseUrl !== "string") {
++    return null;
++  }
++  if (baseUrl.trim().replace(/\/$/, "") !== CODEX_BASE_URL) {
++    return null;
++  }
++  const requestTransportOverrides = context.requestTransportOverrides ?? "none";
++  return {
++    kind: "routes",
++    routes: [
++      {
++        api,
++        baseUrl: CODEX_BASE_URL,
++        authRequirement: "api-key",
++        requestTransportOverrides,
++        runtimePolicy: {
++          compatibleIds:
++            requestTransportOverrides === "none" ? ["openclaw", "codex"] : ["openclaw"],
++        },
++      },
++    ],
++    defaultRuntimeId: "openclaw",
++  };
++}
+diff --git a/src/agents/runtime-plan/auth.ts b/src/agents/runtime-plan/auth.ts
+index 9525aa3d..6a42e5d4 100644
+--- a/src/agents/runtime-plan/auth.ts
++++ b/src/agents/runtime-plan/auth.ts
+@@ -3,6 +3,7 @@
+  * and harness auth owners are resolved before session auth profiles can be
+  * safely forwarded.
+  */
++import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
+ import type { OpenClawConfig } from "../../config/types.openclaw.js";
+ import type { PluginMetadataSnapshot } from "../../plugins/plugin-metadata-snapshot.types.js";
+ import { normalizeOptionalAgentRuntimeId } from "../agent-runtime-id.js";
+@@ -12,7 +13,6 @@ import {
+ } from "../provider-auth-aliases.js";
+ import type { AgentRuntimeAuthPlan } from "./types.js";
+ 
+-const CODEX_HARNESS_AUTH_PROVIDER = "openai";
+ // Empty metadata disables plugin alias lookups without changing the downstream
+ // resolver contract, matching the "plugins disabled" runtime-plan state.
+ const EMPTY_PROVIDER_AUTH_ALIAS_METADATA = {
+@@ -20,12 +20,18 @@ const EMPTY_PROVIDER_AUTH_ALIAS_METADATA = {
+ } satisfies NonNullable<ProviderAuthAliasLookupParams["metadataSnapshot"]>;
+ 
+ function resolveHarnessAuthProvider(params: {
++  provider: string;
+   harnessId?: string;
+   harnessRuntime?: string;
+ }): string | undefined {
+   const harnessId = normalizeOptionalAgentRuntimeId(params.harnessId);
+   const runtime = normalizeOptionalAgentRuntimeId(params.harnessRuntime);
+-  return harnessId === "codex" || runtime === "codex" ? CODEX_HARNESS_AUTH_PROVIDER : undefined;
++  const provider = normalizeProviderId(params.provider);
++  return harnessId === "codex" || runtime === "codex"
++    ? provider === "codex"
++      ? "openai"
++      : provider
++    : undefined;
+ }
+ 
+ /** Builds the auth forwarding plan for one resolved agent runtime. */
+diff --git a/src/agents/runtime-plan/prepare-auth.ts b/src/agents/runtime-plan/prepare-auth.ts
+index 2e51ff08..ed899a34 100644
+--- a/src/agents/runtime-plan/prepare-auth.ts
++++ b/src/agents/runtime-plan/prepare-auth.ts
+@@ -3,10 +3,13 @@
+  * Callers supply an already loaded credential snapshot; this module never
+  * resolves secrets or loads a provider runtime.
+  */
++import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
+ import { resolveMergedModelProviderConfig } from "../../config/model-provider-config.js";
++import type { ModelApi } from "../../config/types.models.js";
+ import type { OpenClawConfig } from "../../config/types.openclaw.js";
+ import type { ProviderRouteOverridePresence } from "../../plugin-sdk/provider-model-types.js";
+ import type { PluginMetadataSnapshot } from "../../plugins/plugin-metadata-snapshot.types.js";
++import { resolveProviderModelRoutes } from "../../plugins/provider-model-routes.js";
+ import {
+   prependAuthProfilePin,
+   resolveAuthProfileEligibility,
+@@ -22,7 +25,7 @@ import {
+   resolveProviderEntryApiKeyProfileReference,
+   shouldPreferExplicitConfigApiKeyAuth,
+ } from "../model-auth.js";
+-import { resolveOpenAIModelRoutes, selectOpenAIModelRouteAuth } from "../openai-model-routes.js";
++import { splitTrailingAuthProfile } from "../model-ref-profile.js";
+ import {
+   buildProviderModelAuthDirectSource,
+   buildProviderModelAuthSourcePlan,
+@@ -30,7 +33,10 @@ import {
+   type ProviderModelAuthDirectSource,
+   type ProviderModelAuthProfileSource,
+ } from "../provider-model-auth-source-plan.js";
+-import { selectProviderModelAuthSources } from "../provider-model-route-auth.js";
++import {
++  selectProviderModelAuthSources,
++  selectProviderModelRouteAuth,
++} from "../provider-model-route-auth.js";
+ import { buildAgentRuntimeAuthPlan } from "./auth.js";
+ import type { AgentRuntimeAuthPlan } from "./types.js";
+ 
+@@ -216,9 +222,11 @@ export function prepareAgentRuntimeAuth(
+     params.sessionAuthProfileSource === "user" || params.sessionAuthProfileSource === "user-link"
+       ? requestedProfileId
+       : undefined;
+-  const harnessOwnsOpenAIAuth =
++  const isCodexHarness =
+     params.harnessId?.trim().toLowerCase() === "codex" ||
+     params.harnessRuntime?.trim().toLowerCase() === "codex";
++  const provider = normalizeProviderId(params.provider);
++  const harnessOwnsOpenAIAuth = isCodexHarness && (provider === "openai" || provider === "codex");
+   const harnessAuthOwnerId = params.harnessId?.trim() || params.harnessRuntime?.trim();
+   const runtimeAuthOwner =
+     harnessOwnsOpenAIAuth && params.harnessAuthBootstrap === "harness" && harnessAuthOwnerId
+@@ -422,10 +430,10 @@ export function prepareAgentRuntimeAuth(
+     ...(fallbackDirectSource ? { fallback: fallbackDirectSource } : {}),
+     allowCooldown: params.allowTransientCooldownProbe,
+   });
+-  const resolution = resolveOpenAIModelRoutes({
++  const resolution = resolveProviderModelRoutes({
+     provider: params.provider,
+-    modelId: params.modelId,
+-    api: params.modelApi,
++    modelId: splitTrailingAuthProfile(params.modelId).model,
++    api: params.modelApi as ModelApi | null | undefined,
+     baseUrl: params.modelBaseUrl,
+     config: params.config,
+     env: params.env,
+@@ -493,11 +501,7 @@ export function prepareAgentRuntimeAuth(
+       },
+     );
+     const plan = attempts[0]?.plan ?? buildGenericPlan(undefined, 0);
+-    if (
+-      selectedProfileId &&
+-      harnessOwnsOpenAIAuth &&
+-      plan.forwardedAuthProfileId !== selectedProfileId
+-    ) {
++    if (selectedProfileId && isCodexHarness && plan.forwardedAuthProfileId !== selectedProfileId) {
+       throw new Error(
+         `Auth profile "${selectedProfileId}" cannot be forwarded to the codex runtime.`,
+       );
+@@ -519,7 +523,8 @@ export function prepareAgentRuntimeAuth(
+     requestTransportOverrides: route.requestTransportOverrides,
+     runtimePolicy: route.runtimePolicy,
+   });
+-  const routeAuthDecision = selectOpenAIModelRouteAuth({
++  const routeAuthDecision = selectProviderModelRouteAuth({
++    provider: params.provider,
+     resolution,
+     sourcePlan,
+     configuredAuthMode: automaticRouteAuthMode,
+@@ -603,7 +608,7 @@ export function prepareAgentRuntimeAuth(
+   for (const attempt of attempts) {
+     if (
+       attempt.profileId &&
+-      harnessOwnsOpenAIAuth &&
++      isCodexHarness &&
+       attempt.plan.forwardedAuthProfileId !== attempt.profileId
+     ) {
+       throw new Error(
+diff --git a/src/agents/runtime-plan/prepare-auth.vercel.test.ts b/src/agents/runtime-plan/prepare-auth.vercel.test.ts
+new file mode 100644
+index 00000000..72fe3a01
+--- /dev/null
++++ b/src/agents/runtime-plan/prepare-auth.vercel.test.ts
+@@ -0,0 +1,118 @@
++import { describe, expect, it } from "vitest";
++import type { OpenClawConfig } from "../../config/types.openclaw.js";
++import {
++  buildAgentHarnessSupportContext,
++  projectPreparedModelProvider,
++} from "../harness/support.js";
++import { prepareAgentRuntimeAuth } from "./prepare-auth.js";
++
++const provider = "vercel-ai-gateway";
++const baseUrl = "https://ai-gateway.vercel.sh/codex/v1";
++const config: OpenClawConfig = {
++  models: {
++    providers: {
++      [provider]: {
++        api: "openai-responses",
++        baseUrl,
++        apiKey: "fixture-vercel-key",
++        models: [],
++      },
++    },
++  },
++};
++const params = {
++  provider,
++  modelId: "vendor/test-model",
++  modelApi: "openai-responses",
++  modelBaseUrl: baseUrl,
++  config,
++  env: {},
++  authProfileStore: { version: 1, profiles: {} },
++  harnessId: "codex",
++  harnessRuntime: "codex",
++  harnessAuthBootstrap: "harness" as const,
++};
++
++describe("Vercel Codex route preparation", () => {
++  it("carries the declared route and credential mode from early to finalized selection", () => {
++    const selection = {
++      provider,
++      modelId: params.modelId,
++      config,
++      requestedRuntime: "codex" as const,
++    };
++    const early = buildAgentHarnessSupportContext(selection);
++    expect(early.modelProvider?.runtimePolicy?.compatibleIds).toContain("codex");
++    const prepared = prepareAgentRuntimeAuth(params);
++    expect(prepared.attempts).toHaveLength(1);
++    expect(prepared.plan).toMatchObject({
++      providerForAuth: provider,
++      harnessAuthProvider: provider,
++      selectedAuthMode: "api-key",
++      modelRoute: { provider, baseUrl, authRequirement: "api-key" },
++    });
++    const final = buildAgentHarnessSupportContext({
++      ...selection,
++      preparedModelProvider: true,
++      modelProvider: projectPreparedModelProvider({
++        plan: prepared.plan,
++        attemptKind: prepared.attempts[0]?.kind,
++      }),
++    });
++    expect(final.modelProvider?.runtimePolicy).toEqual(early.modelProvider?.runtimePolicy);
++    expect(final.modelProvider?.preparedAuth).toEqual({
++      source: "direct",
++      mode: "api-key",
++      requirement: "api-key",
++    });
++  });
++
++  it("does not discover an OpenAI account when the Vercel key is missing", () => {
++    const result = prepareAgentRuntimeAuth({
++      ...params,
++      config: {
++        models: { providers: { [provider]: { api: "openai-responses", baseUrl, models: [] } } },
++      },
++      env: { OPENAI_API_KEY: "unrelated-openai-key" },
++      authProfileStore: {
++        version: 1,
++        profiles: { "openai:work": { type: "api_key", provider: "openai", key: "wrong-key" } },
++      },
++    });
++    expect(result.plan.harnessAuthProvider).toBe(provider);
++    expect(result.plan.forwardedAuthProfileId).toBeUndefined();
++    expect(result.plan.credentialSource).toEqual({
++      kind: "direct",
++      evidence: "runtime",
++      authorization: "declared",
++    });
++    expect(result.attempts[0]).toMatchObject({ kind: "direct", allowAuthProfileFallback: false });
++  });
++
++  it.each(["vercel-ai-gateway", "openai"])(
++    "enforces credential ownership for a pinned %s profile",
++    (profileProvider) => {
++      const prepare = () =>
++        prepareAgentRuntimeAuth({
++          ...params,
++          sessionAuthProfileId: "fixture:work",
++          sessionAuthProfileSource: "user",
++          authProfileStore: {
++            version: 1,
++            profiles: {
++              "fixture:work": { type: "api_key", provider: profileProvider, key: "fixture-key" },
++            },
++          },
++        });
++      if (profileProvider === provider) {
++        expect(prepare().plan).toMatchObject({
++          forwardedAuthProfileId: "fixture:work",
++          selectedAuthMode: "api_key",
++          modelRoute: { provider, authRequirement: "api-key" },
++        });
++      } else {
++        expect(prepare).toThrow(/not configured for vercel-ai-gateway/u);
++      }
++    },
++  );
++});
+diff --git a/extensions/codex/src/node-exec-server.runtime.ts b/extensions/codex/src/node-exec-server.runtime.ts
+index 8898817c..a4cb180e 100644
+--- a/extensions/codex/src/node-exec-server.runtime.ts
++++ b/extensions/codex/src/node-exec-server.runtime.ts
+@@ -21,7 +21,7 @@ const MAX_CODEX_EXEC_SERVER_STDERR_BYTES = 4 * 1024;
+ const CODEX_EXEC_SERVER_TERMINATION_GRACE_MS = 1_000;
+ const CODEX_EXEC_SERVER_REAP_TIMEOUT_MS = 5_000;
+ const NODE_EXEC_SERVER_PLATFORM_ENVIRONMENT =
+-  /^(?:SYSTEMROOT|WINDIR|COMSPEC|PATHEXT|TEMP|TMP|TMPDIR)$/iu;
++  /^(?:SYSTEMROOT|WINDIR|COMSPEC|PATHEXT|TEMP|TMP|TMPDIR|NODE_EXTRA_CA_CERTS|NODE_USE_SYSTEM_CA)$/iu;
+ 
+ type CodexNodeExecProcessOwner = {
+   terminate: () => Promise<void>;
+@@ -198,7 +198,7 @@ export async function runCodexNodeExecServer(params: {
+         if (!native || isManagedCodexDesktopCommand(resolved.command)) {
+           throw new Error("Codex node exec-server requires the pinned managed package binary.");
+         }
+-        // The exec-server needs platform/locale basics, never provider, forge,
++        // Preserve platform/locale basics and host Node CA trust, never provider, forge,
+         // cloud, SSH-agent, XDG, or runtime-injection state from its node host.
+         const baseEnv = sanitizeEnvVars(process.env, {
+           strictMode: true,
+diff --git a/extensions/codex/src/node-exec-server.test.ts b/extensions/codex/src/node-exec-server.test.ts
+index 41ddb13b..4f01ccc3 100644
+--- a/extensions/codex/src/node-exec-server.test.ts
++++ b/extensions/codex/src/node-exec-server.test.ts
+@@ -1,8 +1,9 @@
+ /** Protects node policy, real pinned Codex stdio framing, and child cleanup. */
+ import { once } from "node:events";
+-import { access, readFile, realpath } from "node:fs/promises";
++import { access, readFile, realpath, writeFile } from "node:fs/promises";
+ import { createServer } from "node:http";
+ import path from "node:path";
++import { rootCertificates } from "node:tls";
+ import { fileURLToPath, pathToFileURL } from "node:url";
+ import type { OpenClawPluginNodeHostCommandIo } from "openclaw/plugin-sdk/node-host";
+ import type {
+@@ -427,11 +428,16 @@ describe("Codex node exec-server", () => {
+     vi.stubEnv("GITHUB_TOKEN", "node-forge-canary");
+     vi.stubEnv("SSH_AUTH_SOCK", "/node-ssh-canary.sock");
+     vi.stubEnv("NODE_OPTIONS", "--no-warnings");
++    vi.stubEnv("NODE_TLS_REJECT_UNAUTHORIZED", "0");
++    vi.stubEnv("NODE_USE_SYSTEM_CA", "1");
+ 
+     await withTempWorkspace(
+       { rootDir: resolvePreferredOpenClawTmpDir(), prefix: "codex-node-exec-contract-" },
+       async ({ dir }) => {
+         const cwd = await realpath(dir);
++        const caPath = path.join(cwd, "trusted-ca.pem");
++        await writeFile(caPath, rootCertificates.join("\n"));
++        vi.stubEnv("NODE_EXTRA_CA_CERTS", caPath);
+         const workspaceUri = pathToFileURL(cwd).href;
+         const probePath = path.join(cwd, "probe.txt");
+         const probeUri = pathToFileURL(probePath).href;
+@@ -508,6 +514,9 @@ describe("Codex node exec-server", () => {
+             "cloudFile: process.env.GOOGLE_APPLICATION_CREDENTIALS ?? null,",
+             "forge: process.env.GITHUB_TOKEN ?? null,",
+             "ssh: process.env.SSH_AUTH_SOCK ?? null,",
++            "extraCa: process.env.NODE_EXTRA_CA_CERTS ?? null,",
++            "systemCa: process.env.NODE_USE_SYSTEM_CA ?? null,",
++            "tlsBypass: process.env.NODE_TLS_REJECT_UNAUTHORIZED ?? null,",
+             "injection: process.env.NODE_OPTIONS ?? null",
+             "}) + '\\n', () => process.exit(0))",
+             "})",
+@@ -561,6 +570,9 @@ describe("Codex node exec-server", () => {
+             cloudFile: string | null;
+             forge: string | null;
+             ssh: string | null;
++            extraCa: string | null;
++            systemCa: string | null;
++            tlsBypass: string | null;
+             injection: string | null;
+           };
+           expect(observed).toMatchObject({
+@@ -571,6 +583,9 @@ describe("Codex node exec-server", () => {
+             cloudFile: null,
+             forge: null,
+             ssh: null,
++            extraCa: caPath,
++            systemCa: "1",
++            tlsBypass: null,
+             injection: null,
+           });
+           expect(observed.codexHome).toBe(path.join(observed.home, ".codex"));

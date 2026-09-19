@@ -111,6 +111,26 @@ describe('parseSlackEvent', () => {
       false,
     );
   });
+
+  it('ignores a bare mention rather than waking a sandbox for an empty prompt', () => {
+    // Live 2026-08-17: `@openclaw` alone strips to '', reached `openclaw agent
+    // --message ""`, and exited 1 with "Missing message" after a 12.6s wake. The
+    // user saw "Something went wrong handling that" for an empty question.
+    for (const text of ['<@U0BOT>', '  <@U0BOT>   ', '<@U0BOT> <@U0OTHER>']) {
+      const result = parseSlackEvent(
+        envelope({ type: 'app_mention', user: 'U1', channel: 'C1', ts: '1.1', text }),
+      );
+      expect(result.handle).toBe(false);
+      if (!result.handle) expect(result.reason).toBe('mention with no message text');
+    }
+
+    // A mention with any real content is still handled.
+    expect(
+      parseSlackEvent(
+        envelope({ type: 'app_mention', user: 'U1', channel: 'C1', ts: '1.1', text: '<@U0BOT> hi' }),
+      ).handle,
+    ).toBe(true);
+  });
 });
 
 describe('stripMentions', () => {

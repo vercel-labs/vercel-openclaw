@@ -1,64 +1,24 @@
 # Vercel Connect as the Slack ingress
 
-Research date: 2026-08-13. Sources are current local Vercel/eve source and first-party Vercel documentation.
+Historical research from August 13, 2026. The current native Slack PoC is documented in [host/CODEX-POC.md](../host/CODEX-POC.md). The original research remains in Git history; unpinned local/internal source citations have been removed from this handoff.
 
-## Conclusion
+## Original decision
 
-The proposed outer architecture is correct:
+The earlier host used Connect as the front door and translated Slack messages into `openclaw agent` turns. It posted replies itself. That implementation is preserved at [83882fe](https://github.com/vercel-labs/vercel-openclaw/blob/83882fe3c92bb311a3e9d27dfb513370912c5d1f/host/app/api/slack/route.ts).
 
-```text
-Slack -> Vercel Connect -> protected Vercel host -> wake/route -> OpenClaw sandbox
-```
+Before Connect, the host verified Slack signature headers and forwarded them to OpenClaw's listener: [pre-Connect route](https://github.com/vercel-labs/vercel-openclaw/blob/8f03f91da204d18bfc4deefac6110e67a45ef7bc/host/app/api/webhook/%5Bchannel%5D/route.ts).
 
-Vercel Connect should own the Slack app, signing secret, webhook verification, and trigger delivery. The host should accept only Connect's destination-project OIDC identity, wake the sandbox, and pass a trusted event across a host-to-sandbox boundary. This matches eve's Slack setup and avoids storing `SLACK_SIGNING_SECRET` or a long-lived `SLACK_BOT_TOKEN` in the project.
+## Current boundary
 
-It was **not a CLI-only substitution for the pre-Connect implementation**. That host verified Slack HMAC headers and forwarded them to OpenClaw's native `/slack/events` endpoint. Connect verifies Slack itself and re-attests the forwarded request with Vercel OIDC; the current Slack driver does not forward the original Slack signature headers. The implementation therefore uses the host-side adapter described below: `/api/slack` verifies Connect, invokes an OpenClaw agent turn, and posts the reply itself.
+The Codex/native Slack path verifies the forwarded request in the host, applies explicit admission policy, and forwards the full Slack envelope to OpenClaw with a separate per-run signature. Slack API requests receive credentials through the firewall. OpenClaw handles the native reply.
 
-## What Connect provides
+See [the host route](../host/app/api/slack/route.ts), [lifecycle](../host/lib/codex-lifecycle.ts), and [native listener integration](../worker-provider/runtime/native-slack.mjs). The older text-only path remains opt-in by leaving Codex disabled. Its channel-wide session behavior is not the native path's thread-scoped behavior.
 
-- `vercel connect create slack --name <name> --triggers` creates and installs a Connect-managed Slack app; `vercel connect attach <uid> --project <project> --environment production --triggers --trigger-path <path>` authorizes the project/environment and registers its HTTP receiver. Both `--triggers` uses matter. See the [Connect trigger documentation](https://vercel.com/docs/connect/concepts/triggers) and local CLI source at `/Users/qua/vercel/vercel/packages/cli/src/commands/connex/create.ts:166-225` and `attach.ts:241-348,460-468`.
-- Connect receives the provider webhook, verifies its signature, resolves the configured project/environment domain, and forwards the body to that destination. Officially, trigger forwarding is Slack-only in beta and permits up to three destinations. See [Triggers](https://vercel.com/docs/connect/concepts/triggers).
-- Current forwarding mints an OIDC token for the **destination project and environment**, then sends it as `Authorization: Bearer`, `x-vercel-oidc-token`, and `x-vercel-trusted-oidc-idp-token`. That last header is the protected-deployment path: Vercel documents that same-project OIDC is accepted by default, while other callers require a Trusted Sources rule. See `/Users/qua/vercel/core/api/packages/connex/src/connex-trigger.ts:505-600` and [Trusted Sources for Deployment Protection](https://vercel.com/changelog/trusted-sources-for-deployment-protection).
-- Outbound Slack access comes from `@vercel/connect` at runtime. The SDK presents the deployment's Vercel OIDC identity to Connect and receives the connector token; it does not require a stored Slack token. See `/Users/qua/vercel/vercel/packages/connect/src/token.ts:147-203` and [Introducing Vercel Connect](https://vercel.com/blog/introducing-vercel-connect#the-app-proves-its-identity-with-oidc).
+## Public references
 
-## How eve does it
+- [Connect triggers](https://vercel.com/docs/connect/concepts/triggers)
+- [Connect project identity](https://vercel.com/blog/introducing-vercel-connect#the-app-proves-its-identity-with-oidc)
+- [Trusted Sources for Deployment Protection](https://vercel.com/changelog/trusted-sources-for-deployment-protection)
+- [Connect Slack exercise](https://vercel.com/academy/building-agents-with-eve/add-slack)
 
-eve registers Connect's trigger destination at `/eve/v1/slack`, then defines its Slack channel with:
-
-```ts
-credentials: connectSlackCredentials("slack/my-agent")
-```
-
-`connectSlackCredentials` returns two dynamic pieces: a function-form bot token backed by `getToken(..., { subject: { type: "app" } })`, and a `vercelOidc()` webhook verifier. The channel therefore refreshes outbound credentials at use time and verifies Connect's inbound OIDC instead of Slack HMAC. Sources:
-
-- `/Users/qua/vercel/eve/docs/channels/slack.mdx:7-41`
-- `/Users/qua/vercel/vercel/packages/connect/src/eve/slack-credentials.ts:20-63`
-- `/Users/qua/vercel/eve/packages/eve/src/public/channels/auth.ts:753-883,991-1013`
-- [Official eve Slack exercise](https://vercel.com/academy/building-agents-with-eve/add-slack)
-
-The eve setup code also deliberately detaches the pathless/default destination and reattaches the connector at the channel route: `/Users/qua/vercel/eve/packages/eve/src/setup/connect-provisioning.ts:26-60`.
-
-## Why the pre-Connect host could not use it unchanged
-
-1. The host required `SLACK_SIGNING_SECRET` and rejected requests without `x-slack-signature` and `x-slack-request-timestamp`: [the pre-Connect route](https://github.com/vercel-labs/vercel-openclaw/blob/8f03f91da204d18bfc4deefac6110e67a45ef7bc/host/app/api/webhook/%5Bchannel%5D/route.ts).
-2. It forwards those same native Slack headers to OpenClaw `/slack/events`: the same file, lines 29-47 and 120-126.
-3. Connect's Slack driver verifies those headers at intake but exposes no Slack `getForwardHeaders` hook; generic forwarding adds content type and the OIDC/trigger headers. See `/Users/qua/vercel/core/api/packages/connex/src/client-types/slack/client-driver.ts:84-88,571-617` and `/Users/qua/vercel/core/api/packages/connex/src/connex-trigger.ts:284-303,585-597`.
-4. The host had no `@vercel/connect` dependency, and gateway startup passed only `OPENCLAW_GATEWAY_TOKEN` into the sandbox.
-
-Therefore, Connect will securely reach a protected host, but the host cannot forward that request unchanged into an endpoint that insists on Slack's native signature.
-
-## Recommended integration boundary
-
-1. Create one Connect-managed Slack connector for production with triggers enabled; attach it to `vercel-openclaw` production at the explicit host path `/api/slack`.
-2. In that route, verify the Connect OIDC token (and destination project/environment) **before** recording activity or waking Sandbox. Keep Deployment Protection enabled; Connect's project-scoped trusted OIDC is the intended machine-to-machine bypass.
-3. Acknowledge Slack promptly and enqueue/deduplicate before the roughly ten-second wake. eve follows this pattern: its Slack route returns `200` first and puts dispatch under `waitUntil` (`/Users/qua/vercel/eve/packages/eve/src/public/channels/slack/slackChannel.ts:826-985`). Connect retries destination `500`, `502`, `503`, and `504` responses up to three times, so event-id idempotency remains required. See [Triggers: Errors](https://vercel.com/docs/connect/concepts/triggers#errors).
-4. Replace native-signature pass-through with one explicit adapter. Two designs were evaluated against the pinned OpenClaw image:
-   - **Smaller native-OpenClaw bridge:** after OIDC verification, preserve the raw Slack body but create a fresh `x-slack-request-timestamp` and HMAC with a separate host-to-sandbox forwarding secret configured as OpenClaw's Slack signing secret. Resolve the Connect app token at wake and supply it to OpenClaw. This preserves OpenClaw's Slack plugin, but token expiry/refresh must become part of the sandbox lifecycle; a one-time token injected at boot is not the Connect per-use refresh model.
-   - **Host-side Slack adapter (selected):** the host uses `@vercel/connect` for an app token, translates the event into an authenticated OpenClaw gateway turn, and posts Slack replies itself. This keeps Connect/OIDC and rotating Slack credentials in the Vercel deployment, where project identity is native, but recreates the required mention/DM behavior in the host.
-5. Preserve gateway token authentication for in-VM lifecycle and agent calls. Do not expose the gateway port; Connect's deployment OIDC token belongs only at the host and firewall boundaries.
-
-## Product-surface caveat
-
-eve's current Connect Slack channel is mention/DM oriented. Its docs state that slash commands do not reach `onEvent` (`/Users/qua/vercel/eve/docs/channels/slack.mdx:181`), and the current managed Slack manifest builder configures Event Subscriptions and Interactivity but no `slash_commands` feature (`/Users/qua/vercel/core/api/packages/connex/src/client-types/slack/managed-create.ts:781-864`). Do not assume the manually-created `/openclaw` command transfers to a Connect-managed app. Start with `@OpenClaw` mentions and DMs, or separately design and verify slash-command support.
-
-Switching connectors creates a new Slack app installation. Once the Connect path is working, uninstall the manually-created/stale Slack app to avoid duplicate bot identities; Vercel's [eve Slack exercise](https://vercel.com/academy/building-agents-with-eve/add-slack) calls out this cleanup behavior.
+These references explain the surrounding products. They do not replace the PoC's pinned source and live tests or establish OAuth-expiry, crash-recovery or production-readiness proof.

@@ -1,0 +1,7 @@
+{
+  "id": "vercel-worker",
+  "name": "Vercel Sandbox Worker",
+  "description": "OpenClaw worker turns and Codex remote execution in disposable Vercel Sandboxes.",
+  "contracts": { "workerProviders": ["vercel-worker"] },
+  "configSchema": { "type": "object", "additionalProperties": false, "properties": {} }
+}

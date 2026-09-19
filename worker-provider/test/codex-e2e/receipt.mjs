@@ -1,0 +1,107 @@
+import assert from 'node:assert/strict';
+import { hash, OWNER } from '../e2e/support.mjs';
+import { OWNER as WORKER_OWNER } from '../../dist/profile.js';
+
+import { REQUIRED, SMOKE_REQUIRED } from './policy.mjs';
+const digest = value => assert(/^[a-f0-9]{64}$/.test(value ?? ''), 'Missing evidence digest');
+const check = (receipt, name) => {
+  const items = receipt.assertions.filter(item => item.name === name);
+  assert(items.length > 0, `Missing ${name} evidence`);
+  return items.at(-1);
+};
+
+export function assertCodexReceipt(receipt, expected) {
+  const suite = expected.suite ?? 'full';
+  assert(['full', 'basic'].includes(suite));
+  const basic = suite === 'basic';
+  assert.equal(receipt.suite ?? 'full', suite);
+  assert.equal(receipt.mode, basic ? 'codex-smoke' : 'codex');
+  assert.equal(receipt.status, 'passed');
+  assert.equal(receipt.toolProof, basic ? 'basic-functional' : 'concrete-isolation');
+  assert.equal(receipt.journalRecovered, true);
+  assert.deepEqual(receipt.missingAssertions, []);
+  assert.deepEqual(receipt.artifacts, expected.artifacts);
+  assert.equal(receipt.packageSha256, expected.archive.sha256);
+  assert.deepEqual(receipt.build, expected.archive.build);
+  assert.equal(receipt.projectId, expected.projectId);
+  assert.equal(receipt.teamId, expected.teamId);
+  assert(typeof expected.model === 'string' && expected.model.includes('/'), 'Explicit selected model required');
+  assert.equal(receipt.model, expected.model, 'Receipt model differs from the requested model');
+  assert(/^prj_[A-Za-z0-9]+$/.test(expected.projectId ?? ''));
+  assert(/^team_[A-Za-z0-9]+$/.test(expected.teamId ?? ''));
+  assert.deepEqual(receipt.installation, expected.installation.receipt);
+  assert.equal(hash(expected.lockBytes), receipt.installation.lockSha256);
+  assert.equal(hash(expected.innerBytes), receipt.vmReceiptSha256);
+  assert.equal(hash(expected.traceBytes), receipt.operatorTraceSha256);
+  const inner = JSON.parse(expected.innerBytes);
+  assert.equal(inner.suite ?? 'full', suite);
+  assert.equal(inner.status, 'passed');
+  assert.deepEqual(inner.missingAssertions, []);
+  assert.equal(inner.parentRunId, receipt.runId);
+  assert.equal(inner.packageSha256, receipt.packageSha256);
+  assert.equal(inner.catalogSha256, receipt.catalogSha256);
+  digest(receipt.catalogSha256);
+  assert.equal(inner.toolProof, receipt.toolProof);
+  assert.equal(inner.model, receipt.model, 'VM model differs from the requested model');
+  assert.equal(inner.operatorTraceSha256, receipt.operatorTraceSha256);
+  for (const name of basic ? SMOKE_REQUIRED : REQUIRED) {
+    check(receipt, name);
+    if (name !== 'cleanup') assert.deepEqual(receipt.assertions.filter(item => item.name === name), inner.assertions.filter(item => item.name === name));
+  }
+  assert.equal(receipt.resources.length, basic ? 2 : 3);
+  assert.equal(new Set(receipt.resources.map(resource => resource.name)).size, basic ? 2 : 3);
+  assert(receipt.resources.every(resource => resource.cleanup === 'stopped'));
+  const gateway = receipt.resources.filter(resource => resource.tags.owner === OWNER);
+  assert.equal(gateway.length, 1);
+  assert.equal(gateway[0].tags.run, receipt.runId);
+  assert.equal(inner.resources.length, basic ? 1 : 2);
+  for (const worker of inner.resources) {
+    assert.equal(worker.tags.owner, WORKER_OWNER);
+    assert.equal(worker.tags.intent, receipt.workerIntent);
+    assert.equal(worker.cleanup, 'stopped');
+    assert.deepEqual(receipt.resources.find(resource => resource.name === worker.name), worker);
+  }
+  const tools = check(inner, 'tool-authority');
+  assert.equal(tools.exhaustiveNativeInventory, false);
+  assert.equal(tools.proof, basic ? 'configured-dynamic-exclusions-only' : 'configured-dynamic-exclusions-and-concrete-isolation');
+  assert(['exec', 'process', 'gateway', 'openclaw'].every(tool => tools.excludedTools.includes(tool)));
+  assert(!tools.excludedTools.includes('session_status'));
+  const repair = check(inner, 'codex-repair');
+  digest(repair.sha256); digest(repair.markerSha256); digest(repair.runHash);
+  assert(repair.independentCases >= 8);
+  assert.equal(check(inner, 'workspace-reconciliation').sha256, repair.sha256);
+  digest(check(inner, 'workspace-reconciliation').isolationSha256);
+  const trace = JSON.parse(expected.traceBytes);
+  assert.equal(trace.status.complete, true);
+  const attempts = trace.events.filter(event => event.kind === 'request' && event.method === 'chat.send').length;
+  assert(attempts >= (basic ? 1 : 3) && attempts <= 6);
+  assert(trace.events.some(event => event.tool === 'session_status' && event.phase === 'result' && event.isError === false && event.runHash === repair.runHash));
+  assert.equal(check(inner, 'callback').tool, 'session_status');
+  if (basic) return inner;
+  const guardrails = check(inner, 'guardrails');
+  for (const key of ['gatewayCanaryAbsent', 'gatewayConfigAbsent', 'gatewayReachable', 'externalDenied', 'admittedNodeMutationDenied', 'fullFirewallPolicyMatched']) assert.equal(guardrails[key], true, key);
+  const { gatewayProcesses, workerProcesses, task } = inner.nativeRuntime;
+  assert.equal(gatewayProcesses.length, 1); assert.equal(workerProcesses.length, 1);
+  assert.equal(gatewayProcesses[0].role, 'app-server');
+  assert.equal(workerProcesses[0].role, 'exec-server');
+  digest(gatewayProcesses[0].sha256);
+  assert.equal(workerProcesses[0].sha256, gatewayProcesses[0].sha256);
+  assert.equal(workerProcesses[0].administrativeEnvironmentAbsent, true);
+  assert.equal(task.nativeExecAncestor, true);
+  assert.equal(task.administrativeEnvironmentAbsent, true);
+  assert(Number.isInteger(task.pid) && task.pid > 0 && /^\d+$/.test(task.startTicks));
+  assert.deepEqual(guardrails.task, task);
+  assert.deepEqual(guardrails.processes, workerProcesses);
+  const cancellation = check(inner, 'cancellation');
+  assert.equal(cancellation.pid, task.pid);
+  for (const key of ['processGone', 'heartbeatStopped', 'beforeNaturalDeadline']) assert.equal(cancellation[key], true);
+  const loss = check(inner, 'worker-loss');
+  assert.equal(loss.terminalStatus, 'error');
+  assert.equal(loss.localFallbackAbsent, true);
+  assert.equal(loss.workerCount, 1);
+  const replacement = check(inner, 'redispatch');
+  assert.equal(replacement.freshNodeIdentity, true);
+  assert.equal(replacement.acceptedSha256, repair.sha256);
+  assert.equal(replacement.processesResumed, false);
+  return inner;
+}

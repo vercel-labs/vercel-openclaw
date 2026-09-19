@@ -5,18 +5,26 @@ import { decideAccess } from '@/lib/access';
 import { defaultActivityStore } from '@/lib/activity-store';
 import { runAgentTurn, slackSessionKey } from '@/lib/agent';
 import { claimEvent } from '@/lib/dedupe';
+import { admitCodexEvent } from '@/lib/codex-admission';
+import { runCodexLifecycle } from '@/lib/codex-lifecycle';
+import { CodexLifecycleError, safeCodexError } from '@/lib/codex-diagnostics';
+import { nativeSlackAllowed } from '@/lib/codex-native-slack';
+import { setSlackSessionStatus } from '@/lib/slack-status';
 import {
   createExecutionBudget,
   withExecutionBudget,
   type ExecutionBudget,
 } from '@/lib/execution-budget';
 import {
+  THINKING_TEXT,
   parseSlackEvent,
   postSlackReaction,
   postSlackReply,
   removeSlackReaction,
+  updateSlackMessage,
   type SlackReplyTarget,
   type SlackThreadMessage,
+  type InboundSlackMessage,
 } from '@/lib/slack';
 import { ensureAwake, topUpSessionTimeout } from '@/lib/wake';
 
@@ -25,9 +33,9 @@ import { ensureAwake, topUpSessionTimeout } from '@/lib/wake';
  *
  * The Connect front door. Vercel Connect owns the Slack app, verifies Slack's
  * signature at its own intake, and forwards the event here. This app owns the
- * channel: it decides whether to act, hands OpenClaw only the message text, and
- * posts the reply itself with a token minted per call. No Slack credential ever
- * enters the sandbox.
+ * admission policy. The native Codex path forwards the full event to OpenClaw;
+ * the legacy path forwards text and posts the reply here. Slack credentials
+ * stay outside the guest and are injected on egress for native delivery.
  *
  * Order matters. Verification comes first so unauthenticated traffic cannot wake
  * compute or reset the idle clock. Access and de-duplication come before the
@@ -90,12 +98,39 @@ export async function POST(req: NextRequest) {
   }
   const message = parsed.message;
 
-  // OpenClaw's own DM allowlists and mention gates do not run when the host owns
-  // the channel, so this is the only thing deciding who may drive the agent.
+  // Keep the host allowlist in both modes; native policy adds its own gate below.
   const access = decideAccess(message.userId);
   if (!access.allowed) {
     console.warn(`slack event denied (${access.reason}) for user ${message.userId ?? 'unknown'}`);
     return NextResponse.json({ ok: true, ignored: access.reason });
+  }
+
+  if (process.env.OPENCLAW_ENGINE === 'codex') {
+    if (process.env.OPENCLAW_CODEX_NATIVE_SLACK === '1') {
+      try {
+        if (Buffer.byteLength(rawBody) > 1024 * 1024 || !nativeSlackAllowed(body)) {
+          return NextResponse.json({ ok: true, ignored: 'native_slack_not_allowed' });
+        }
+      } catch {
+        return NextResponse.json({ error: 'native_slack_not_configured' }, { status: 503 });
+      }
+    }
+    const oidcToken = req.headers.get('authorization')?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim();
+    if (!oidcToken) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+    const name = process.env.OPENCLAW_CODEX_SANDBOX_NAME;
+    if (!name) return NextResponse.json({ error: 'codex_not_configured' }, { status: 503 });
+    try {
+      const admission = await admitCodexEvent(name, message.eventId);
+      if (admission.status === 'duplicate') return NextResponse.json({ ok: true, ignored: 'duplicate' });
+      if (admission.status === 'busy') return NextResponse.json({ error: 'busy' }, { status: 503 });
+      after(async () => {
+        try { await handleCodexTurn(name, message, { oidcToken, budget, rawBody }); }
+        finally { await admission.release(); }
+      });
+      return NextResponse.json({ ok: true });
+    } catch {
+      return NextResponse.json({ error: 'admission_unavailable' }, { status: 503 });
+    }
   }
 
   // Claim before acking: a retry that arrives while the first turn is still
@@ -132,6 +167,60 @@ export async function POST(req: NextRequest) {
 interface SlackTurnContext {
   oidcToken: string;
   budget: ExecutionBudget;
+  rawBody?: string;
+}
+
+async function handleCodexTurn(name: string, message: InboundSlackMessage, context: SlackTurnContext) {
+  const nativeSlack = process.env.OPENCLAW_CODEX_NATIVE_SLACK === '1';
+  let placeholderTs: string | undefined;
+  let delivered = false;
+  let slackToken: string | undefined;
+  let eyesAdded = false;
+  let acknowledgement: Promise<unknown> | undefined;
+  const reaction = { channelId: message.channelId, messageTs: message.messageTs, name: 'eyes', budget: context.budget };
+  const status = async (value: 'processing' | 'active') => {
+    const at = Date.now();
+    try {
+      await setSlackSessionStatus({ ...message, token: slackToken!, status: value, budget: context.budget });
+      console.info('codex slack status', JSON.stringify({ eventId: message.eventId, status: value, startedAt: at, completedAt: Date.now() }));
+    } catch { console.warn('Codex Slack session status could not be updated'); }
+  };
+  try {
+    slackToken = await mintSlackToken(context.budget, context.oidcToken);
+    acknowledgement = Promise.all([
+      postSlackReaction({ ...reaction, token: slackToken }).then(() => { eyesAdded = true; }).catch(() => { console.warn('Codex eyes acknowledgement could not be added'); }),
+      ...(nativeSlack ? [status('processing')] : []),
+    ]);
+    if (!nativeSlack) await acknowledgement;
+    if (!nativeSlack) placeholderTs = (await postReply(message, THINKING_TEXT, context.budget, slackToken)).ts;
+    const receipt = await runCodexLifecycle({ name, sessionKey: slackSessionKey(message.channelId), eventId: message.eventId!, message: message.text, ...context,
+      onNativeDelivered: () => { delivered = true; },
+      ...(nativeSlack ? { nativeSlack: { rawBody: context.rawBody!, token: slackToken } } : {}),
+      publish: async reply => {
+        slackToken = await mintSlackToken(context.budget, context.oidcToken);
+        await settle(message, placeholderTs, reply, context.budget, slackToken);
+        delivered = true;
+      },
+    });
+    if (receipt.nativeSlackDelivered) delivered = true;
+    console.info(`codex lifecycle complete session=${receipt.sessionId} worker=${receipt.workerName} vm1=${receipt.gatewayStopped ? 'stopped' : 'warm'}`);
+    console.info('codex lifecycle receipt', JSON.stringify({ eventId: message.eventId, sessionId: receipt.sessionId, runId: receipt.runId, workerName: receipt.workerName, nativeSlackDelivered: receipt.nativeSlackDelivered === true, gatewayStopped: receipt.gatewayStopped, vm1Stopped: receipt.gatewayStopped, platformSessionId: receipt.platformSessionId, gatewayPid: receipt.gatewayPid, workerReused: receipt.workerReused, idleTimeoutMs: receipt.idleTimeoutMs, vm1SnapshotId: receipt.vm1SnapshotId, suspension: receipt.suspension, phases: receipt.phases }));
+  } catch (error) {
+    console.error('codex host failure', JSON.stringify({ eventId: message.eventId, phase: error instanceof CodexLifecycleError ? error.phase : 'slack-host', delivered, error: safeCodexError(error instanceof CodexLifecycleError ? error.cause : error) }));
+    if (!delivered) {
+      try {
+        slackToken = await mintSlackToken(context.budget, context.oidcToken);
+        await settle(message, placeholderTs, 'Something went wrong handling that. Check the logs.', context.budget, slackToken);
+      } catch { console.error('Codex failure notice could not be delivered'); }
+    }
+  } finally {
+    // Drain the initial acknowledgement before clearing, so a late response cannot restore it.
+    await acknowledgement;
+    await Promise.all([
+      ...(nativeSlack && slackToken ? [status('active')] : []),
+      ...(eyesAdded && slackToken ? [removeSlackReaction({ ...reaction, token: slackToken }).catch(() => { console.warn('Codex eyes acknowledgement could not be removed'); })] : []),
+    ]);
+  }
 }
 
 async function handleTurn(
@@ -143,21 +232,19 @@ async function handleTurn(
   const sessionKey = slackSessionKey(message.channelId);
   const startedAt = Date.now();
   let slackToken: string | undefined;
-  let reactionAdded = false;
+  let placeholderTs: string | undefined;
 
   try {
     slackToken = await mintSlackToken(context.budget, context.oidcToken);
+    // Post the placeholder before waking anything: the wake alone is ~10s, and
+    // an unanswered mention is indistinguishable from a broken agent. Failure to
+    // post it is not fatal, it just means `settle` posts a fresh message instead.
     try {
-      await postSlackReaction({
-        token: slackToken,
-        channelId: message.channelId,
-        messageTs: message.messageTs,
-        name: 'eyes',
-        budget: context.budget,
-      });
-      reactionAdded = true;
+      placeholderTs = (
+        await postReply(message, THINKING_TEXT, context.budget, slackToken)
+      ).ts;
     } catch (err) {
-      console.warn(`Slack progress reaction failed for ${sessionKey}:`, err);
+      console.warn(`Slack thinking placeholder failed for ${sessionKey}:`, err);
     }
 
     // The idle clock is bookkeeping. Keep it after the visible acknowledgement
@@ -198,16 +285,19 @@ async function handleTurn(
       throw new Error(`turn for ${sessionKey} produced no reply text`);
     }
 
-    await postReply(message, reply, context.budget, slackToken);
+    await settle(message, placeholderTs, reply, context.budget, slackToken);
     console.info(`slack turn complete session=${sessionKey} durationMs=${Date.now() - startedAt}`);
   } catch (err) {
     console.error(`turn failed for ${sessionKey}:`, err);
     // Say something rather than leaving the mention unanswered. Deliberately
-    // generic: error text can carry paths, tokens, and internals.
+    // generic: error text can carry paths, tokens, and internals. Editing the
+    // placeholder also clears it, so a failed turn cannot leave "Thinking…" as
+    // the last word in the thread.
     try {
       slackToken ??= await mintSlackToken(context.budget, context.oidcToken);
-      await postReply(
+      await settle(
         message,
+        placeholderTs,
         'Something went wrong handling that. Check the logs.',
         context.budget,
         slackToken,
@@ -215,17 +305,34 @@ async function handleTurn(
     } catch (postErr) {
       console.error('failed to post the failure notice:', postErr);
     }
-  } finally {
-    if (slackToken && reactionAdded) {
-      await removeSlackReaction({
-        token: slackToken,
-        channelId: message.channelId,
-        messageTs: message.messageTs,
-        name: 'eyes',
-        budget: context.budget,
-      }).catch((err) => console.warn(`Slack progress reaction cleanup failed for ${sessionKey}:`, err));
-    }
   }
+}
+
+/**
+ * Puts final text in front of the user: edits the placeholder when there is one,
+ * posts a fresh message when it never made it.
+ *
+ * Editing rather than posting keeps one message per turn, so the thread reads as
+ * a question and an answer instead of a progress log.
+ */
+async function settle(
+  message: SlackReplyTarget,
+  placeholderTs: string | undefined,
+  text: string,
+  budget: ExecutionBudget,
+  token: string,
+): Promise<void> {
+  if (placeholderTs) {
+    await updateSlackMessage({
+      token,
+      channelId: message.channelId,
+      ts: placeholderTs,
+      text,
+      budget,
+    });
+    return;
+  }
+  await postReply(message, text, budget, token);
 }
 
 /** Mints one short-lived bot token for acknowledgement and reply operations. */
@@ -241,7 +348,7 @@ async function mintSlackToken(
         slackConnector(),
         {
           subject: { type: 'app' },
-          scopes: ['chat:write', 'reactions:write'],
+          scopes: ['chat:write', 'reactions:write', ...(process.env.OPENCLAW_CODEX_NATIVE_SLACK === '1' ? ['channels:history', 'channels:read', 'users:read'] : [])],
         },
         { vercelToken },
     ),
@@ -249,14 +356,17 @@ async function mintSlackToken(
   );
 }
 
-/** Posts a final or controlled-failure reply in the originating thread. */
+/**
+ * Posts a message in the originating thread and passes back its timestamp, so
+ * the placeholder can be edited later.
+ */
 async function postReply(
   message: SlackReplyTarget,
   text: string,
   budget: ExecutionBudget,
   token: string,
-): Promise<void> {
-  await postSlackReply({
+): Promise<{ ts?: string }> {
+  return postSlackReply({
     token,
     channelId: message.channelId,
     threadTs: message.threadTs,

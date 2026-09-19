@@ -94,6 +94,20 @@ export function parseSlackEvent(body: unknown): SlackParseResult {
 
   const threadTs = typeof event.thread_ts === 'string' && event.thread_ts ? event.thread_ts : ts;
   const rawText = typeof event.text === 'string' ? event.text : '';
+  const text = stripMentions(rawText);
+
+  // A bare `@openclaw` with no words strips to the empty string, and an empty
+  // prompt is not a turn. Without this guard it reaches `openclaw agent
+  // --message ""`, which exits 1 with "Missing message" only AFTER a full
+  // sandbox wake, so the user gets "Something went wrong handling that" for what
+  // was really an empty question.
+  //
+  // Observed live twice on 2026-08-17 (12.6s and 5.3s of wake burned, one of them
+  // with the app already a channel member, which rules out the invite as the
+  // cause). Ignoring costs nothing and claims nothing false.
+  if (!text) {
+    return { handle: false, reason: 'mention with no message text' };
+  }
 
   return {
     handle: true,
@@ -103,7 +117,7 @@ export function parseSlackEvent(body: unknown): SlackParseResult {
       channelId,
       messageTs: ts,
       threadTs,
-      text: stripMentions(rawText),
+      text,
     },
   };
 }
@@ -123,7 +137,19 @@ export function stripMentions(text: string): string {
 }
 
 /**
- * Posts a reply in thread.
+ * Placeholder posted the moment a turn is accepted, then edited into the answer.
+ *
+ * A wake plus a turn takes tens of seconds, and until something appears in the
+ * thread the mention looks ignored. Italics mark it as transient rather than as
+ * the agent's own words.
+ */
+export const THINKING_TEXT = '_Thinking…_';
+
+/**
+ * Posts a reply in thread and returns its timestamp.
+ *
+ * The `ts` is what makes the placeholder editable: `updateSlackMessage` needs it
+ * to turn this message into the final answer instead of posting a second one.
  *
  * The token is passed in rather than read here, because it is minted per call
  * through Vercel Connect and the caller owns that lifecycle.
@@ -132,7 +158,7 @@ export async function postSlackReply(options: SlackReplyTarget & {
   token: string;
   text: string;
   budget?: ExecutionBudget;
-}): Promise<void> {
+}): Promise<{ ts?: string }> {
   const requestTimeoutMs = operationTimeoutMs(
     options.budget ?? createExecutionBudget(),
     'Slack reply',
@@ -154,9 +180,54 @@ export async function postSlackReply(options: SlackReplyTarget & {
 
   // Slack answers 200 with `ok: false` for application errors, so the status
   // code alone proves nothing.
-  const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+  const data = (await res.json().catch(() => ({}))) as {
+    ok?: boolean;
+    error?: string;
+    ts?: string;
+  };
   if (!res.ok || !data.ok) {
     throw new Error(`chat.postMessage failed: status=${res.status} error=${data.error ?? 'unknown'}`);
+  }
+  // Optional on purpose: a send that succeeded without a usable `ts` should
+  // still count as sent. The caller falls back to posting a fresh message.
+  return { ts: typeof data.ts === 'string' ? data.ts : undefined };
+}
+
+/**
+ * Edits a message in place, which is how the placeholder becomes the answer.
+ *
+ * Uses `chat:write`, the same scope `chat.postMessage` already needs, so this
+ * adds no Connect scope and no reinstall.
+ */
+export async function updateSlackMessage(options: {
+  token: string;
+  channelId: string;
+  ts: string;
+  text: string;
+  budget?: ExecutionBudget;
+}): Promise<void> {
+  const requestTimeoutMs = operationTimeoutMs(
+    options.budget ?? createExecutionBudget(),
+    'Slack message update',
+    { capMs: 10_000, reserveReply: false },
+  );
+  const res = await fetch('https://slack.com/api/chat.update', {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${options.token}`,
+      'content-type': 'application/json; charset=utf-8',
+    },
+    body: JSON.stringify({
+      channel: options.channelId,
+      ts: options.ts,
+      text: options.text,
+    }),
+    signal: AbortSignal.timeout(requestTimeoutMs),
+  });
+
+  const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+  if (!res.ok || !data.ok) {
+    throw new Error(`chat.update failed: status=${res.status} error=${data.error ?? 'unknown'}`);
   }
 }
 

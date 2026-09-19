@@ -1,0 +1,29 @@
+{
+  "name": "@vercel-labs/openclaw-worker-provider",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24.15.0" },
+  "openclaw": { "extensions": ["./dist/index.js"] },
+  "files": ["dist", "assets", "openclaw.plugin.json", "README.md"],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test test/*.test.ts",
+    "test:core": "node --test test/journal.test.ts test/bootstrap.test.ts test/e2e-harness.test.ts",
+    "test:e2e:preflight": "node test/e2e/run.mjs preflight",
+    "test:e2e:live": "node test/e2e/run.mjs fixture",
+    "test:e2e:model": "node test/e2e/run.mjs model",
+    "test:e2e:host": "node --import tsx test/codex-e2e/lifecycle.mjs",
+    "test:e2e:slack": "node test/native-slack-e2e.mjs"
+  },
+  "dependencies": { "@vercel/sandbox": "3.2.1" },
+  "peerDependencies": { "openclaw": "2026.9.2" },
+  "devDependencies": {
+    "@openclaw/codex": "2026.9.2",
+    "@types/node": "26.0.1",
+    "openclaw": "2026.9.2",
+    "tsx": "4.20.6",
+    "typescript": "5.9.3"
+  }
+}

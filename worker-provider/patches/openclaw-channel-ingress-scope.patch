@@ -1,0 +1,160 @@
+diff --git a/src/channels/message/ingress-monitor.admission.test.ts b/src/channels/message/ingress-monitor.admission.test.ts
+index d89a64b6..1d81a085 100644
+--- a/src/channels/message/ingress-monitor.admission.test.ts
++++ b/src/channels/message/ingress-monitor.admission.test.ts
+@@ -1,5 +1,11 @@
+ import { afterEach, describe, expect, it, vi } from "vitest";
+ import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
++import { createSyntheticPluginRuntimeClient } from "../../gateway/server-plugin-runtime-client.js";
++import {
++  getPluginRuntimeGatewayRequestScope,
++  withPluginRuntimeGatewayRequestScope,
++} from "../../plugins/runtime/gateway-request-scope.js";
++import { isGatewaySubordinateWorkAdmissionClosed } from "../../process/gateway-work-admission.js";
+ import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
+ import { createChannelIngressMonitor } from "./ingress-monitor.js";
+ import { createChannelIngressQueue } from "./ingress-queue.js";
+@@ -15,6 +21,68 @@ afterEach(() => {
+ });
+ 
+ describe("channel ingress monitor admission", () => {
++  it.each([false, true])(
++    "retains the queue owner's gateway scope, restricted=%s",
++    async (restricted) => {
++      const queue = createChannelIngressQueue<StoredEvent>({
++        channelId: "test",
++        accountId: "a",
++        stateDir: tempDirs.make("openclaw-ingress-owner-"),
++      });
++      const owner = {
++        isWebchatConnect: () => false,
++        pluginId: "queue-owner",
++        ...(restricted ? { client: createSyntheticPluginRuntimeClient({ scopes: [] }) } : {}),
++      } satisfies Parameters<typeof withPluginRuntimeGatewayRequestScope>[0];
++      const webhook = {
++        isWebchatConnect: () => false,
++        pluginId: "webhook",
++        client: createSyntheticPluginRuntimeClient({
++          scopes: restricted ? ["operator.admin"] : [],
++        }),
++      } satisfies Parameters<typeof withPluginRuntimeGatewayRequestScope>[0];
++      const delivered: unknown[] = [],
++        acknowledged: unknown[] = [];
++      const monitor = withPluginRuntimeGatewayRequestScope(owner, () =>
++        createChannelIngressMonitor<RawEvent, string, StoredEvent>({
++          queue,
++          inspect: (raw) => ({ eventId: raw.id, laneKey: "lane:a" }),
++          payload: {
++            storage: "raw-event",
++            version: 1,
++            serialize: (raw) => JSON.stringify(raw),
++            deserialize: (body) => JSON.parse(body) as RawEvent,
++            createClaimError: (kind) => new Error(kind),
++          },
++          deliver: async (_raw, lifecycle) => {
++            delivered.push(getPluginRuntimeGatewayRequestScope());
++            expect(isGatewaySubordinateWorkAdmissionClosed()).toBe(false);
++            await lifecycle.onAdopted();
++          },
++          onDurableAdmission: () => {
++            acknowledged.push(getPluginRuntimeGatewayRequestScope());
++          },
++          pollIntervalMs: 60_000,
++          retention: "standard",
++        }),
++      );
++      monitor.start();
++      await monitor.waitForIdle();
++      try {
++        await withPluginRuntimeGatewayRequestScope(webhook, async () => {
++          await monitor.admit({ id: "scope-event", text: "hello" });
++          expect(getPluginRuntimeGatewayRequestScope()).toBe(webhook);
++        });
++        await monitor.waitForIdle();
++        expect(acknowledged).toEqual([webhook]);
++        expect(delivered).toEqual([owner]);
++        await expect(queue.listPending()).resolves.toEqual([]);
++      } finally {
++        await monitor.stop();
++      }
++    },
++  );
++
+   it("reports whether each durable admission inserted a new row", async () => {
+     const queue = createChannelIngressQueue<StoredEvent>({
+       channelId: "test",
+diff --git a/src/channels/message/ingress-monitor.ts b/src/channels/message/ingress-monitor.ts
+index bd33ddf4..c1ad4e95 100644
+--- a/src/channels/message/ingress-monitor.ts
++++ b/src/channels/message/ingress-monitor.ts
+@@ -1,5 +1,9 @@
+ /** Shared durable channel-ingress admission, pump, retention, and shutdown lifecycle. */
+ import { formatErrorMessage, toErrorObject } from "../../infra/errors.js";
++import {
++  getPluginRuntimeGatewayRequestScope,
++  withPluginRuntimeGatewayRequestScope,
++} from "../../plugins/runtime/gateway-request-scope.js";
+ import {
+   getGatewayRestartDrainSignal,
+   isGatewayRestartDraining,
+@@ -159,6 +163,7 @@ export type CreateChannelIngressMonitorOptions<TRaw, TBody, TStoredPayload, TMet
+ export function createChannelIngressMonitor<TRaw, TBody, TStoredPayload, TMetadata = unknown>(
+   options: CreateChannelIngressMonitorOptions<TRaw, TBody, TStoredPayload, TMetadata>,
+ ) {
++  const deliveryScope = getPluginRuntimeGatewayRequestScope();
+   const now = options.now ?? Date.now;
+   const waitForDeliveryIdleBeforeRepump = options.waitForDeliveryIdleBeforeRepump ?? false;
+   const retention =
+@@ -379,8 +384,11 @@ export function createChannelIngressMonitor<TRaw, TBody, TStoredPayload, TMetada
+ 
+         // Adoption can complete before delivery returns; track both lifetimes so stop
+         // never drops channel work merely because the durable claim already settled.
++        const deliver = () => options.deliver(raw, wrappedLifecycle, claim);
++        // A durable delivery belongs to the channel owner, not the request that
++        // happened to wake its pump. Keep claim admission and abort contexts intact.
+         const delivery = Promise.resolve().then(() =>
+-          options.deliver(raw, wrappedLifecycle, claim),
++          deliveryScope ? withPluginRuntimeGatewayRequestScope(deliveryScope, deliver) : deliver(),
+         );
+         activeDeliveries.add(delivery);
+         publishActivity();
+@@ -571,16 +579,11 @@ export function createChannelIngressMonitor<TRaw, TBody, TStoredPayload, TMetada
+     publishActivity();
+   };
+ 
+-  const clearPollTimer = () => {
+-    clearInterval(pollTimer);
+-    pollTimer = undefined;
+-  };
+-
+   const pause = async (): Promise<void> => {
+     running = false;
+     requested = false;
+     releaseRestartFenceWake();
+-    clearPollTimer();
++    clearInterval(pollTimer);
+     publishActivity();
+     await waitForPumpIdle();
+   };
+@@ -596,11 +599,10 @@ export function createChannelIngressMonitor<TRaw, TBody, TStoredPayload, TMetada
+         await sleep(delayMs);
+       }
+       try {
+-        const result = await getQueue().enqueue(params.facts.eventId, params.payload, {
++        return await getQueue().enqueue(params.facts.eventId, params.payload, {
+           receivedAt: params.receivedAt,
+           laneKey: params.facts.laneKey,
+         });
+-        return result;
+       } catch (error) {
+         lastError = error;
+       }
+@@ -746,7 +748,7 @@ export function createChannelIngressMonitor<TRaw, TBody, TStoredPayload, TMetada
+         running = false;
+         requested = false;
+         releaseRestartFenceWake();
+-        clearPollTimer();
++        clearInterval(pollTimer);
+         publishActivity();
+         // Every transport callback accepted before stop keeps its durable-append guarantee.
+         await admissionTail;
