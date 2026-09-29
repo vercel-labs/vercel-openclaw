@@ -7,6 +7,7 @@ export interface Job {
   requestId: string; agent: string; conversation: string; fingerprint: string; owner: string;
   status: 'running' | 'completed' | 'failed' | 'interrupted'; phase: string;
   createdAt: number; updatedAt: number; resources: Resource[];
+  phaseTimes?: Record<string, number>;
   drive?: { name: string; id?: string };
   reply?: string; nativeSessionId?: string; error?: string;
 }
@@ -56,7 +57,7 @@ end
 local ready=redis.call('GET',KEYS[3])
 if ready and cjson.decode(ready).fingerprint ~= ARGV[2] then return cjson.encode({kind='configuration-conflict'}) end
 if not redis.call('SET',KEYS[2],ARGV[3],'NX','PX',ARGV[4]) then return cjson.encode({kind='busy'}) end
-local job=cjson.decode(ARGV[5]); job.createdAt=now; job.updatedAt=now
+local job=cjson.decode(ARGV[5]); job.createdAt=now; job.updatedAt=now; job.phaseTimes={admitted=now}
 redis.call('SET',KEYS[1],cjson.encode(job),'EX',ARGV[6])
 return cjson.encode({kind='accepted',job=job,ready=ready and cjson.decode(ready) or cjson.null})
 `;
@@ -65,6 +66,7 @@ if redis.call('GET',KEYS[2]) ~= ARGV[1] then return false end
 local saved=redis.call('GET',KEYS[1]); if not saved then return false end
 local job=cjson.decode(saved); if job.owner ~= ARGV[1] or job.status ~= 'running' then return false end
 local patch=cjson.decode(ARGV[2]); for k,v in pairs(patch) do job[k]=v end; job.updatedAt=now
+if patch.phase then job.phaseTimes=job.phaseTimes or {}; job.phaseTimes[patch.phase]=now end
 redis.call('SET',KEYS[1],cjson.encode(job),'KEEPTTL')
 if ARGV[3]=='finish' then redis.call('DEL',KEYS[2]) end
 return cjson.encode(job)

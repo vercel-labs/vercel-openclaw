@@ -16,6 +16,9 @@ try {
   const race = await Promise.all([store.begin(input,'runtime'), store.begin(input,'runtime')]);
   assert.deepEqual(race.map(r=>r.kind).sort(), ['accepted','duplicate']);
   const job = race.find(r=>r.kind==='accepted').job;
+  assert.equal(job.phaseTimes.admitted,job.createdAt);
+  const started=await store.patch(input.agent,input.requestId,job.owner,{phase:'starting'});
+  assert(started.phaseTimes.starting>=job.phaseTimes.admitted);
   passed('atomic-racing-claim');
   assert.equal((await store.begin({...input,message:'different'},'runtime')).kind,'conflict');
   assert.equal((await store.begin({...input,requestId:'two'},'runtime')).kind,'busy');
@@ -24,7 +27,8 @@ try {
   assert.equal(await redis.command(['GET',store.keys(input.agent)[1]]),job.owner);
   passed('owner-only-finalization');
   await store.ready(input.agent,job.owner,{fingerprint:'runtime',image:'synthetic-digest'});
-  await store.patch(input.agent,input.requestId,job.owner,{status:'completed',reply:'saved'},true);
+  const finished=await store.patch(input.agent,input.requestId,job.owner,{status:'completed',phase:'detached',reply:'saved'},true);
+  assert(finished.phaseTimes.detached>=started.phaseTimes.starting);
   assert.equal((await new RedisStore(redis,namespace).get(input.agent,input.requestId)).reply,'saved');
   assert.equal((await store.begin({...input,requestId:'two'},'changed')).kind,'configuration-conflict');
   passed('recreated-store-and-configuration-guard');

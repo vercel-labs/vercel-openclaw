@@ -38,7 +38,11 @@ async function call(path,body,auth=true){
 }
 async function complete(input){
   const r=await call('/api/messages',input);assert.equal(r.status,200,JSON.stringify(r.body));assert.equal(r.body.job.status,'completed');
-  jobs.push(r.body.job);timings.push({requestId:input.requestId,httpSeconds:r.seconds,admissionToDetachedSeconds:(r.body.job.updatedAt-r.body.job.createdAt)/1000});
+  const t=r.body.job.phaseTimes;assert(t,'Phase timestamps are required');
+  const order=['admitted','starting','dispatching','reply-recorded','gateway-quiesced','detached'];
+  for(let i=0;i<order.length;i++){assert(Number.isFinite(t[order[i]]));if(i)assert(t[order[i]]>=t[order[i-1]]);}
+  jobs.push(r.body.job);timings.push({requestId:input.requestId,httpSeconds:r.seconds,admissionToDetachedSeconds:(r.body.job.updatedAt-r.body.job.createdAt)/1000,
+    derivedPhaseSeconds:{prepare:(t.starting-t.admitted)/1000,startup:(t.dispatching-t.starting)/1000,model:(t['reply-recorded']-t.dispatching)/1000,shutdownAndDetach:(t.detached-t['reply-recorded'])/1000}});
   console.log(JSON.stringify({request:input.requestId,status:'completed',httpSeconds:r.seconds}));return r.body.job;
 }
 try{

@@ -1,11 +1,11 @@
 # Hosted verification
 
-September28,2026. A separate Vercel test deployment exercised the Functions HTTP adapter, Redis request tracking, the official OpenClaw2026.9.6 image, AI Gateway and one persistent Drive.
+September 28, 2026. A separate Vercel test deployment exercised the Functions HTTP adapter, Redis request tracking, the official OpenClaw 2026.9.6 image, AI Gateway and one persistent Drive.
 
-- Build/typecheck and47localtests passed.
-- Unauthorized requests returned401. Invalid and oversized messages returned400.
-- An in-flight duplicate returned202; a competing request returned409. A completed duplicate returned the same saved result and resources.
-- Three synthetic messages used three distinct workloadVMs and one stable Drive ID. Same-conversation history retained its native session ID; a fresh conversation recalled the workspace memory marker.
+- Build/typecheck and 47 local tests passed.
+- Unauthorized requests returned 401. Invalid and oversized messages returned 400.
+- An in-flight duplicate returned 202; a competing request returned 409. A completed duplicate returned the same saved result and resources.
+- Three synthetic messages used three distinct workload VMs and one stable Drive ID. Same-conversation history retained its native session ID; a fresh conversation recalled the workspace memory marker.
 - Each successful message completed only after clean gateway exit, VM stop and Drive detach.
 
 Measured HTTP durations, including initialization where needed, startup, model work and shutdown:
