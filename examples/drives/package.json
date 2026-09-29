@@ -1,0 +1,27 @@
+{
+  "name": "openclaw-drives",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.21.0"
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run build && node --test test/*.test.mjs",
+    "preflight": "npm run build && node -- dist/cli.js preflight",
+    "verify:restart": "npm run build && node -- dist/cli.js verify",
+    "serve": "npm run build && node -- dist/server.js",
+    "init": "npm run build && node -- dist/cli.js init",
+    "agent": "npm run build && node -- dist/cli.js agent"
+  },
+  "dependencies": {
+    "@vercel/oidc": "3.2.0",
+    "@vercel/sandbox": "3.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "24.3.0",
+    "typescript": "5.9.2"
+  }
+}
