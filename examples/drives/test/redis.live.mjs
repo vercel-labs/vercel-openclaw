@@ -1,0 +1,54 @@
+import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
+import { loadEnvFile } from 'node:process';
+import { RedisRest, RedisStore } from '../dist/controller-store.js';
+import { Receipt } from '../dist/receipt.js';
+
+if (process.argv[2]) loadEnvFile(process.argv[2]);
+const receipt = new Receipt('results/redis', [process.env.KV_REST_API_TOKEN]);
+const redis = new RedisRest(process.env.KV_REST_API_URL, process.env.KV_REST_API_TOKEN);
+const namespace = `test-${randomUUID()}`;
+const store = new RedisStore(redis, namespace);
+const input = {agent:'synthetic',requestId:'one',conversation:'main',message:'synthetic only'};
+let checks = 0;
+const passed = name => {checks++; receipt.event('check', {name}); console.log(name);};
+try {
+  const race = await Promise.all([store.begin(input,'runtime'), store.begin(input,'runtime')]);
+  assert.deepEqual(race.map(r=>r.kind).sort(), ['accepted','duplicate']);
+  const job = race.find(r=>r.kind==='accepted').job;
+  assert.equal(job.phaseTimes.admitted,job.createdAt);
+  const started=await store.patch(input.agent,input.requestId,job.owner,{phase:'starting'});
+  assert(started.phaseTimes.starting>=job.phaseTimes.admitted);
+  passed('atomic-racing-claim');
+  assert.equal((await store.begin({...input,message:'different'},'runtime')).kind,'conflict');
+  assert.equal((await store.begin({...input,requestId:'two'},'runtime')).kind,'busy');
+  passed('conflicting-and-busy-requests');
+  await assert.rejects(store.patch(input.agent,input.requestId,'wrong-owner',{status:'completed'},true));
+  assert.equal(await redis.command(['GET',store.keys(input.agent)[1]]),job.owner);
+  passed('owner-only-finalization');
+  await store.ready(input.agent,job.owner,{fingerprint:'runtime',image:'synthetic-digest'});
+  const finished=await store.patch(input.agent,input.requestId,job.owner,{status:'completed',phase:'detached',reply:'saved'},true);
+  assert(finished.phaseTimes.detached>=started.phaseTimes.starting);
+  assert.equal((await new RedisStore(redis,namespace).get(input.agent,input.requestId)).reply,'saved');
+  assert.equal((await store.begin({...input,requestId:'two'},'changed')).kind,'configuration-conflict');
+  passed('recreated-store-and-configuration-guard');
+  const expired = await store.begin({...input,requestId:'two'},'runtime');
+  assert.equal(expired.kind,'accepted');
+  const ownerKey=store.keys(input.agent)[1];
+  assert.equal(await redis.command(['EVAL',"if redis.call('GET',KEYS[1])==ARGV[1] then return redis.call('PEXPIRE',KEYS[1],1) end return 0",1,ownerKey,expired.job.owner]),1);
+  await new Promise(r=>setTimeout(r,30));
+  const next=await store.begin({...input,requestId:'three'},'runtime');
+  assert.equal(next.kind,'accepted');
+  assert.equal((await store.get(input.agent,'two')).status,'interrupted');
+  assert.equal((await store.begin({...input,requestId:'two'},'runtime')).job.status,'interrupted');
+  await assert.rejects(store.patch(input.agent,'two',expired.job.owner,{status:'completed'},true));
+  assert.equal(await redis.command(['GET',ownerKey]),next.job.owner);
+  passed('expired-owner-cannot-replay-or-release-new-owner');
+  await store.patch(input.agent,'three',next.job.owner,{status:'completed'},true);
+  receipt.finish('passed',{namespace,checks});
+  console.log(JSON.stringify({status:'passed',checks,receipt:receipt.directory}));
+} catch(error) {
+  receipt.finish('failed',{namespace,checks,error:error.message});
+  console.error(JSON.stringify({status:'failed',checks,receipt:receipt.directory,error:error.message}));
+  process.exitCode=1;
+}
