@@ -59,5 +59,5 @@ export function assertVersion(stdout: string): void {
 export function redact(value: string, secrets: string[]): string {
   let text = value;
   for (const secret of secrets.filter(Boolean).sort((a,b) => b.length-a.length)) text = text.split(secret).join('[REDACTED]');
-  return text.replace(/Bearer\s+[^\s"']+/gi, 'Bearer [REDACTED]');
+  return text.replace(/Bearer\s+[^\s"'\\]+/gi, 'Bearer [REDACTED]');
 }

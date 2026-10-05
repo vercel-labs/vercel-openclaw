@@ -8,7 +8,7 @@
 <h1>OpenClaw with Vercel Drives</h1>
 <p>A test deployment for running OpenClaw in fresh sandboxes with saved conversations, files and memory on a Drive.</p>
 <p>The HTTP API requires a control token. Submit messages to <code>POST /api/messages</code> and check saved outcomes at <code>GET /api/requests</code>.</p>
-<p>This example has no Slack event handler. Continuous operation and automatic recovery after an interrupted turn are not guaranteed.</p>
-<p><a href="https://github.com/vercel-labs/vercel-openclaw/tree/feat/drives-native-preview/examples/drives">Read the setup guide and source</a></p>
+<p>The optional Slack test adapter preserves the event body and queues work before acknowledgement. Two Slack turns verified saved state across fresh VMs. Live readiness tests verified reuse of the same VM and gateway, and a hosted delayed callback verified idle shutdown. User-message warm latency, eyes acknowledgment and a full one-hour idle interval still need verification. Continuous operation and automatic recovery after an interrupted turn are not guaranteed.</p>
+<p><a href="https://github.com/vercel-labs/vercel-openclaw/tree/feat/drives-native-preview/examples/drives">Read the HTTP and Slack setup guide</a></p>
 </main>
 </html>

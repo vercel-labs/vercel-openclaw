@@ -21,3 +21,5 @@ These are three observations, not a latency distribution or comparison with the 
 The separate local crash test of the same native runtime found that immediate restart after gateway SIGKILL can be refused by OpenClaw's five-minute ownership lease. A fresh VM after expiry recovered saved state without database/lease edits. The controller does not automatically replay uncertain turns.
 
 Reproduce the hosted checks with `node test/hosted.live.mjs <deployment-url> <ignored-env-file>` after building and linking the separate test project. Keep raw receipts/resource IDs private under `results/`.
+
+The optional Slack adapter added after this HTTP test has separate native-readiness evidence. This report does not establish hosted Queue delivery or live Slack E2E success.

@@ -1,6 +1,6 @@
 # OpenClaw on Vercel Sandbox
 
-For the separate official-image example with persistent Drives and an HTTP controller, see [OpenClaw with Vercel Drives](examples/drives/README.md). It runs OpenClaw's native agent in one workload VM and does not include the Slack/Codex worker integration described below.
+For the separate official-image example with persistent Drives, an HTTP controller and a native Slack adapter, see [OpenClaw with Vercel Drives](examples/drives/README.md). It runs OpenClaw's native agent in one workload VM and does not include the Slack/Codex worker integration described below.
 
 A two-sandbox PoC for running OpenClaw with Codex, staying warm between Slack messages, and sleeping after inactivity. Start with the [setup and native Slack test](host/CODEX-POC.md). The warm lifecycle has passed local tests; full Slack idle/wake verification remains pending. The earlier deployed tests covered per-message shutdown.
 

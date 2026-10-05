@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
-import { Command, Drive, Sandbox } from '@vercel/sandbox';
+import { Command, Drive, Sandbox, type NetworkPolicy } from '@vercel/sandbox';
 import { agentDriveName, assertVersion, DRIVE_BYTES, MOUNT, REGION, STATE, VERSION, WORKSPACE, type Settings } from './config.js';
 import { Receipt } from './receipt.js';
 import { configuration, parseAgentReply, agentArgs, bootstrapScript, inventoryScript, assertCleanShutdown, type AgentReply } from './openclaw.js';
@@ -16,6 +16,26 @@ const platform: Platform = {
 };
 export const SHUTDOWN_WAIT_MS = 335_000;
 
+export function runtimeNetworkPolicy(gatewayKey: string, slackToken?: string, installing = false): NetworkPolicy {
+  return { allow: {
+    'ai-gateway.vercel.sh': [{ transform: [{ headers: { Authorization: `Bearer ${gatewayKey}`, Host: 'ai-gateway.vercel.sh' } }] }],
+    ...(slackToken ? { 'slack.com': [
+      { match: { path: { startsWith: '/api/' }, method: ['GET','POST'] }, transform: [{ headers: { Authorization: `Bearer ${slackToken}` } }] },
+      { response: { statusCode: 403 } },
+    ] } : {}),
+    ...(installing ? { 'registry.npmjs.org': [] } : {}),
+  } };
+}
+
+export interface RuntimeExtension {
+  config: object; environment: Record<string, string>; slackToken: string;
+  prepare: (run: AgentRun) => Promise<void>;
+  gatewayEntrypoint?: string;
+}
+
+export interface RuntimeHandle { name: string; sessionId: string; driveId: string; image: string; commandId: string; createdAt: number }
+const WARM_ENV = '/tmp/openclaw-drives-runtime.json';
+
 export type Inventory = Record<string, { sha256: string; bytes: number } | { symlink: string }>;
 export type Stage = 'attached' | 'ready' | 'turn' | 'failed' | 'quiesced' | 'stopped';
 
@@ -26,17 +46,19 @@ export class AgentRun {
   readonly env: Record<string, string>;
   private constructor(readonly sandbox: Sandbox, readonly drive: Drive,
     private readonly settings: Settings, private readonly receipt: Receipt,
-    private readonly services: Platform, private readonly detachAttempts: number) {
+    private readonly services: Platform, private readonly detachAttempts: number, private readonly extension?: RuntimeExtension) {
     this.token = randomBytes(32).toString('hex');
     receipt.addSecret(this.token);
+    if (extension) { receipt.addSecret(extension.slackToken); Object.values(extension.environment).forEach(v => receipt.addSecret(v)); }
     this.env = {
       HOME: '/home/node', OPENCLAW_STATE_DIR: STATE, OPENCLAW_CONFIG_PATH: `${STATE}/openclaw.json`,
       OPENCLAW_GATEWAY_TOKEN: this.token, OPENCLAW_DRIVES_MODEL_KEY: 'sandbox-brokered',
+      ...extension?.environment,
     };
   }
 
   static async attach(settings: Settings, agent: string, receipt: Receipt,
-    options: { services?: Platform; image?: string; detachAttempts?: number } = {}): Promise<AgentRun> {
+    options: { services?: Platform; image?: string; detachAttempts?: number; extension?: RuntimeExtension; timeoutMs?: number } = {}): Promise<AgentRun> {
     const services = options.services ?? platform;
     const name = agentDriveName(agent);
     receipt.event('drive-requested', { name, region: REGION });
@@ -48,12 +70,10 @@ export class AgentRun {
     receipt.event('sandbox-requested', { name: sandboxName, image, persistent: false });
     const sandbox = await services.create({
       ...settings.credentials, name: sandboxName, image, region: REGION,
-      persistent: false, timeout: 15 * 60_000, resources: { vcpus: 2 },
+      persistent: false, timeout: options.timeoutMs ?? 15 * 60_000, resources: { vcpus: 2 },
       mounts: { [MOUNT]: drive },
       tags: { example: 'openclaw-drives', release: VERSION },
-      networkPolicy: { allow: { 'ai-gateway.vercel.sh': [{
-        transform: [{ headers: { Authorization: `Bearer ${settings.gatewayKey}`, Host: 'ai-gateway.vercel.sh' } }],
-      }] } },
+      networkPolicy: runtimeNetworkPolicy(settings.gatewayKey, options.extension?.slackToken),
       signal: AbortSignal.timeout(120_000),
     });
     receipt.event('sandbox-created', { name: sandbox.name, sessionId: sandbox.currentSession().sessionId,
@@ -62,7 +82,41 @@ export class AgentRun {
     assert(sandbox.image?.includes('@sha256:'), 'The platform did not report a resolved image digest.');
     if (options.image) assert.equal(sandbox.image, options.image, 'Fresh VM resolved a different image.');
     assert(sandbox.mounts?.[MOUNT], 'Agent Drive is not mounted at the configured state path.');
-    return new AgentRun(sandbox, drive, settings, receipt, services, options.detachAttempts ?? 60);
+    return new AgentRun(sandbox, drive, settings, receipt, services, options.detachAttempts ?? 60, options.extension);
+  }
+
+  handle(): RuntimeHandle {
+    assert(this.gateway, 'Gateway command is missing.');
+    return {name:this.sandbox.name,sessionId:this.sandbox.currentSession().sessionId,driveId:this.drive.driveId,
+      image:this.sandbox.image!,commandId:this.gateway.cmdId,createdAt:this.sandbox.currentSession().createdAt.getTime()};
+  }
+
+  static async reconnect(settings: Settings, agent: string, receipt: Receipt, handle: RuntimeHandle,
+    options: {services?: Platform; slackToken?: string; allowQuiesced?: boolean} = {}): Promise<AgentRun> {
+    const services=options.services??platform;
+    const sandbox=await Sandbox.get({...settings.credentials,name:handle.name,resume:false,signal:AbortSignal.timeout(30000)});
+    assert(sandbox.status==='running' && sandbox.currentSession().sessionId===handle.sessionId,'Saved warm VM is not the same running session. Inspect before recovery.');
+    assert(sandbox.persistent===false && sandbox.image===handle.image,'Warm VM image or persistence changed.');
+    const drive=await services.drive({...settings.credentials,name:agentDriveName(agent),region:REGION,maxSize:DRIVE_BYTES});
+    assert(drive.driveId===handle.driveId && drive.currentSessionId===handle.sessionId && drive.currentSandboxName===handle.name,'Warm Drive attachment differs.');
+    const bytes=await sandbox.readFileToBuffer({path:WARM_ENV},{signal:AbortSignal.timeout(15000)});
+    assert(bytes,'Warm runtime credentials are missing.');
+    const saved=JSON.parse(bytes.toString());
+    assert(saved.sessionId===handle.sessionId && saved.env?.HOME==='/home/node' && saved.env.OPENCLAW_STATE_DIR===STATE &&
+      saved.env.OPENCLAW_CONFIG_PATH===`${STATE}/openclaw.json` && saved.env.OPENCLAW_DRIVES_MODEL_KEY==='sandbox-brokered' &&
+      /^[a-f0-9]{64}$/.test(saved.env.OPENCLAW_GATEWAY_TOKEN) && /^[a-f0-9]{64}$/.test(saved.env.SLACK_SIGNING_SECRET) &&
+      saved.env.SLACK_BOT_TOKEN==='xoxb-sandbox-brokered','Warm runtime binding or credentials are invalid.');
+    const allowed=['HOME','OPENCLAW_STATE_DIR','OPENCLAW_CONFIG_PATH','OPENCLAW_DRIVES_MODEL_KEY','OPENCLAW_GATEWAY_TOKEN','SLACK_SIGNING_SECRET','SLACK_BOT_TOKEN'];
+    assert(Object.keys(saved.env).every(k=>allowed.includes(k)),'Unexpected saved environment field.');
+    const run=new AgentRun(sandbox,drive,settings,receipt,services,60);
+    Object.assign(run.env,saved.env);Object.values(run.env).forEach(v=>receipt.addSecret(v));
+    run.gateway=await sandbox.getCommand(handle.commandId,{signal:AbortSignal.timeout(15000)});
+    if(run.gateway.exitCode!==null){
+      assert(options.allowQuiesced,'Warm gateway exited; inspect before recovery.');
+      const logs=await run.diagnostics();assertCleanShutdown(run.gateway.exitCode,logs??'');run.stage='quiesced';return run;
+    }
+    if(options.slackToken) await sandbox.update({networkPolicy:runtimeNetworkPolicy(settings.gatewayKey,options.slackToken)},{signal:AbortSignal.timeout(30000)});
+    run.stage='ready';receipt.event('gateway-reused',{...handle});return run;
   }
 
   private async command(label: string, args: string[], timeoutMs = 30_000): Promise<string> {
@@ -84,8 +138,13 @@ export class AgentRun {
       const identity = JSON.parse(await this.command('runtime-user', ['-e', `console.log(JSON.stringify(require('node:os').userInfo()))`]));
       assert(identity.username === 'node' && identity.uid === 1000 && identity.gid === 1000, 'Official image must run as node (1000:1000).');
       assertVersion(await this.command('version', ['/app/openclaw.mjs', '--version']));
-      await this.command('initialize-state', ['-e', bootstrapScript, STATE, JSON.stringify(configuration(this.settings.model)), VERSION], 30_000);
-      this.gateway = await this.sandbox.runCommand({ cmd: 'tini', args: ['-s', '--', 'node', '/app/openclaw.mjs', 'gateway'],
+      await this.command('initialize-state', ['-e', bootstrapScript, STATE, JSON.stringify(this.extension?.config ?? configuration(this.settings.model)), VERSION], 30_000);
+      if (this.extension) {
+        await this.extension.prepare(this);
+        await this.command('extension-config-validate', ['/app/openclaw.mjs', 'config', 'validate', '--json'], 30000);
+      }
+      if (this.extension) await this.sandbox.writeFiles([{path:WARM_ENV,content:Buffer.from(JSON.stringify({sessionId:this.sandbox.currentSession().sessionId,env:this.env})),mode:0o600}]);
+      this.gateway = await this.sandbox.runCommand({ cmd: 'tini', args: ['-s', '--', 'node', ...(this.extension?.gatewayEntrypoint ? [this.extension.gatewayEntrypoint] : ['/app/openclaw.mjs', 'gateway'])],
         cwd: '/app', env: this.env, detached: true, signal: AbortSignal.timeout(30_000) });
       this.receipt.event('gateway-started', { commandId: this.gateway.cmdId, sessionId: this.sandbox.currentSession().sessionId });
       await this.command('gateway-health', ['-e', `

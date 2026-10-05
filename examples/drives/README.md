@@ -1,12 +1,14 @@
 # OpenClaw with Vercel Drives
 
-Run the official OpenClaw image in Vercel Sandbox, with a Drive holding its saved state. Each invocation starts fresh compute, mounts the same agent Drive, runs a message, and shuts down cleanly.
+Run the official OpenClaw image in Vercel Sandbox, with a Drive holding its saved state. CLI and HTTP requests start fresh compute and shut down after each message. The optional Slack adapter keeps one VM and gateway warm until one hour of inactivity, then shuts down and releases the Drive.
 
-This is a small persistence example. The default agent uses OpenClaw's native engine through Vercel AI Gateway, with file read/write tools. It does not include the separate Codex execution worker or Slack app from the existing integration.
+This is a small persistence example. The default agent uses OpenClaw's native engine through Vercel AI Gateway, with file read/write tools. It includes an optional native Slack test adapter. It does not include the separate Codex execution worker from the existing integration.
 
 ## Status
 
-The initial live restart test passed on September 28, 2026: one preparation VM, two fresh OpenClaw VMs, and four model turns verified saved files, conversation continuity and native memory loading. The example includes an authenticated HTTP controller with Redis request tracking, runnable locally or as Vercel Functions. Continuous hosted operation remains unverified.
+The initial live restart test passed on September 28, 2026: one preparation VM, two fresh OpenClaw VMs, and four model turns verified saved files, conversation continuity and native memory loading. The example includes an authenticated HTTP controller with Redis request tracking, runnable locally or as Vercel Functions. The Slack adapter now includes warm reuse and delayed idle shutdown; see the [dated Slack verification results](reports/slack-warm-verification.md). Continuous hosted operation remains unverified.
+
+The gateway and built-in agent run in the same VM, matching OpenClaw Enterprise’s embedded topology. There is no hard isolation boundary between them. The current scope is one allowed Slack user/channel and file read/write tools; skills, cron, heartbeat and automatic memory flushing are disabled. See the [Enterprise comparison and follow-ups](reports/enterprise-follow-ups.md) before broadening access or claiming unattended operation.
 
 ## What persists
 
@@ -20,7 +22,10 @@ Drives allow one writable sandbox at a time. A second invocation against an atta
 
 Use Node.js 22.21 or newer and a Vercel project with Sandbox access. You need a project-scoped Vercel OIDC token and a [Vercel AI Gateway API key](https://vercel.com/docs/ai-gateway/authentication-and-security/authentication).
 
+From the repository root:
+
 ```sh
+cd examples/drives
 npm ci
 vercel link
 vercel env pull
@@ -40,7 +45,7 @@ To use a different ignored environment file:
 npm run preflight -- --env-file /path/to/project/.env.local
 ```
 
-The official image reference is `openclaw-foundation/openclaw/openclaw:2026.9.6`. Moving image tags are rejected. If the release is unavailable or still preparing in VCR, inspect the error before retrying; do not silently substitute another release. The default model is `openai/gpt-5.4` through a custom `gateway` provider using OpenClaw’s built-in Chat Completions adapter. This needs no additional provider plugin.
+The official image reference is `openclaw-foundation/openclaw/openclaw:2026.9.6`. Only this release tag or an explicit digest is accepted. The release tag itself is not immutable; use an approved digest when a fixed artifact is required. If the release is unavailable or still preparing in VCR, inspect the error before retrying; do not silently substitute another release. The default model is `openai/gpt-5.4` through a custom `gateway` provider using OpenClaw’s built-in Chat Completions adapter. This needs no additional provider plugin.
 
 ## Verify a fresh restart
 
@@ -151,13 +156,51 @@ It makes three synthetic model turns with a new Drive, checks conversation and m
 
 Redis stores request status and resource IDs across function instances. Diagnostic receipts under `/tmp` are temporary on Vercel; they are not a durable log archive. Inspect the recorded Sandbox session and command logs for failures and export evidence before relying on long-term retention. A production service needs its own durable diagnostic storage.
 
-## Slack and latency scope
+## Optional Slack test adapter
 
-This example accepts a plain message, agent name, conversation label and request ID. It has no Slack event handler or Slack reply delivery. The HTTP API rejects unknown fields, messages over 16,000 characters and bodies over 32 KiB; it does not silently truncate them. Passing a Slack envelope directly will not work.
+The adapter receives Connect webhooks at `/api/slack`, verifies the request and checks an explicit workspace, app, channel, user and bot allowlist. It accepts human `app_mention` events only. It preserves the complete UTF-8 event body, including whitespace and unknown fields, and records its SHA-256. Bodies above 1 MiB and text above 40,000 characters are rejected rather than truncated. The plain HTTP message API retains its separate limits.
 
-The existing native Slack integration in this repository preserves the raw event body when forwarding it to OpenClaw. Its legacy text path strips mentions and normalizes whitespace. A future Drives Slack adapter must preserve the native envelope behavior, verify and admit the event before acknowledgement, retain it durably for deferred processing, map workspace/channel/thread identity, handle retries without duplicate turns, and fetch any needed thread history or file content. The event envelope alone does not contain every message or attachment's bytes. These boundaries have not been tested with this new example.
+Ingress acknowledges an allowed event only after Vercel Queues accepts it. Redis binds the event identity to its body hash for 7 days. A separate secret authenticates the queued payload before the worker obtains credentials or starts compute. The worker also verifies that its Connect token belongs to the configured workspace and bot. Queue retention is 24 hours; request deduplication is bounded by Redis retention and does not guarantee exactly-once execution.
 
-No speedup over the existing Slack/Codex integration is established. This example starts a fresh gateway for every request and returns only after shutdown and detach. The earlier integration can reuse warm VMs and has a separate code-execution worker. Compare equivalent model/tool workloads and measure startup, model execution and shutdown separately before claiming an improvement.
+One agent Drive belongs to each workspace/app/channel combination. Slack threads select conversations. A worker reuses the running VM and gateway while the agent is active. On a cold start it creates a VM, installs the pinned official `@openclaw/slack@2026.9.6` plugin on the Drive when absent, then forwards the original body to OpenClaw's local native Slack endpoint. Slack and AI Gateway credentials are injected by the Sandbox firewall. The guest receives placeholder provider tokens. A loopback Slack proxy removes placeholder token fields before the firewall supplies authorization; native startup also checks this request format against the configured bot and workspace. Registry access is enabled only during installation.
+
+Native hooks correlate receipt of the message, successful agent completion and Slack delivery. After each reply, the worker drains and resumes the gateway, records a completed `warm` job and schedules an idle check. Each completed turn resets the one-hour inactivity timer. The idle consumer shares the turn's ownership lock, checks the current runtime generation and native activity, then confirms clean gateway exit, VM stop and Drive detach. A platform session approaching its maximum lifetime rolls over through the same clean handoff before another turn.
+
+An eyes reaction acknowledges an admitted mention before VM startup. Reaction failures are recorded without preventing the agent turn. Duplicate events do not execute a second turn or reset the idle timer.
+
+An uncertain or failed turn is retained for inspection and is not automatically replayed. A busy agent retries the same queued event. Warm VMs retain the Drive mount and consume allocated resources during the idle window. The plain HTTP test adapter continues to stop after each request.
+
+### Configure an isolated test
+
+Keep the existing deployment's Slack destination unchanged. Use a separate test channel outside its allowlist, or a separate bot. Do not route the same bot/channel to two active deployments.
+
+In the linked test project's target environment, configure:
+
+- `SLACK_CONNECTOR`: a Connect Slack connector attached to that project and environment, with app-subject access to `channels:read`, `channels:history`, `users:read`, `chat:write` and `reactions:write`.
+- `OPENCLAW_SLACK_POLICY`: JSON with `teamId`, `appId`, `channelId`, `userId` and `botUserId` from the actual Slack installation.
+- `OPENCLAW_SLACK_QUEUE_SECRET`: a random secret of at least 32 characters, separate from `OPENCLAW_CONTROL_TOKEN`.
+- The AI Gateway and Redis variables documented above.
+
+Enable the connector's event destination at `/api/slack` only after the deployment is ready and the channel/bot is isolated. For a CLI-only test project, use its stable Production destination; a branch destination requires a resolvable Preview branch alias. This endpoint expects Connect verification; do not point Slack directly at it. The verifier authenticates the Connect project/environment boundary, not an individual connector or a body-bound Slack signature. The explicit event policy is an additional admission check.
+
+Keep the queue signing secret and controller namespace stable across deployments for at least the 24-hour queue retention window, so pending message and idle callbacks can still be verified.
+
+For a local readiness test, use an ignored environment file with project OIDC, Gateway and Slack settings. Attach the connector for the environment in that token; a local token may be development-scoped even when environment values were pulled from Preview.
+
+```sh
+npm run build
+node test/slack-readiness.live.mjs /path/to/ignored-test.env
+```
+
+The script creates a new Drive and two fresh workload VMs, checks plugin reuse, explicit body-token authorization and native Slack readiness, and drains/stops each VM. It sends zero Slack events and makes no model turns. Running it incurs Sandbox and Drive charges, and retained Drives remain billable.
+
+For the actual E2E check, a person mentions the test bot and asks it to save a unique marker in a workspace file and `MEMORY.md`. After the recorded job completes with phase `warm`, they mention the bot again in the same thread and ask it to recall the marker. Verify the eyes reaction, reply thread, event/body hash, unchanged VM/gateway identity and stable Drive. After one hour of inactivity, verify clean shutdown and detach; the next mention must use a new VM and recover the saved state. Repeat with a new thread if testing cross-conversation memory.
+
+**The previous stop-after-each-turn configuration passed two user-originated Slack turns**, with distinct VMs, the same Drive and native conversation, correct replies and clean shutdown. A live readiness test also reused the same VM and gateway, then stopped it after a shortened idle interval and recovered a saved file in a fresh VM. A separate hosted test verified delayed Queue delivery, VM shutdown and Drive detach. User-message warm latency, acknowledgment and the full one-hour idle interval still need live verification. A complete envelope does not contain every thread message or attachment's bytes. File download permissions/egress, attachment handling, full thread history and long-message delivery need dedicated live tests before claiming parity.
+
+## Latency scope
+
+No speedup over the existing Slack/Codex integration is established. The earlier Slack configuration took 67.009 and 60.182 seconds from user message to reply while starting a fresh gateway for each request. Those are two individual observations derived from Slack timestamps. The new Slack lifecycle reuses its VM and gateway for up to one hour of inactivity; improved latency must be measured. The plain HTTP adapter still starts a fresh gateway per request. The earlier integration can reuse warm VMs and has a separate code-execution worker. Compare equivalent model/tool workloads and measure startup, model execution and shutdown separately before claiming an improvement.
 
 ## Live controller checks
 

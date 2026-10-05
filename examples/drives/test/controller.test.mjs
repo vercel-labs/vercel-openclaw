@@ -6,7 +6,7 @@ import { handler, createHTTPServer } from '../dist/http.js';
 
 const settings={credentials:{token:'platform-secret',projectId:'prj_test',teamId:'team_test'},gatewayKey:'model-secret',image:'official:2026.9.6',model:'openai/gpt-5.4'};
 const input=validateMessage({agent:'test',requestId:'one',message:'hello'});
-function fixture(failure) {
+function fixture(failure,hooks={}) {
   const calls=[];let job;let ready=null;let lock=false;let idPatchFailed=false;
   const store={
     async begin(i){if(job)return {kind:'duplicate',job};if(lock)return {kind:'busy'};lock=true;
@@ -27,6 +27,7 @@ function fixture(failure) {
       turn:async()=>{calls.push(['turn']);if(failure==='turn')throw Error('turn uncertain');return {text:'hello back',sessionId:'native-session'}},
       quiesce:async()=>{calls.push(['quiesce']);if(failure==='shutdown')throw Error('shutdown failed')},
       stop:async()=>calls.push(['stop'])}}};
+  Object.assign(dependencies,hooks);
   return {controller:new Controller(settings,store,'unused',dependencies),store,calls,locked:()=>lock};
 }
 
@@ -94,4 +95,18 @@ test('real localhost HTTP path returns a stored result after controller replacem
     const result=await handler(replacement,token)(new Request('http://localhost/requests?agent=test&requestId=one',{headers:{authorization:`Bearer ${token}`}}));
     assert.equal((await result.json()).job.reply,'hello back');
   } finally {server.closeAllConnections();await new Promise(r=>server.close(r))}
+});
+
+
+test('warm completion preserves running gateway and duplicate does not acknowledge or execute twice',async()=>{
+ let acknowledgments=0,retained=0;
+ const f=fixture(undefined,{admitted:async()=>{acknowledgments++},finished:async()=>{retained++;return 'warm'}});
+ const first=await f.controller.message(input);assert.equal(first.body.job.status,'completed');assert.equal(first.body.job.phase,'warm');
+ assert.equal(acknowledgments,1);assert.equal(retained,1);assert(!f.calls.some(c=>['quiesce','stop'].includes(c[0])));
+ await f.controller.message(input);assert.equal(acknowledgments,1);assert.equal(retained,1);
+});
+test('warm retention failure fences saved state before releasing controller ownership',async()=>{
+ let fenced=false;
+ const f=fixture(undefined,{finished:async()=>{throw Error('scheduler failed')},failed:async()=>{fenced=true}});
+ const result=await f.controller.message(input);assert.equal(result.body.job.status,'interrupted');assert.equal(result.body.job.reply,'hello back');assert(fenced);assert.equal(f.locked(),false);
 });

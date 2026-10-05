@@ -8,7 +8,7 @@
   },
   "scripts": {
     "build": "tsc",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.hosted.json",
     "test": "npm run build && node --test test/*.test.mjs",
     "preflight": "npm run build && node -- dist/cli.js preflight",
     "verify:restart": "npm run build && node -- dist/cli.js verify",
@@ -17,7 +17,9 @@
     "agent": "npm run build && node -- dist/cli.js agent"
   },
   "dependencies": {
+    "@vercel/connect": "2.3.3",
     "@vercel/oidc": "3.2.0",
+    "@vercel/queue": "0.7.0",
     "@vercel/sandbox": "3.5.0"
   },
   "devDependencies": {

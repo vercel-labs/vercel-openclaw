@@ -10,6 +10,7 @@ export interface Job {
   phaseTimes?: Record<string, number>;
   drive?: { name: string; id?: string };
   reply?: string; nativeSessionId?: string; error?: string;
+  delivery?: { provider: 'slack'; eventId: string; sha256: string; sessionKey: string; runId: string; messageIds: string[] };
 }
 export interface ReadyAgent { fingerprint: string; image?: string }
 export type Admission = { kind: 'accepted'; job: Job; ready: ReadyAgent | null } |

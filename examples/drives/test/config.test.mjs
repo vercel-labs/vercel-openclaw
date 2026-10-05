@@ -55,3 +55,11 @@ test('exact state comparison includes changed, missing and added symbolic links'
     assert.throws(()=>assertInventory(before,after),/did not recover/);
   }
 });
+
+
+test('redacting a serialized bearer value preserves escaped JSON boundaries',()=>{
+  const original={description:'Bearer hidden" next field',multiline:'Bearer hidden\nnext line'};
+  const saved=JSON.parse(redact(JSON.stringify(original),[]));
+  assert.equal(saved.description,'Bearer [REDACTED]" next field');
+  assert.equal(saved.multiline,'Bearer [REDACTED]\nnext line');
+});

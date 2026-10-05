@@ -23,19 +23,25 @@ export function publicJob(job: Job): Omit<Job, 'owner' | 'fingerprint'> {
   const { owner: _owner, fingerprint: _fingerprint, ...visible } = job;
   return visible;
 }
-type Run = Pick<AgentRun, 'start' | 'turn' | 'quiesce' | 'stop' | 'sandbox'>;
+export type Run = Pick<AgentRun, 'start' | 'quiesce' | 'stop' | 'sandbox'> & {
+  turn: (session: string, message: string) => Promise<{ text: string; sessionId: string; delivery?: Job['delivery'] }>;
+};
 export interface ControllerDependencies {
+  runtimeConfiguration?: object;
   platform: Platform;
   initialize: typeof initializeDrive;
   attach: (settings: Settings, agent: string, receipt: Receipt, options: { services: Platform; image?: string }) => Promise<Run>;
   receipt: () => Receipt;
+  admitted?: (job: Job, receipt: Receipt) => Promise<void>;
+  finished?: (run: Run, job: Job, receipt: Receipt) => Promise<'warm' | 'detached'>;
+  failed?: () => Promise<void>;
 }
 
 export class Controller {
   readonly fingerprint: string;
   private dependencies: ControllerDependencies;
   constructor(readonly settings: Settings, readonly store: Store, results: string, dependencies?: Partial<ControllerDependencies>) {
-    this.fingerprint = createHash('sha256').update(JSON.stringify({ release: VERSION, image: settings.image, config: configuration(settings.model) })).digest('hex');
+    this.fingerprint = createHash('sha256').update(JSON.stringify({ release: VERSION, image: settings.image, config: dependencies?.runtimeConfiguration ?? configuration(settings.model) })).digest('hex');
     this.dependencies = {
       platform: { drive: p => Drive.getOrCreate(p), create: p => Sandbox.create(p) },
       initialize: initializeDrive, attach: (...args) => AgentRun.attach(...args),
@@ -78,26 +84,34 @@ export class Controller {
     try {
       receipt = this.dependencies.receipt();
       receipt.event('controller-start', { agent: input.agent, requestId: input.requestId });
+      await this.dependencies.admitted?.(job,receipt);
       if (!admission.ready) {
         await this.dependencies.initialize(this.settings, input.agent, receipt, services);
         await this.store.ready(input.agent, job.owner, { fingerprint: this.fingerprint });
       }
       const run = await this.dependencies.attach(this.settings, input.agent, receipt, { services, image: admission.ready?.image });
+      if(!resources.some(r=>r.name===run.sandbox.name)){resources.push({name:run.sandbox.name,kind:'workload',sessionId:run.sandbox.currentSession().sessionId,image:run.sandbox.image});await patch({resources:structuredClone(resources)});}
       await this.store.ready(input.agent, job.owner, { fingerprint: this.fingerprint, image: run.sandbox.image });
       await patch({ phase: 'starting' });
       await run.start();
       await patch({ phase: 'dispatching' });
       dispatched = true;
       const reply = await run.turn(sessionId(input.conversation), input.message);
-      await patch({ phase: 'reply-recorded', reply: reply.text, nativeSessionId: reply.sessionId });
-      await run.quiesce();
-      await patch({ phase: 'gateway-quiesced' });
-      await run.stop();
-      await patch({ phase: 'detached', status: 'completed' }, true);
+      await patch({ phase: 'reply-recorded', reply: reply.text, nativeSessionId: reply.sessionId, ...(reply.delivery ? { delivery: reply.delivery } : {}) });
+      if(this.dependencies.finished){
+        const phase=await this.dependencies.finished(run,job,receipt);
+        await patch({phase,status:'completed'},true);
+      }else{
+        await run.quiesce();
+        await patch({ phase: 'gateway-quiesced' });
+        await run.stop();
+        await patch({ phase: 'detached', status: 'completed' }, true);
+      }
       try { receipt.finish('passed', { requestId: input.requestId, job: publicJob(job) }); }
       catch { /* Redis already contains the completed result. */ }
       return { status: 200, body: { duplicate: false, job: publicJob(job) } };
     } catch (error) {
+      try {await this.dependencies.failed?.();} catch {}
       const message = redact(error instanceof Error ? error.message : String(error), [this.settings.credentials.token, this.settings.gatewayKey]);
       try {
         receipt?.event('controller-failure', { requestId: input.requestId, message, resources, drive });
