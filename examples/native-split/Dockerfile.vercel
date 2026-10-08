@@ -1,0 +1,15 @@
+FROM node:24-bookworm@sha256:64af3819f9275802414d7cdc38c27e9d82bd564dec4d4da87d008255d36c63b4
+RUN corepack enable
+WORKDIR /app
+ADD https://codeload.github.com/openclaw/openclaw/tar.gz/4a6520de4990169a45c6ea2cf64ff0dd44ba8c70 /tmp/source.tar.gz
+RUN echo "abb77b4c69afd1bef9359b2f6f1176bd1a6dbb636c0be1d1b0a788b4263a2402  /tmp/source.tar.gz" | sha256sum -c - && tar -xzf /tmp/source.tar.gz --strip-components=1 -C /app && rm /tmp/source.tar.gz
+RUN pnpm install --frozen-lockfile
+ENV OPENCLAW_RUNTIME_POSTBUILD_TIMINGS=verbose OPENCLAW_TSDOWN_TIMEOUT_MS=1800000
+RUN pnpm build
+WORKDIR /opt/native-split
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund
+COPY src ./src
+COPY runtime.json ./runtime.json
+EXPOSE 80
+CMD ["node", "src/server.mjs"]
