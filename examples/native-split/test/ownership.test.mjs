@@ -32,3 +32,18 @@ test('an attached Drive blocks worker creation', async () => {
   const worker = new Worker({agent: 'test', credentials: {}}, {assertCurrent: async () => {}}, {Drive: {getOrCreate: async () => ({currentSessionId: 'other'})}, Sandbox: {create: async () => {called = true;}}});
   await assert.rejects(worker.allocate(), /already attached/); assert.equal(called, false);
 });
+
+test('worker accepts canonical VCR references only when repository and digest match', async()=>{
+  const repository='team/project/runtime';const digest='a'.repeat(64);const expected=`vcr.vercel.com/${repository}@sha256:${digest}`;
+  async function allocate(actual) {
+    let commands=0;const session={writeFiles:async()=>{},runCommand:async()=>{commands++;return {exitCode:0,stdout:async()=>'{}'};}};
+    const worker=new Worker({agent:'test',image:expected,publicUrl:new URL('https://gateway.example'),model:'test',credentials:{}},{assertCurrent:async()=>{}},{Drive:{getOrCreate:async()=>({})},Sandbox:{create:async()=>({image:actual,currentSession:()=>session})}});
+    return {worker,commands:()=>commands};
+  }
+  for(const actual of [`${repository}@sha256:${digest}`,expected]) {
+    const run=await allocate(actual);await run.worker.allocate();assert.equal(run.commands(),1);
+  }
+  for(const actual of [`${repository}@sha256:${'b'.repeat(64)}`,`other/project/runtime@sha256:${digest}`,`different.registry/${repository}@sha256:${digest}`]) {
+    const run=await allocate(actual);await assert.rejects(run.worker.allocate(),/differs from pinned runtime/);assert.equal(run.commands(),0);
+  }
+});

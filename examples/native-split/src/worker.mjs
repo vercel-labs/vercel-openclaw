@@ -18,7 +18,7 @@ export class Worker {
       timeout: 65 * 60000, resources: {vcpus: 2}, mounts: {'/data': drive},
       tags: {example: 'native-split', agent: c.agent}, networkPolicy: workerPolicy(c.publicUrl, c.gatewayKey, c.deploymentToken), signal: AbortSignal.timeout(120000)});
     this.sandbox = sandbox; this.session = sandbox.currentSession(); this.drive = drive;
-    assert.equal(sandbox.image, c.image, 'Allocated image differs from pinned runtime');
+    assert.equal(sandbox.image?.replace(/^vcr\.vercel\.com\//, ''), c.image.replace(/^vcr\.vercel\.com\//, ''), 'Allocated image differs from pinned runtime');
     this.env = {HOME: '/data', OPENCLAW_STATE_DIR: NODE_STATE, OPENCLAW_CONFIG_PATH: NODE_CONFIG, WORKER_PROXY_AUTH: 'sandbox-firewall-brokered'};
     await this.session.writeFiles([{path: NODE_CONFIG, content: Buffer.from(JSON.stringify(nodeConfig(c.model))), mode: 0o600}]);
     await this.command(['config', 'validate', '--json']);

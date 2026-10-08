@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {gatewayConfig,nodeConfig,gatewayEnvironment,workerPolicy,PROFILE} from '../src/config.mjs';
+import {settings,gatewayConfig,nodeConfig,gatewayEnvironment,workerPolicy,PROFILE} from '../src/config.mjs';
 test('gateway requires worker inference and carries metadata without provider auth',()=>{
   const config=gatewayConfig('model','node-id');
   assert.equal(config.cloudWorkers.requiredProfile,PROFILE);
@@ -19,4 +19,16 @@ test('deployment authentication is injected by the firewall, never node configur
   const policy=workerPolicy(new URL('https://gateway.example'),'model-secret','project-oidc');
   assert.equal(policy.allow['gateway.example'][0].transform[0].headers['x-vercel-trusted-oidc-idp-token'],'project-oidc');
   assert(!JSON.stringify(nodeConfig('model')).includes('project-oidc'));
+});
+
+test('container request identity reaches SDK credentials without a process environment token',()=>{
+  const env={VERCEL_URL:'gateway.example',VERCEL_PROJECT_ID:'project-test',SPLIT_REDIS_URL:'https://redis.example',SPLIT_REDIS_TOKEN:'redis-test',SPLIT_WORKER_IMAGE:'registry.example/image@sha256:'+'a'.repeat(64),SPLIT_AGENT_ID:'proof-test',SPLIT_CONTROL_TOKEN:'x'.repeat(32),SPLIT_STORAGE_MODE:'ephemeral-proof',AI_GATEWAY_API_KEY:'model-test'};
+  const token=claims=>'header.'+Buffer.from(JSON.stringify(claims)).toString('base64url')+'.signature';
+  const claims={owner_id:'team-test',project_id:'project-test',exp:Math.floor(Date.now()/1000)+3600};
+  const oidc=token(claims);const config=settings(env,{'x-vercel-oidc-token':oidc});
+  assert.deepEqual(config.credentials,{token:oidc,teamId:'team-test',projectId:'project-test'});
+  assert.equal(config.deploymentToken,oidc);assert.equal(env.VERCEL_OIDC_TOKEN,undefined);
+  assert.throws(()=>settings(env),/runtime identity is missing/);
+  assert.throws(()=>settings(env,{'x-vercel-oidc-token':token({...claims,project_id:'wrong-project'})}),/project mismatch/);
+  assert.throws(()=>settings(env,{'x-vercel-oidc-token':token({...claims,exp:1})}),/expired/);
 });

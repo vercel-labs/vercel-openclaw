@@ -22,7 +22,7 @@ export function createServer({getController, controlToken, port = 18789}) {
       if (req.url === '/_split/health' && req.method === 'GET') return json(res, 200, {service: 'native-split', sourceCommit: SOURCE_COMMIT, configured: !!controlToken});
       if (req.url?.startsWith('/_split/')) {
         if (!authorized(req, controlToken)) return json(res, 401, {error: 'Unauthorized'});
-        const control = getController();
+        const control = getController(req);
         if (req.url === '/_split/diagnostics' && req.method === 'GET') return json(res, 200, await control.gateway?.diagnostics() ?? {});
         if (req.url === '/_split/status' && req.method === 'GET') return json(res, 200, control.status());
         if (req.url === '/_split/bootstrap' && req.method === 'POST') return json(res, 200, await control.bootstrap());
@@ -31,7 +31,7 @@ export function createServer({getController, controlToken, port = 18789}) {
         if (req.url === '/_split/message' && req.method === 'POST') return json(res, 200, await control.message(await body(req)));
         return json(res, 404, {error: 'Unknown control route'});
       }
-      const control = getController(); await control.owner.assertCurrent();
+      const control = getController(req); await control.owner.assertCurrent();
       if (!['enrolling', 'ready'].includes(control.phase)) return json(res, 503, {error: 'Gateway not accepting connections'});
       proxyHttp(req, res, port);
     } catch (error) {
@@ -43,16 +43,26 @@ export function createServer({getController, controlToken, port = 18789}) {
   server.on('upgrade', async (req, socket, head) => {
     try {
       if (req.url?.startsWith('/_split/')) throw new Error('No control upgrades');
-      const control = getController(); await control.owner.assertCurrent();
+      const control = getController(req); await control.owner.assertCurrent();
       if (!['enrolling', 'ready'].includes(control.phase)) throw new Error('Gateway not accepting connections');
       proxyUpgrade(req, socket, head, port);
     } catch {socket.end('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n');}
   });
   return server;
 }
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+export function createControllerProvider(create) {
   let controller;
-  const server = createServer({controlToken: process.env.SPLIT_CONTROL_TOKEN, getController: () => controller ??= new Controller(settings())});
+  return {
+    get(req) {
+      if (!controller || (!controller.boot && req.method === 'POST' && req.url === '/_split/bootstrap')) controller = create(req);
+      return controller;
+    },
+    close: () => controller?.close(),
+  };
+}
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const controllers = createControllerProvider(req => new Controller(settings(process.env, req.headers)));
+  const server = createServer({controlToken: process.env.SPLIT_CONTROL_TOKEN, getController: controllers.get});
   server.listen(Number(process.env.PORT ?? 80), '0.0.0.0');
-  process.once('SIGTERM', () => {server.close(); controller?.close().catch(() => console.error('Gateway shutdown unconfirmed; owner reservation retained'));});
+  process.once('SIGTERM', () => {server.close(); controllers.close()?.catch(() => console.error('Gateway shutdown unconfirmed; owner reservation retained'));});
 }

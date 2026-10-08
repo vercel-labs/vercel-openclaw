@@ -4,7 +4,7 @@ export const SOURCE_COMMIT = '4a6520de4990169a45c6ea2cf64ff0dd44ba8c70';
 export const NODE_STATE = '/data/openclaw-node';
 export const NODE_CONFIG = '/tmp/openclaw-node.json';
 export const PROFILE = 'dedicated-native';
-export function settings(env = process.env) {
+export function settings(env = process.env, requestHeaders = {}) {
   const required = name => { assert(env[name]?.trim(), `${name} is required`); return env[name].trim(); };
   const publicUrl = new URL(env.SPLIT_PUBLIC_URL || (env.VERCEL_URL ? `https://${env.VERCEL_URL}` : required('SPLIT_PUBLIC_URL')));
   assert(publicUrl.protocol === 'https:' && !publicUrl.username && !publicUrl.password && publicUrl.pathname === '/' && !publicUrl.search && !publicUrl.hash, 'SPLIT_PUBLIC_URL must be an HTTPS origin');
@@ -17,10 +17,24 @@ export function settings(env = process.env) {
   const controlToken = required('SPLIT_CONTROL_TOKEN');
   assert(controlToken.length >= 32, 'SPLIT_CONTROL_TOKEN must have at least 32 characters');
   assert(required('SPLIT_STORAGE_MODE') === 'ephemeral-proof', 'Persistent gateway storage is not qualified; only ephemeral-proof is implemented');
+  const deploymentToken = requestHeaders['x-vercel-oidc-token'] ?? env.VERCEL_OIDC_TOKEN;
+  let credentials = {};
+  if (env.VERCEL_TOKEN) credentials = {token: env.VERCEL_TOKEN, teamId: required('VERCEL_TEAM_ID'), projectId: required('VERCEL_PROJECT_ID')};
+  else if (deploymentToken) {
+    assert(typeof deploymentToken === 'string', 'Runtime OIDC token must be a single header');
+    const claims = JSON.parse(Buffer.from(deploymentToken.split('.')[1] ?? '', 'base64url').toString());
+    assert(typeof claims.owner_id === 'string' && typeof claims.project_id === 'string', 'Runtime OIDC token is missing its scope');
+    assert(typeof claims.exp === 'number' && claims.exp * 1000 > Date.now(), 'Runtime OIDC token has expired');
+    if (env.VERCEL_PROJECT_ID) assert.equal(claims.project_id, env.VERCEL_PROJECT_ID, 'Runtime OIDC project mismatch');
+    if (env.VERCEL_TEAM_ID) assert.equal(claims.owner_id, env.VERCEL_TEAM_ID, 'Runtime OIDC team mismatch');
+    // The API validates this token; decoding here only supplies the SDK's scope fields.
+    credentials = {token: deploymentToken, teamId: claims.owner_id, projectId: claims.project_id};
+  }
+  assert(!env.VERCEL_URL || Object.keys(credentials).length > 0, 'Vercel runtime identity is missing');
   return { publicUrl, image, agent, controlToken, model: env.OPENCLAW_MODEL ?? 'openai/gpt-5.4',
     gatewayKey: required('AI_GATEWAY_API_KEY'), redisUrl: redisUrl.toString(), redisToken: required('SPLIT_REDIS_TOKEN'),
-    deploymentToken: env.VERCEL_OIDC_TOKEN, port: Number(env.PORT ?? 80), runtime: env.OPENCLAW_RUNTIME ?? '/app/openclaw.mjs',
-    credentials: env.VERCEL_TOKEN ? {token: env.VERCEL_TOKEN, teamId: required('VERCEL_TEAM_ID'), projectId: required('VERCEL_PROJECT_ID')} : {},
+    deploymentToken, port: Number(env.PORT ?? 80), runtime: env.OPENCLAW_RUNTIME ?? '/app/openclaw.mjs',
+    credentials,
   };
 }
 const metadata = model => ({ id: model, name: model, contextWindow: 128000, maxTokens: 2048, reasoning: false, input: ['text'], cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0} });
