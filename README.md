@@ -1,5 +1,7 @@
 # OpenClaw on Vercel Sandbox
 
+The [native split example](examples/native-split/README.md) implements a Function-hosted OpenClaw gateway with one Sandbox for native agent execution. It is an experimental review path: gateway persistence, automatic replacement and Slack integration remain under qualification. The setup below describes the existing two-Sandbox Codex integration.
+
 A two-sandbox PoC for running OpenClaw with Codex, staying warm between Slack messages, and sleeping after inactivity. Start with the [setup and native Slack test](host/CODEX-POC.md). The warm lifecycle has passed local tests; full Slack idle/wake verification remains pending. The earlier deployed tests covered per-message shutdown.
 
 ```text
